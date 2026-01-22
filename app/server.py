@@ -200,67 +200,16 @@ async def transcribe_meeting(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     
-    # 保存上传的音频
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        audio_path = tmp.name
-    
     try:
-        # 1. VAD 切分
-        segments = service.vad_segment(audio_path)
+        # 使用 services/meeting.py 中的处理逻辑 (包含聚类功能)
+        from .services.meeting import process_meeting, export_markdown
+        import tempfile
         
-        if not segments:
-            # 兜底：固定时长切分
-            dur = librosa.get_duration(filename=audio_path)
-            dur_ms = int(dur * 1000)
-            segments = [[t, min(t+10000, dur_ms)] for t in range(0, dur_ms, 10000)]
+        # 处理会议录音
+        transcript = process_meeting(service, audio_path, threshold)
         
-        # 2. 读取音频
-        speech_full, sr = librosa.load(audio_path, sr=16000)
-        
-        # 3. 逐段处理
-        transcript = []
-        
-        for seg in segments:
-            start_ms, end_ms = seg
-            
-            # 提取片段
-            start_sample = int(start_ms / 1000 * sr)
-            end_sample = int(end_ms / 1000 * sr)
-            speech = speech_full[start_sample:end_sample]
-            
-            if len(speech) < 0.2 * sr:
-                continue
-            
-            # 保存临时片段
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as seg_tmp:
-                sf.write(seg_tmp.name, speech, sr)
-                seg_path = seg_tmp.name
-            
-            try:
-                # ASR
-                text = service.transcribe_segment(seg_path)
-                if not text:
-                    continue
-                
-                # 声纹
-                emb = service.extract_embedding(seg_path)
-                speaker = "未知"
-                score = 0.0
-                if emb is not None:
-                    speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
-                
-                transcript.append({
-                    "time": format_time(start_ms),
-                    "speaker": speaker,
-                    "confidence": round(score, 2),
-                    "text": text
-                })
-            finally:
-                if os.path.exists(seg_path):
-                    os.remove(seg_path)
-        
-        # 4. 生成 Markdown
+        # 生成 Markdown
+        # 模拟 export_markdown 的逻辑，但返回字符串
         md_lines = [
             "# 会议记录\n",
             f"- **日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
@@ -270,10 +219,14 @@ async def transcribe_meeting(
         
         current_speaker = None
         for item in transcript:
-            if item["speaker"] != current_speaker:
-                md_lines.append(f"\n**[{item['time']}] {item['speaker']}**:\n")
-                current_speaker = item["speaker"]
-            md_lines.append(f"> {item['text']}\n")
+            speaker = item["speaker"]
+            time_str = item["time"]
+            text = item["text"]
+            
+            if speaker != current_speaker:
+                md_lines.append(f"\n**[{time_str}] {speaker}**:\n")
+                current_speaker = speaker
+            md_lines.append(f"> {text}\n")
         
         markdown = "".join(md_lines)
         

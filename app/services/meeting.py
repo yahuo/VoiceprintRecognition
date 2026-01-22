@@ -86,32 +86,82 @@ def process_meeting(service: ModelService, audio_path: str,
             sf.write(tmp.name, speech, sr)
             tmp_path = tmp.name
         
-        try:
             # ASR (使用核心模块的方法)
-            text = service.transcribe_segment(tmp_path)
-            if not text:
-                continue
-            
-            # 声纹
-            emb = service.extract_embedding(tmp_path)
-            speaker = "未知"
-            score = 0.0
-            
-            if emb is not None:
-                speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
-            
-            transcript.append({
-                "time": format_time(start_ms),
-                "speaker": speaker,
-                "confidence": round(score, 2),
-                "text": text,
-                "start_ms": start_ms,
-                "end_ms": end_ms
-            })
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            try:
+                # 声纹
+                try:
+                    emb = service.extract_embedding(tmp_path)
+                except Exception:
+                    emb = None
+                
+                text = service.transcribe_segment(tmp_path)
+                if not text:
+                    continue
+                
+                speaker = "未知"
+                score = 0.0
+                
+                # 第一阶段：尝试匹配已注册声纹
+                if emb is not None:
+                    speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+                
+                segment_info = {
+                    "time": format_time(start_ms),
+                    "speaker": speaker,
+                    "confidence": round(score, 2),
+                    "text": text,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "embedding": emb  # 暂存 embedding 用于后续聚类
+                }
+                
+                transcript.append(segment_info)
+                
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
     
+    # 💥 第二阶段：对陌生人进行聚类 (Diarization)
+    from app.core import cluster_embeddings
+    
+    # 1. 收集所有"未知"且有声纹的片段
+    unknown_indices = []
+    unknown_embeddings = []
+    
+    for i, item in enumerate(transcript):
+        if item["speaker"] == "未知" and item["embedding"] is not None:
+            unknown_indices.append(i)
+            unknown_embeddings.append(item["embedding"])
+    
+    # 2. 如果未知片段足够多，执行聚类
+    if len(unknown_embeddings) >= 2:
+        print(f"\n检测到 {len(unknown_embeddings)} 个未知片段，正在进行聚类分析...")
+        try:
+            # 自动聚类
+            labels = cluster_embeddings(unknown_embeddings)
+            
+            # 3. 将聚类结果回填
+            cluster_map = {}  # label -> "陌生人 X"
+            next_stranger_id = 1
+            
+            for idx, label in zip(unknown_indices, labels):
+                if label not in cluster_map:
+                    cluster_map[label] = f"陌生人{next_stranger_id}"
+                    next_stranger_id += 1
+                
+                transcript[idx]["speaker"] = cluster_map[label]
+                transcript[idx]["confidence"] = 1.0  # 聚类结果置信度设为1
+                
+            print(f"✅ 成功分离出 {len(cluster_map)} 位陌生人")
+            
+        except Exception as e:
+            print(f"聚类失败: {e}")
+            
+    # 清理 embedding 数据 (不返回给前端)
+    for item in transcript:
+        if "embedding" in item:
+            del item["embedding"]
+            
     print("\n处理完成!")
     return transcript
 

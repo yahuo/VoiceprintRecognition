@@ -78,7 +78,7 @@ def load_voiceprint_embeddings() -> Dict[str, np.ndarray]:
     return embeddings
 
 
-# ========== 声纹匹配 ==========
+# ========== 声纹匹配与聚类 ==========
 
 def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
     """计算余弦相似度"""
@@ -122,6 +122,87 @@ def match_speaker(embedding: np.ndarray,
         return (best_name, best_score)
     else:
         return ("未知", best_score)
+
+
+def cluster_embeddings(embeddings: List[np.ndarray], 
+                       n_clusters: int = None, 
+                       min_clusters: int = 1, 
+                       max_clusters: int = 10) -> List[int]:
+    """
+    对一组声纹嵌入进行聚类 (用于区分陌生人)
+    
+    使用谱聚类 (Spectral Clustering)
+    
+    Args:
+        embeddings: 声纹向量列表
+        n_clusters: 指定聚类数量 (None 表示自动估计)
+        min_clusters: 最小聚类数
+        max_clusters: 最大聚类数
+    
+    Returns:
+        labels: 每个向量对应的类别标签 [0, 1, 0, 2...]
+    """
+    try:
+        from sklearn.cluster import SpectralClustering
+        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cossim
+    except ImportError:
+        print("警告: 未安装 scikit-learn，无法执行聚类。请运行 pip install scikit-learn")
+        return [0] * len(embeddings)
+
+    if not embeddings:
+        return []
+    
+    X = np.array(embeddings)
+    n_samples = X.shape[0]
+    
+    if n_samples < 2:
+        return [0] * n_samples
+        
+    # 如果指定了聚类数
+    if n_clusters:
+        clustering = SpectralClustering(n_clusters=n_clusters, 
+                                        affinity='cosine',
+                                        random_state=42).fit(X)
+        return clustering.labels_.tolist()
+    
+    # 自动估计聚类数 (Eigengap Heuristic)
+    # 计算相似度矩阵
+    similarity_matrix = sklearn_cossim(X)
+    # 强制将负值设为0 (谱聚类要求非负相似度)
+    similarity_matrix[similarity_matrix < 0] = 0
+    
+    # 构建拉普拉斯矩阵
+    degrees = np.sum(similarity_matrix, axis=1)
+    laplacian = np.diag(degrees) - similarity_matrix
+    
+    # 计算特征值
+    eigenvalues, _ = np.linalg.eig(laplacian)
+    eigenvalues = np.sort(eigenvalues)
+    
+    # 计算特征值间隙 (Eigengap)
+    max_gap = 0
+    best_k = min_clusters
+    
+    # 搜索最佳 K 值
+    limit = min(n_samples, max_clusters + 1)
+    for i in range(min_clusters, limit):
+        if i >= len(eigenvalues):
+            break
+        gap = abs(eigenvalues[i] - eigenvalues[i-1])
+        if gap > max_gap:
+            max_gap = gap
+            best_k = i
+            
+    # 限制 K 的范围
+    best_k = max(min_clusters, min(best_k, max_clusters, n_samples - 1))
+    
+    print(f"聚类分析: 自动估计说话人数为 {best_k}")
+    
+    clustering = SpectralClustering(n_clusters=best_k, 
+                                    affinity='precomputed',
+                                    random_state=42).fit(similarity_matrix)
+    
+    return clustering.labels_.tolist()
 
 
 # ========== 工具函数 ==========
