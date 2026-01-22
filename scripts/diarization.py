@@ -16,7 +16,8 @@ import os
 import sys
 
 # 添加 Fun-ASR 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Fun-ASR"))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
 
 from funasr import AutoModel
 
@@ -33,7 +34,7 @@ def create_model(device: str = "cpu"):
     model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
     
     # 获取 Fun-ASR 目录中的 model.py 路径
-    fun_asr_dir = os.path.join(os.path.dirname(__file__), "Fun-ASR")
+    fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
     model_py_path = os.path.join(fun_asr_dir, "model.py")
     
     # 使用 Fun-ASR-Nano 端到端大模型

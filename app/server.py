@@ -9,7 +9,8 @@
 
 from fastapi import FastAPI, UploadFile, File, Form, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
 import os
 import shutil
@@ -23,7 +24,7 @@ import librosa
 import soundfile as sf
 
 # 导入核心模块
-from core import (
+from .core import (
     CONFIG,
     VOICEPRINT_DB_DIR,
     VOICEPRINT_INDEX_FILE,
@@ -43,11 +44,21 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# 挂载静态文件
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/client")
+async def client():
+    return FileResponse(os.path.join(static_dir, "web_client.html"))
+
 # 允许跨域
+# 允许跨域
+# 恢复为通配符模式，方便各种 IP 访问
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=True, # 保持 True 以防万一前端需要
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -383,6 +394,7 @@ async def transcribe_meeting_stream(
             "Connection": "keep-alive",
         }
     )
+@app.websocket("/ws/meeting/live")
 async def websocket_live(websocket: WebSocket):
     """
     实时会议 WebSocket 接口

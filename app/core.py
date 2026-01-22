@@ -17,7 +17,9 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 
 # 添加 Fun-ASR 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Fun-ASR"))
+# 假设项目根目录为 app/../
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
 
 from funasr import AutoModel
 
@@ -36,7 +38,7 @@ CONFIG = {
 
 # ========== 声纹数据库路径 ==========
 
-VOICEPRINT_DB_DIR = os.path.join(os.path.dirname(__file__), "voiceprint_db")
+VOICEPRINT_DB_DIR = os.path.join(PROJECT_ROOT, "voiceprint_db")
 VOICEPRINT_INDEX_FILE = os.path.join(VOICEPRINT_DB_DIR, "index.json")
 
 
@@ -168,7 +170,7 @@ class ModelService:
         # 2. ASR 模型 (Fun-ASR-Nano)
         print("加载 ASR 模型 (Fun-ASR-Nano)...")
         model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
-        fun_asr_dir = os.path.join(os.path.dirname(__file__), "Fun-ASR")
+        fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
         model_py_path = os.path.join(fun_asr_dir, "model.py")
         
         self.asr_model = AutoModel(

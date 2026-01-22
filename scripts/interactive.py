@@ -13,7 +13,8 @@ import sys
 import argparse
 
 # 添加 Fun-ASR 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Fun-ASR"))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
 
 from funasr import AutoModel
 
@@ -23,7 +24,7 @@ def create_model(device: str = "cpu"):
     print("正在加载模型（首次加载需要一些时间）...")
     
     model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
-    fun_asr_dir = os.path.join(os.path.dirname(__file__), "Fun-ASR")
+    fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
     model_py_path = os.path.join(fun_asr_dir, "model.py")
     
     model = AutoModel(

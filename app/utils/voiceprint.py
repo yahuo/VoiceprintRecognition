@@ -5,59 +5,40 @@
 
 使用方法:
     # 注册声纹
-    python voiceprint.py register --name "张三" --audio zhangsan.wav
+    python -m app.utils.voiceprint register --name "张三" --audio zhangsan.wav
     
     # 识别说话人
-    python voiceprint.py identify --audio unknown.wav
+    python -m app.utils.voiceprint identify --audio unknown.wav
     
     # 列出已注册的声纹
-    python voiceprint.py list
+    python -m app.utils.voiceprint list
     
     # 删除声纹
-    python voiceprint.py delete --name "张三"
+    python -m app.utils.voiceprint delete --name "张三"
 """
 
 import argparse
 import os
 import sys
-import json
 import numpy as np
 from typing import Dict, List, Tuple
 
-# 添加 Fun-ASR 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Fun-ASR"))
+# 导入核心模块 (自动配置 Fun-ASR 路径)
+from app.core import (
+    VOICEPRINT_DB_DIR,
+    VOICEPRINT_INDEX_FILE,
+    load_voiceprint_index,
+    save_voiceprint_index,
+    load_voiceprint_embeddings,
+    cosine_similarity,
+    ensure_db_dir,
+)
 
 from funasr import AutoModel
 
 
-# 声纹数据库目录
-VOICEPRINT_DB_DIR = os.path.join(os.path.dirname(__file__), "voiceprint_db")
-VOICEPRINT_INDEX_FILE = os.path.join(VOICEPRINT_DB_DIR, "index.json")
-
-
-def ensure_db_dir():
-    """确保声纹数据库目录存在"""
-    if not os.path.exists(VOICEPRINT_DB_DIR):
-        os.makedirs(VOICEPRINT_DB_DIR)
-
-
-def load_index() -> Dict[str, str]:
-    """加载声纹索引（name -> embedding_file）"""
-    if os.path.exists(VOICEPRINT_INDEX_FILE):
-        with open(VOICEPRINT_INDEX_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_index(index: Dict[str, str]):
-    """保存声纹索引"""
-    ensure_db_dir()
-    with open(VOICEPRINT_INDEX_FILE, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
-
-
 def create_model(device: str = "cpu"):
-    """创建说话人验证模型"""
+    """创建说话人验证模型 (仅加载 CAM++)"""
     print("正在加载声纹模型...")
     
     model = AutoModel(
@@ -86,17 +67,6 @@ def extract_embedding(model, audio_path: str) -> np.ndarray:
     raise ValueError(f"无法从音频提取声纹特征: {audio_path}")
 
 
-def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
-    """计算余弦相似度"""
-    # 展平数组确保是 1D
-    emb1 = emb1.flatten()
-    emb2 = emb2.flatten()
-    
-    emb1_norm = emb1 / np.linalg.norm(emb1)
-    emb2_norm = emb2 / np.linalg.norm(emb2)
-    return float(np.dot(emb1_norm, emb2_norm))
-
-
 def register_voiceprint(model, name: str, audio_path: str):
     """注册声纹"""
     
@@ -113,9 +83,9 @@ def register_voiceprint(model, name: str, audio_path: str):
     np.save(embedding_file, embedding)
     
     # 更新索引
-    index = load_index()
+    index = load_voiceprint_index()
     index[name] = embedding_file
-    save_index(index)
+    save_voiceprint_index(index)
     
     print(f"✅ 声纹注册成功！")
     print(f"   声纹维度: {embedding.shape}")
@@ -134,7 +104,7 @@ def identify_speaker(model, audio_path: str, threshold: float = 0.5) -> List[Tup
     print("-" * 50)
     
     # 加载索引
-    index = load_index()
+    index = load_voiceprint_index()
     
     if not index:
         print("⚠️ 声纹数据库为空，请先注册声纹")
@@ -160,7 +130,7 @@ def identify_speaker(model, audio_path: str, threshold: float = 0.5) -> List[Tup
 def list_voiceprints():
     """列出所有已注册的声纹"""
     
-    index = load_index()
+    index = load_voiceprint_index()
     
     print("\n【已注册的声纹】")
     print("=" * 50)
@@ -179,7 +149,7 @@ def list_voiceprints():
 def delete_voiceprint(name: str):
     """删除声纹"""
     
-    index = load_index()
+    index = load_voiceprint_index()
     
     if name not in index:
         print(f"❌ 未找到声纹: {name}")
@@ -192,7 +162,7 @@ def delete_voiceprint(name: str):
     
     # 更新索引
     del index[name]
-    save_index(index)
+    save_voiceprint_index(index)
     
     print(f"✅ 已删除声纹: {name}")
 

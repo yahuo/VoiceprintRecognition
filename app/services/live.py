@@ -17,7 +17,7 @@ import tempfile
 from datetime import datetime
 
 # 导入核心模块
-from core import (
+from app.core import (
     CONFIG,
     ModelService,
     SpeakerTracker,

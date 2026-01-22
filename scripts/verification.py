@@ -13,7 +13,8 @@ import sys
 import numpy as np
 
 # 添加 Fun-ASR 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "Fun-ASR"))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
 
 from funasr import AutoModel
 

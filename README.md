@@ -47,27 +47,27 @@ chmod +x run.sh
 
 #### 基础语音识别 + 说话人分离
 ```bash
-python diarization.py --audio samples/test.wav
+python scripts/diarization.py --audio samples/test.wav
 
 # 指定语言和设备
-python diarization.py --audio test.wav --language 英文 --device cuda:0
+python scripts/diarization.py --audio test.wav --language 英文 --device cuda:0
 ```
 
 #### 说话人验证（比对两段音频是否同一人）
 ```bash
-python verification.py --audio1 speaker1.wav --audio2 speaker2.wav
+python scripts/verification.py --audio1 speaker1.wav --audio2 speaker2.wav
 ```
 
 #### 声纹注册与识别
 ```bash
 # 注册声纹
-python voiceprint.py register --name "张三" --audio zhangsan.wav
+python -m app.utils.voiceprint register --name "张三" --audio zhangsan.wav
 
 # 识别说话人
-python voiceprint.py identify --audio unknown.wav
+python -m app.utils.voiceprint identify --audio unknown.wav
 
 # 列出已注册声纹
-python voiceprint.py list
+python -m app.utils.voiceprint list
 ```
 
 ## 声纹注册指南
@@ -118,26 +118,45 @@ graph TD
 | **ASR** | `Fun-ASR-Nano-2512` | 语音转文字 | **800M 参数 LLM**，支持方言，语义理解强，标点自然，口语规整能力强 |
 | **Speaker** | `speech_campplus_sv` | 声纹识别 | 业界领先的声纹模型，准确率高，支持极短音频特征提取 |
 
+## Web 界面
+
+启动服务端后，访问：
+👉 **http://localhost:8000/client**
+
+提供以下功能：
+1. 实时会议录音与转写
+2. 离线会议音频上传与处理（流式反馈）
+3. 声纹注册与管理
+
+## 启动服务端
+
+```bash
+# 启动 API 服务 (包含 Web 界面)
+python -m app.server
+```
+
 ## 项目结构
 
 ```
 VoiceprintRecognition/
-├── README.md                      # 项目说明
+├── app/                           # 📦 应用代码
+│   ├── core.py                    # 🧠 核心模块（ModelService + 配置）
+│   ├── server.py                  # 🌐 服务端 API (FastAPI)
+│   ├── services/                  # �️ 业务服务
+│   │   ├── live.py                # 🔴 实时会议逻辑
+│   │   └── meeting.py             # 📝 会议转写逻辑
+│   └── utils/                     # ⚙️ 工具库
+│       └── voiceprint.py          # 👤 声纹管理工具
+├── scripts/                       # 🧪 开发调试脚本
+│   ├── interactive.py             # 交互式识别
+│   └── ...
+├── static/                        # 🖼️ 静态资源
+│   └── web_client.html            # Web 客户端
+├── Fun-ASR/                       # Fun-ASR 官方仓库 (Submodule)
+├── voiceprint_db/                 # 📂 声纹数据库 (自动创建)
+├── run.sh                         # 🚀 便捷脚本 (CLI入口)
 ├── requirements.txt               # 依赖列表
-├── Fun-ASR/                       # Fun-ASR 官方仓库（提供 model.py）
-├── run.sh                         # 便捷脚本
-├── core.py                        # 🧠 核心模块（ModelService + 配置）
-├── server.py                      # 🌐 服务端 API (FastAPI)
-├── web_client.html                # 🖥️ Web 客户端（实时录音/上传会议/声纹管理）
-├── Dockerfile                     # 🐳 容器化构建文件
-├── meeting.py                     # 📝 离线会议记录生成工具
-├── live.py                        # 🔴 实时会议记录工具
-├── voiceprint.py                  # 👤 声纹注册管理工具
-├── diarization.py                 # (Dev) 说话人分离实验脚本
-├── verification.py                # (Dev) 说话人验证实验脚本
-├── interactive.py                 # (Dev) 交互式识别脚本
-├── voiceprint_db/                 # 声纹数据库（自动创建）
-└── samples/                       # 测试音频
+└── Dockerfile                     # 🐳 容器化构建文件
 ```
 
 ## 模型说明

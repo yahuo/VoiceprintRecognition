@@ -37,7 +37,7 @@ case $COMMAND in
             echo "用法: ./run.sh register [姓名] [音频路径]"
             exit 1
         fi
-        python voiceprint.py register --name "$2" --audio "$3"
+        python -m app.utils.voiceprint register --name "$2" --audio "$3"
         ;;
         
     meeting)
@@ -54,18 +54,18 @@ case $COMMAND in
         echo "🎙️  正在处理会议录音: $AUDIO_FILE"
         echo "📝 输出文件: $OUTPUT_FILE"
         
-        python meeting.py --audio "$AUDIO_FILE" --output "$OUTPUT_FILE"
+        python -m app.services.meeting --audio "$AUDIO_FILE" --output "$OUTPUT_FILE"
         ;;
         
     live)
         OUTPUT_FILE=${2:-"live_meeting.md"}
         echo "🔴 启动实时会议记录..."
         echo "📝 输出文件: $OUTPUT_FILE"
-        python live.py --output "$OUTPUT_FILE"
+        python -m app.services.live --output "$OUTPUT_FILE"
         ;;
         
     list)
-        python voiceprint.py list
+        python -m app.utils.voiceprint list
         ;;
         
     identify)
@@ -73,7 +73,7 @@ case $COMMAND in
             echo "❌ 错误: 请提供音频路径"
             exit 1
         fi
-        python voiceprint.py identify --audio "$2"
+        python -m app.utils.voiceprint identify --audio "$2"
         ;;
         
     delete)
@@ -82,7 +82,7 @@ case $COMMAND in
             echo "用法: ./run.sh delete [姓名]"
             exit 1
         fi
-        python voiceprint.py delete --name "$2"
+        python -m app.utils.voiceprint delete --name "$2"
         ;;
         
     clean)

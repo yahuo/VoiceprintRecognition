@@ -37,4 +37,5 @@ EXPOSE 8000
 VOLUME /app/voiceprint_db
 
 # 7. 启动服务
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# 7. 启动服务
+CMD ["python", "-m", "app.server"]
