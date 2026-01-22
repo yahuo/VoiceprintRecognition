@@ -170,11 +170,13 @@ def cluster_embeddings(embeddings: List[np.ndarray],
     # 为了避免过度合并 (全是陌生人1)，我们设定一个较严的距离阈值
     # distance_threshold 越小，越容易拆分成多类
     # 假设相似度 > 0.4 才合并，则 distance < 0.6
+    # 用户反馈分太细 (Over-segmentation)，说明阈值太严 (0.6)，导致同一人被拆分
+    # 调整策略：降低相似度要求 (例如 > 0.3)，即提高距离阈值 (例如 < 0.7)
     
-    similarity_threshold = max(0.4, CONFIG["speaker_threshold"] + 0.1)
-    dist_threshold = 1.0 - similarity_threshold
+    similarity_threshold = CONFIG["speaker_threshold"]  # 0.3
+    dist_threshold = 1.0 - similarity_threshold       # 0.7
     
-    # 确保阈值合理
+    # 确保阈值合理 (避免过于宽松导致所有人变成 1 个)
     dist_threshold = max(0.1, min(dist_threshold, 0.9))
     
     print(f"聚类分析: 使用层次聚类，距离阈值={dist_threshold:.2f} (相似度阈值={similarity_threshold:.2f})")
