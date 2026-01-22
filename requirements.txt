@@ -1,0 +1,28 @@
+# FunASR 声纹识别依赖
+# Requirements: python>=3.8, torch>=1.13
+
+# 核心依赖
+funasr>=1.0.0
+torch>=1.13
+torchaudio
+
+# 模型下载支持
+modelscope>=1.9.0
+huggingface_hub
+
+# 音频处理
+numpy>=1.20.0
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# 其他依赖
+transformers
+
+# 服务端 (FastAPI)
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.6
+websockets>=10.0
+
+# 实时录音
+pyaudio>=0.2.13

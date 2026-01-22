@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 模型缓存 (太大，不提交)
+*.pt
+*.bin
+*.onnx
+*.pth
+
+# 声纹数据库 (用户私有数据)
+voiceprint_db/
+
+# 临时文件
+*.tmp
+*.wav
+*.log
+live_meeting.md
+*_notes.md
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Gemini Antigravity
+.gemini/
+
+# 测试音频 (可选择性提交)
+samples/
