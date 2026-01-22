@@ -143,7 +143,7 @@ def cluster_embeddings(embeddings: List[np.ndarray],
         labels: 每个向量对应的类别标签 [0, 1, 0, 2...]
     """
     try:
-        from sklearn.cluster import SpectralClustering
+        from sklearn.cluster import AgglomerativeClustering
         from sklearn.metrics.pairwise import cosine_similarity as sklearn_cossim
     except ImportError:
         print("警告: 未安装 scikit-learn，无法执行聚类。请运行 pip install scikit-learn")
@@ -160,47 +160,40 @@ def cluster_embeddings(embeddings: List[np.ndarray],
         
     # 如果指定了聚类数
     if n_clusters:
-        clustering = SpectralClustering(n_clusters=n_clusters, 
-                                        affinity='cosine',
-                                        random_state=42).fit(X)
+        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(X)
         return clustering.labels_.tolist()
     
-    # 自动估计聚类数 (Eigengap Heuristic)
-    # 计算相似度矩阵
+    # 自动聚类 (Hierarchical Clustering with Threshold)
+    # 使用余弦距离 = 1 - 余弦相似度
+    # 我们的认证阈值是 CONFIG["speaker_threshold"] (默认 0.3)
+    # 即使相似度 > 0.3 认为是同一人。
+    # 为了避免过度合并 (全是陌生人1)，我们设定一个较严的距离阈值
+    # distance_threshold 越小，越容易拆分成多类
+    # 假设相似度 > 0.4 才合并，则 distance < 0.6
+    
+    similarity_threshold = max(0.4, CONFIG["speaker_threshold"] + 0.1)
+    dist_threshold = 1.0 - similarity_threshold
+    
+    # 确保阈值合理
+    dist_threshold = max(0.1, min(dist_threshold, 0.9))
+    
+    print(f"聚类分析: 使用层次聚类，距离阈值={dist_threshold:.2f} (相似度阈值={similarity_threshold:.2f})")
+    
+    # AgglomerativeClustering 默认用的是欧氏距离，但我们的特征是归一化的，所以欧氏距离和余弦距离单调相关
+    # 但为了严谨，我们先计算 Cosine Distance Matrix
     similarity_matrix = sklearn_cossim(X)
-    # 强制将负值设为0 (谱聚类要求非负相似度)
-    similarity_matrix[similarity_matrix < 0] = 0
+    distance_matrix = 1 - similarity_matrix
+    distance_matrix[distance_matrix < 0] = 0
     
-    # 构建拉普拉斯矩阵
-    degrees = np.sum(similarity_matrix, axis=1)
-    laplacian = np.diag(degrees) - similarity_matrix
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        metric='precomputed',
+        linkage='average', # 平均距离，比较稳健
+        distance_threshold=dist_threshold
+    ).fit(distance_matrix)
     
-    # 计算特征值
-    eigenvalues, _ = np.linalg.eig(laplacian)
-    eigenvalues = np.sort(eigenvalues)
-    
-    # 计算特征值间隙 (Eigengap)
-    max_gap = 0
-    best_k = min_clusters
-    
-    # 搜索最佳 K 值
-    limit = min(n_samples, max_clusters + 1)
-    for i in range(min_clusters, limit):
-        if i >= len(eigenvalues):
-            break
-        gap = abs(eigenvalues[i] - eigenvalues[i-1])
-        if gap > max_gap:
-            max_gap = gap
-            best_k = i
-            
-    # 限制 K 的范围
-    best_k = max(min_clusters, min(best_k, max_clusters, n_samples - 1))
-    
-    print(f"聚类分析: 自动估计说话人数为 {best_k}")
-    
-    clustering = SpectralClustering(n_clusters=best_k, 
-                                    affinity='precomputed',
-                                    random_state=42).fit(similarity_matrix)
+    n_cl = clustering.n_clusters_
+    print(f"聚类结果: 发现 {n_cl} 位陌生人")
     
     return clustering.labels_.tolist()
 
