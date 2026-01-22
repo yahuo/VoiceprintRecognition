@@ -179,7 +179,47 @@ VoiceprintRecognition/
 1. 支持的音频格式：WAV, MP3, FLAC, M4A 等
 2. 推荐采样率：16kHz
 3. 首次运行需要下载模型（约 2-3GB），请确保网络畅通
-4. GPU 可加速处理，使用 `--device cuda:0`
+4. GPU 可加速处理，使用 `--device cuda:0` (Linux/Windows) 或 `--device mps` (macOS Native)
+
+## 🐳 Docker 部署
+
+### 1. 构建镜像
+
+构建过程会自动下载模型（Model Baking），因此构建耗时较长，但运行时的容器是即开即用的。
+
+```bash
+docker build -t voiceprint-server .
+```
+
+### 2. 启动服务
+
+**Linux (支持 GPU加速):**
+需要安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
+
+```bash
+docker run -d \
+  --gpus all \
+  -p 8000:8000 \
+  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  --name vp-server \
+  voiceprint-server \
+  python -m app.server
+```
+
+**macOS / 常规 CPU 模式:**
+
+```bash
+docker run -d \
+  -p 8000:8000 \
+  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  --name vp-server \
+  voiceprint-server \
+  python -m app.server
+```
+
+> **⚠️ macOS 注意事项**: 
+> Docker Desktop on Mac 目前无法直接调用 M1/M2/M3 芯片的 GPU (MPS) 进行加速。
+> 如果在 Mac 上需要高性能推理，建议直接在本地环境运行（使用 `--device mps`）。
 
 ## 参考资料
 
