@@ -58,3 +58,6 @@ live_meeting.md
 
 # 测试音频 (可选择性提交)
 samples/
+
+# 环境变量 (包含敏感 token)
+.env

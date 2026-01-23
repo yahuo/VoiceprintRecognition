@@ -27,3 +27,7 @@ websockets>=10.0
 
 # 实时录音
 pyaudio>=0.2.13
+
+# 说话人分离 (Speaker Diarization)
+pyannote.audio>=3.1.0
+python-dotenv>=1.0.0

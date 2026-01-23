@@ -143,7 +143,7 @@ def cluster_embeddings(embeddings: List[np.ndarray],
         labels: 每个向量对应的类别标签 [0, 1, 0, 2...]
     """
     try:
-        from sklearn.cluster import AgglomerativeClustering
+        from sklearn.cluster import DBSCAN
         from sklearn.metrics.pairwise import cosine_similarity as sklearn_cossim
     except ImportError:
         print("警告: 未安装 scikit-learn，无法执行聚类。请运行 pip install scikit-learn")
@@ -158,46 +158,50 @@ def cluster_embeddings(embeddings: List[np.ndarray],
     if n_samples < 2:
         return [0] * n_samples
         
-    # 如果指定了聚类数
+    # 如果指定了聚类数，使用层次聚类
     if n_clusters:
+        from sklearn.cluster import AgglomerativeClustering
         clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(X)
         return clustering.labels_.tolist()
     
-    # 自动聚类 (Hierarchical Clustering with Threshold)
-    # 使用余弦距离 = 1 - 余弦相似度
-    # 我们的认证阈值是 CONFIG["speaker_threshold"] (默认 0.3)
-    # 即使相似度 > 0.3 认为是同一人。
-    # 为了避免过度合并 (全是陌生人1)，我们设定一个较严的距离阈值
-    # distance_threshold 越小，越容易拆分成多类
-    # 假设相似度 > 0.4 才合并，则 distance < 0.6
-    # 用户反馈分太细 (Over-segmentation)，说明阈值太严 (0.6)，导致同一人被拆分
-    # 调整策略：降低相似度要求 (例如 > 0.3)，即提高距离阈值 (例如 < 0.7)
+    # ========== 使用 DBSCAN 自适应聚类 ==========
+    # DBSCAN 的优势：
+    # 1. 不需要预设聚类数
+    # 2. 能自动识别噪声点（异常片段）
+    # 3. 基于密度，更适合声纹这种"簇内紧密"的数据
     
-    similarity_threshold = CONFIG["speaker_threshold"]  # 0.3
-    dist_threshold = 1.0 - similarity_threshold       # 0.7
-    
-    # 确保阈值合理 (避免过于宽松导致所有人变成 1 个)
-    dist_threshold = max(0.1, min(dist_threshold, 0.9))
-    
-    print(f"聚类分析: 使用层次聚类，距离阈值={dist_threshold:.2f} (相似度阈值={similarity_threshold:.2f})")
-    
-    # AgglomerativeClustering 默认用的是欧氏距离，但我们的特征是归一化的，所以欧氏距离和余弦距离单调相关
-    # 但为了严谨，我们先计算 Cosine Distance Matrix
+    # 计算余弦距离矩阵
     similarity_matrix = sklearn_cossim(X)
     distance_matrix = 1 - similarity_matrix
     distance_matrix[distance_matrix < 0] = 0
     
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        metric='precomputed',
-        linkage='average', # 平均距离，比较稳健
-        distance_threshold=dist_threshold
+    # DBSCAN 参数:
+    # - eps: 邻域半径 (距离阈值)，余弦距离通常在 0~2 范围
+    #   0.65 表示相似度 > 0.35 的样本会被归为同一类
+    # - min_samples: 形成一个簇的最小样本数，会议中设为 1 允许单句成簇
+    eps = 0.50  # 更严格的阈值，相似度需 > 0.5 才合并
+    
+    print(f"聚类分析: 使用 DBSCAN，eps={eps:.2f} (相似度阈值≈{1-eps:.2f})")
+    
+    clustering = DBSCAN(
+        eps=eps,
+        min_samples=1,  # 允许单个样本成簇
+        metric='precomputed'
     ).fit(distance_matrix)
     
-    n_cl = clustering.n_clusters_
+    labels = clustering.labels_.tolist()
+    
+    # DBSCAN 会把噪声标记为 -1，我们需要把它们分配到新的类
+    max_label = max(labels) if labels else -1
+    for i, label in enumerate(labels):
+        if label == -1:
+            max_label += 1
+            labels[i] = max_label
+    
+    n_cl = len(set(labels))
     print(f"聚类结果: 发现 {n_cl} 位陌生人")
     
-    return clustering.labels_.tolist()
+    return labels
 
 
 # ========== 工具函数 ==========
@@ -219,8 +223,10 @@ class ModelService:
         self.vad_model = None
         self.asr_model = None
         self.spk_model = None
+        self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
         self.is_loaded = False
+
     
     def load_models(self, device: str = "cpu", load_vad: bool = True):
         """
@@ -276,6 +282,114 @@ class ModelService:
         self.registered_embeddings = load_voiceprint_embeddings()
         print(f"已加载 {len(self.registered_embeddings)} 个注册声纹")
     
+    def load_diarization_model(self, device: str = "cpu"):
+        """
+        加载 pyannote 说话人分离模型
+        
+        需要设置环境变量 HF_TOKEN 或在 .env 文件中配置
+        """
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()  # 加载 .env 文件
+            
+            hf_token = os.environ.get("HF_TOKEN")
+            if not hf_token:
+                print("⚠️ 未找到 HF_TOKEN，跳过 diarization 模型加载")
+                return False
+            
+            print("加载 pyannote 说话人分离模型...")
+            
+            # PyTorch 2.6+ 兼容性修复: monkey-patch torch.load 强制 weights_only=False
+            import torch
+            _original_torch_load = torch.load
+            def _patched_torch_load(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return _original_torch_load(*args, **kwargs)
+            torch.load = _patched_torch_load
+            
+            try:
+                from pyannote.audio import Pipeline
+                
+                self.diarization_pipeline = Pipeline.from_pretrained(
+                    "pyannote/speaker-diarization-community-1",
+                    token=hf_token
+                )
+                
+                # 将模型移动到指定设备
+                if device.startswith("cuda") or device == "mps":
+                    torch_device = torch.device(device)
+                    self.diarization_pipeline.to(torch_device)
+                
+                print("✅ Diarization 模型加载完成！")
+                return True
+            finally:
+                # 恢复原始的 torch.load
+                torch.load = _original_torch_load
+            
+        except Exception as e:
+            print(f"⚠️ Diarization 模型加载失败: {e}")
+            return False
+    
+    def diarize(self, audio_path: str) -> list:
+        """
+        使用 pyannote 进行说话人分离
+        
+        Args:
+            audio_path: 音频文件路径
+        
+        Returns:
+            分段列表 [(start_ms, end_ms, speaker_id), ...]
+        """
+        if self.diarization_pipeline is None:
+            print("⚠️ Diarization 模型未加载，回退到 VAD 分段")
+            return None
+        
+        try:
+            print("正在进行说话人分离...")
+            
+            # 预处理音频：统一转换为 16kHz WAV 格式，避免采样率不匹配问题
+            import librosa
+            import soundfile as sf
+            import tempfile
+            
+            audio, sr = librosa.load(audio_path, sr=16000)
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                sf.write(tmp.name, audio, 16000)
+                processed_audio_path = tmp.name
+            
+            try:
+                output = self.diarization_pipeline(processed_audio_path)
+                
+                # pyannote 4.0 返回 DiarizeOutput 对象，需要访问 .speaker_diarization
+                if hasattr(output, 'speaker_diarization'):
+                    diarization = output.speaker_diarization
+                else:
+                    # 兼容旧版本，直接使用输出
+                    diarization = output
+                
+                segments = []
+                for turn, _, speaker in diarization.itertracks(yield_label=True):
+                    start_ms = int(turn.start * 1000)
+                    end_ms = int(turn.end * 1000)
+                    segments.append((start_ms, end_ms, speaker))
+                
+                # 统计说话人数量
+                speakers = set(seg[2] for seg in segments)
+                print(f"✅ 说话人分离完成: 检测到 {len(speakers)} 位说话人，{len(segments)} 个片段")
+                
+                return segments
+            finally:
+                # 清理临时文件
+                if os.path.exists(processed_audio_path):
+                    os.unlink(processed_audio_path)
+            
+        except Exception as e:
+            print(f"说话人分离失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    
     def extract_embedding(self, audio_path: str) -> Optional[np.ndarray]:
         """从音频文件提取声纹"""
         try:
@@ -283,6 +397,10 @@ class ModelService:
             if res and len(res) > 0:
                 emb = res[0].get("spk_embedding", None)
                 if emb is not None:
+                    # 处理 MPS/CUDA tensor: 先转移到 CPU 再转 numpy
+                    import torch
+                    if isinstance(emb, torch.Tensor):
+                        emb = emb.cpu().numpy()
                     return np.array(emb).flatten()
         except Exception as e:
             print(f"声纹提取失败: {e}")

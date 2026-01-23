@@ -67,6 +67,7 @@ app.add_middleware(
 # ========== 全局服务实例 ==========
 
 service = ModelService()
+DEVICE = "cpu"  # 默认设备，可通过命令行参数修改
 
 
 # ========== 生命周期 ==========
@@ -75,7 +76,9 @@ service = ModelService()
 async def startup_event():
     """服务启动时加载模型"""
     print("正在初始化服务端模型...")
-    service.load_models(device="cpu", load_vad=True)
+    service.load_models(device=DEVICE, load_vad=True)
+    # 加载 pyannote diarization 模型 (可选)
+    service.load_diarization_model(device=DEVICE)
 
 
 # ========== API 端点 ==========
@@ -270,67 +273,210 @@ async def transcribe_meeting_stream(
     
     async def generate():
         try:
-            # 1. VAD 切分
-            segments = service.vad_segment(audio_path)
-            
-            if not segments:
-                dur = librosa.get_duration(filename=audio_path)
-                dur_ms = int(dur * 1000)
-                segments = [[t, min(t+10000, dur_ms)] for t in range(0, dur_ms, 10000)]
-            
-            # 发送进度信息
-            yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(segments)})}\n\n"
-            
-            # 2. 读取音频
+            # 读取音频
             speech_full, sr = librosa.load(audio_path, sr=16000)
             
-            # 3. 逐段处理并流式输出
-            for i, seg in enumerate(segments):
-                start_ms, end_ms = seg
+            # ========== 尝试使用 pyannote diarization ==========
+            print(f"🔍 尝试 pyannote diarization, pipeline loaded: {service.diarization_pipeline is not None}")
+            diarization_segments = service.diarize(audio_path)
+            print(f"🔍 diarization 结果: {diarization_segments is not None}, 片段数: {len(diarization_segments) if diarization_segments else 0}")
+            
+            if diarization_segments and len(diarization_segments) > 0:
+                # 使用 pyannote 分段
+                yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
                 
-                # 提取片段
-                start_sample = int(start_ms / 1000 * sr)
-                end_sample = int(end_ms / 1000 * sr)
-                speech = speech_full[start_sample:end_sample]
+                # 建立 pyannote speaker_id -> 最终说话人名 的映射
+                speaker_mapping = {}
+                stranger_counter = 0
                 
-                if len(speech) < 0.2 * sr:
-                    continue
-                
-                # 保存临时片段
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as seg_tmp:
-                    sf.write(seg_tmp.name, speech, sr)
-                    seg_path = seg_tmp.name
-                
-                try:
-                    # ASR
-                    text = service.transcribe_segment(seg_path)
-                    if not text:
+                for i, (start_ms, end_ms, pyannote_speaker) in enumerate(diarization_segments):
+                    # 提取片段
+                    start_sample = int(start_ms / 1000 * sr)
+                    end_sample = int(end_ms / 1000 * sr)
+                    speech = speech_full[start_sample:end_sample]
+                    
+                    if len(speech) < 0.2 * sr:
                         continue
                     
-                    # 声纹
-                    emb = service.extract_embedding(seg_path)
-                    speaker = "未知"
-                    score = 0.0
-                    if emb is not None:
-                        speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+                    # 保存临时片段
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as seg_tmp:
+                        sf.write(seg_tmp.name, speech, sr)
+                        seg_path = seg_tmp.name
                     
-                    # 立即发送结果
-                    result = {
-                        "type": "segment",
-                        "index": i + 1,
-                        "time": format_time(start_ms),
-                        "speaker": speaker,
-                        "confidence": round(score, 2),
-                        "text": text
-                    }
-                    yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                    try:
+                        # ASR
+                        text = service.transcribe_segment(seg_path)
+                        if not text:
+                            continue
+                        
+                        # 确定说话人
+                        if pyannote_speaker in speaker_mapping:
+                            speaker = speaker_mapping[pyannote_speaker]
+                            confidence = 1.0
+                        else:
+                            # 首次遇到这个说话人，尝试匹配已注册声纹
+                            try:
+                                emb = service.extract_embedding(seg_path)
+                                if emb is not None:
+                                    matched_name, score = match_speaker(emb, service.registered_embeddings, threshold)
+                                    if matched_name != "未知":
+                                        speaker_mapping[pyannote_speaker] = matched_name
+                                        speaker = matched_name
+                                        confidence = score
+                                    else:
+                                        stranger_counter += 1
+                                        stranger_name = f"陌生人{stranger_counter}"
+                                        speaker_mapping[pyannote_speaker] = stranger_name
+                                        speaker = stranger_name
+                                        confidence = 1.0
+                                else:
+                                    stranger_counter += 1
+                                    stranger_name = f"陌生人{stranger_counter}"
+                                    speaker_mapping[pyannote_speaker] = stranger_name
+                                    speaker = stranger_name
+                                    confidence = 1.0
+                            except Exception:
+                                stranger_counter += 1
+                                stranger_name = f"陌生人{stranger_counter}"
+                                speaker_mapping[pyannote_speaker] = stranger_name
+                                speaker = stranger_name
+                                confidence = 1.0
+                        
+                        # 发送结果
+                        result = {
+                            "type": "segment",
+                            "index": i,
+                            "time": format_time(start_ms),
+                            "speaker": speaker,
+                            "confidence": round(confidence, 2),
+                            "text": text
+                        }
+                        yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                        
+                    finally:
+                        if os.path.exists(seg_path):
+                            os.remove(seg_path)
                     
-                finally:
-                    if os.path.exists(seg_path):
-                        os.remove(seg_path)
+                    await asyncio.sleep(0)
                 
-                # 让出控制权，避免阻塞
-                await asyncio.sleep(0)
+            else:
+                # ========== Fallback: VAD + DBSCAN ==========
+                segments = service.vad_segment(audio_path)
+                
+                if not segments:
+                    dur = librosa.get_duration(filename=audio_path)
+                    dur_ms = int(dur * 1000)
+                    segments = [[t, min(t+10000, dur_ms)] for t in range(0, dur_ms, 10000)]
+                
+                yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(segments), 'method': 'vad'})}\n\n"
+                
+                full_transcript = []
+                
+                for i, seg in enumerate(segments):
+                    start_ms, end_ms = seg
+                    
+                    start_sample = int(start_ms / 1000 * sr)
+                    end_sample = int(end_ms / 1000 * sr)
+                    speech = speech_full[start_sample:end_sample]
+                    
+                    if len(speech) < 0.2 * sr:
+                        continue
+                    
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as seg_tmp:
+                        sf.write(seg_tmp.name, speech, sr)
+                        seg_path = seg_tmp.name
+                    
+                    try:
+                        text = service.transcribe_segment(seg_path)
+                        if not text:
+                            continue
+                        
+                        emb = service.extract_embedding(seg_path)
+                        speaker = "未知"
+                        score = 0.0
+                        if emb is not None:
+                            speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+                        
+                        result = {
+                            "type": "segment",
+                            "index": len(full_transcript),
+                            "time": format_time(start_ms),
+                            "speaker": speaker,
+                            "confidence": round(score, 2),
+                            "text": text
+                        }
+                        yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                        
+                        full_transcript.append({
+                            "index": len(full_transcript),
+                            "speaker": speaker,
+                            "embedding": emb
+                        })
+                        
+                    finally:
+                        if os.path.exists(seg_path):
+                            os.remove(seg_path)
+                    
+                    await asyncio.sleep(0)
+                
+                # 如果使用了 pyannote，不需要再进行 DBSCAN 聚类，直接结束
+                if diarization_segments and len(diarization_segments) > 0:
+                    print("✅ Pyannote 处理完成，跳过后续 DBSCAN 聚类")
+                    yield f"data: {json_module.dumps({'type': 'done'})}\n\n"
+                    return
+
+                # =========================================================
+                # Fallback: DBSCAN 聚类 (仅当 pyannote 失败或未使用时执行)
+                # =========================================================
+                # 注意：目前的流式接口如果 pyannote 失败，可能无法收集到 full_transcript
+                # 因为上面的循环是在 diarization_segments 上进行的。
+                # 如果未来需要支持 VAD Fallback，需要在这里补充 VAD 逻辑。
+                
+                print("⚠️ Pyannote 未产出结果，无法进行流式处理")
+                # 发送错误或空结果
+                yield f"data: {json_module.dumps({'type': 'error', 'message': 'Diarization failed'})}\n\n"
+                return
+
+                # 下面的代码是旧的 DBSCAN 逻辑，目前保留作为参考，
+                # 但由于上面的 return，实际不会执行。如果未来恢复 VAD Fallback，可以复用。
+                """
+                print("流式处理结束，开始尝试聚类...")
+                from app.core import cluster_embeddings
+                
+                unknown_indices = []
+                unknown_embeddings = []
+                
+                for item in full_transcript:
+                    if item["speaker"] == "未知" and item["embedding"] is not None:
+                        unknown_indices.append(item["index"])
+                        unknown_embeddings.append(item["embedding"])
+                
+                if len(unknown_embeddings) >= 2:
+                    try:
+                        labels = cluster_embeddings(unknown_embeddings)
+                        
+                        corrections = []
+                        cluster_map = {}
+                        next_stranger_id = 1
+                        
+                        for idx, label in zip(unknown_indices, labels):
+                            if label not in cluster_map:
+                                cluster_map[label] = f"陌生人{next_stranger_id}"
+                                next_stranger_id += 1
+                            
+                            new_name = cluster_map[label]
+                            corrections.append({
+                                "index": idx,
+                                "speaker": new_name
+                            })
+                        
+                        if corrections:
+                            print(f"发送 {len(corrections)} 条说话人修正信息")
+                            yield f"data: {json_module.dumps({'type': 'speaker_correction', 'updates': corrections}, ensure_ascii=False)}\n\n"
+                            
+                    except Exception as e:
+                        print(f"流式聚类失败: {e}")
+                """
             
             # 发送完成信号
             yield f"data: {json_module.dumps({'type': 'done'})}\n\n"
@@ -429,4 +575,15 @@ async def websocket_live(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import argparse
+    parser = argparse.ArgumentParser(description="Voiceprint Meeting System Server")
+    parser.add_argument("--device", "-d", default="cpu", help="运行设备 (cpu, cuda:0, mps)")
+    parser.add_argument("--host", default="0.0.0.0", help="监听地址")
+    parser.add_argument("--port", "-p", type=int, default=8000, help="监听端口")
+    args = parser.parse_args()
+    
+    # 使用全局变量传递 device
+    DEVICE = args.device
+    
+    uvicorn.run(app, host=args.host, port=args.port)
+

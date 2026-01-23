@@ -597,9 +597,39 @@
                                     uploadStatus.innerHTML = `
                                         <div class="loading">
                                             <div class="spinner"></div>
-                                            <span>已处理 ${data.index} 个片段...</span>
+                                            <span>已处理 ${data.index + 1} 个片段...</span>
                                         </div>
                                     `;
+                                } else if (data.type === 'speaker_correction') {
+                                    // ⚡️ 处理说话人修正 (Diarization)
+                                    console.log("收到说话人修正:", data.updates);
+
+                                    for (const update of data.updates) {
+                                        const idx = update.index;
+                                        const newSpeaker = update.speaker;
+
+                                        // 1. 更新内部数据
+                                        if (meetingTranscriptItems[idx]) {
+                                            meetingTranscriptItems[idx].speaker = newSpeaker;
+                                        }
+
+                                        // 2. 更新 DOM
+                                        const items = transcriptDiv.querySelectorAll('.transcript-item');
+                                        if (items[idx]) {
+                                            const speakerSpan = items[idx].querySelector('.speaker');
+                                            if (speakerSpan) {
+                                                speakerSpan.textContent = newSpeaker;
+                                                speakerSpan.style.color = '#ff9f43'; // 使用不同颜色高亮
+                                                // 添加动画效果
+                                                speakerSpan.style.transition = 'all 0.5s';
+                                                speakerSpan.style.transform = 'scale(1.1)';
+                                                setTimeout(() => {
+                                                    speakerSpan.style.transform = 'scale(1)';
+                                                }, 500);
+                                            }
+                                        }
+                                    }
+
                                 } else if (data.type === 'done') {
                                     // 处理完成
                                     uploadStatus.style.display = 'none';

@@ -5,15 +5,16 @@
 - 👤 说话人验证 (Speaker Verification)
 - 👥 说话人分离 (Speaker Diarization)
 
-## 快速开始
+## 🛠️ 快速开始
 
 ### 1. 安装依赖
 
+需要 Python 3.8+ (推荐 3.10)。
+
 ```bash
-# 创建虚拟环境（推荐）
+# 创建虚拟环境
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或 venv\Scripts\activate  # Windows
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # 安装依赖
 pip install -r requirements.txt
@@ -94,34 +95,83 @@ python -m app.utils.voiceprint list
 3. **自然语调**：像平时说话一样
 4. **一人一段**：不要多人混着录
 
-## 架构说明
+## 🏗️ 系统架构
 
-本项目为解决官方自动 Pipeline 在长音频和复杂场景下的稳定性问题，实现了一套**高稳健性的手动 Pipeline**：
+本项目采用 **双轨制混合架构 (Hybrid Architecture)**，结合了业界领先的深度学习模型，以适应不同的应用场景：
+
+1.  **Pyannote 分离 (精度优先)**：适用于会议记录生成、长音频处理。
+2.  **VAD 实时切分 (速度优先)**：适用于实时对话流。
 
 ```mermaid
 graph TD
-    A[会议录音 / 实时麦克风] --> B[FSMN-VAD 模型]
-    B -->|切分时间戳| C{片段循环处理}
-    C -->|片段音频| D[Fun-ASR-Nano 模型]
-    C -->|片段音频| E[CAM++ 声纹模型]
-    D -->|ASR 文本| F[结果聚合]
-    E -->|声纹向量| G[声纹数据库匹配]
-    G -->|说话人姓名| F
-    F --> H[Markdown 会议纪要]
+    Input[音频输入] --> Mode{场景选择}
+    
+    %% Pyannote 路径 (高精度)
+    Mode -->|离线/流式上传| P1[Pyannote Diarization]
+    P1 -->|全局说话人分离| P2[获得分段与 Speaker ID]
+    P1 -.->|解决重叠语音| P2
+    P2 --> Loop[逐段识别循环]
+    
+    %% VAD 路径 (低延迟)
+    Mode -->|实时 WebSocket| V1[FSMN-VAD 检测]
+    V1 -->|实时切分| Loop
+    
+    %% 识别循环
+    Loop --> ASR[FunASR 语音转写]
+    Loop --> SV[CAM++ 声纹提取]
+    
+    SV --> Match{声纹库匹配}
+    Match -->|匹配成功| User["注册用户 (如:张三)"]
+    Match -->|匹配失败| Stranger["陌生人 (如:陌生人1)"]
+    
+    ASR --> Output[最终结果]
+    User --> Output
+    Stranger --> Output
 ```
 
 ### 核心模型组件
 
-| 组件 | 模型名称 | 作用 | 优势 |
-|------|----------|------|------|
-| **VAD** | `speech_fsmn_vad_zh-cn-16k-common` | 语音活动检测 | 精准切分长音频，避免处理静音区，支持实时流式切分 |
-| **ASR** | `Fun-ASR-Nano-2512` | 语音转文字 | **800M 参数 LLM**，支持方言，语义理解强，标点自然，口语规整能力强 |
-| **Speaker** | `speech_campplus_sv` | 声纹识别 | 业界领先的声纹模型，准确率高，支持极短音频特征提取 |
+| 组件 | 模型名称 | 作用 | 核心优势 |
+|------|----------|------|----------|
+| **Diarization** | `pyannote/speaker-diarization-community-1` | **说话人分离** | **SOTA 效果**。能精准区分"谁在说话"，支持 **Overlap (重叠人声)** 分离，能够全局追踪说话人。 |
+| **VAD** | `speech_fsmn_vad_zh-cn-16k-common` | 语音活动检测 | **超低延迟**。毫秒级切分音频，用于实时对话或 Pyannote 的回退方案。 |
+| **ASR** | `Fun-ASR-Nano-2512` | 语音转文字 | **高精度中文识别**。800M 参数 LLM，语义理解强，自动添加标点，适合口语记录。 |
+| **Speaker** | `speech_campplus_sv` | 声纹识别 | **高鲁棒性**。提取声纹特征向量，用于识别已知用户。支持短语音特征提取。 |
+
+## ⚙️ 识别参数配置
+
+声纹识别的核心逻辑基于**余弦相似度 (Cosine Similarity)**，数值范围 `[-1, 1]`，越接近 1 表示越相似。关键参数位于 `app/core.py` 的 `CONFIG` 中：
+
+| 参数 | 默认值 | 说明 | 调整建议 |
+|------|--------|------|----------|
+| `speaker_threshold` | **0.30** | **声纹判定阈值**。当相似度 > 此值时，判定为"已知用户"；否则为"陌生人"。 | **调高 (如 0.45)**：更严格，减少误认，但可能把本人认成陌生人。<br>**调低 (如 0.20)**：更宽松，容易把陌生人误认为已注册用户。 |
+| `min_confidence` | **0.15** | **最低置信度**。低于此分数的结果会被直接丢弃（视为噪音或无效识别）。 | 如果环境嘈杂，可以适当调高此值过滤误识别。 |
+| `inheritance_timeout` | **3.0** | **连续说话继承时间(秒)**。在实时流中，如果当前片段未识别出人（或分值低），但在 3秒内上一句是某人说的，则自动继承该说话人。 | 适合对话场景，防止因中间一两句短语识别不清导致说话人频繁跳变。 |
+
+### 判定逻辑流程
+
+1.  提取当前语音片段的声纹特征向量 `Emb_Current`。
+2.  计算与所有【已注册用户】声纹向量 `Emb_Registered` 的余弦相似度。
+3.  找出最大相似度分数 `Max_Score` 和对应的用户 `User_Best`。
+4.  **决策**：
+    *   如果 `Max_Score >= speaker_threshold`: 识别结果 = `User_Best`
+    *   如果 `Max_Score < speaker_threshold`: 识别结果 = `未知` (后续会被聚类为 "陌生人X")
+
+### 陌生人聚类逻辑 (Clustering Logic)
+
+系统采用两种策略来处理**未注册用户**（陌生人）：
+
+1.  **Pyannote 内置聚类 (首选)**:
+    *   在使用 `diarization` 时，Pyannote 模型内部会自动分析说话人转换。
+    *   它能直接输出全局一致的标签（如 `SPEAKER_00`, `SPEAKER_01`），即使中间间隔很久也能识别是同一个人。这是目前最准确的方式。
+
+2.  **DBSCAN 聚类 (回退与实时方案)**:
+    *   在 VAD 模式下，系统收集所有标记为"未知"的声纹向量。
+    *   使用 **DBSCAN (Density-Based Spatial Clustering)** 算法进行聚类。
+    *   **参数**: `eps=0.5` (距离阈值), `metric='cosine'` (余弦距离)。
+    *   **逻辑**: 自动发现声纹特征空间中的高密度区域，将其划分为同一组（如 "陌生人1"）。DBSCAN 的优势是不需要预先指定聚类数量（即不需要知道有几个陌生人）。
 
 ## Web 界面
-
-启动服务端后，访问：
-👉 **http://localhost:8000/client**
 
 提供以下功能：
 1. 实时会议录音与转写

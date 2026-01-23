@@ -31,6 +31,10 @@ def process_meeting(service: ModelService, audio_path: str,
     """
     处理会议音频
     
+    策略优先级：
+    1. 尝试使用 pyannote 进行说话人分离 (更准确)
+    2. 回退到 VAD 分段 + DBSCAN 聚类 (原方案)
+    
     Args:
         service: ModelService 实例
         audio_path: 音频文件路径
@@ -48,7 +52,133 @@ def process_meeting(service: ModelService, audio_path: str,
     print(f"\n正在处理会议录音: {audio_path}")
     print("-" * 60)
     
-    # 1. VAD 切分
+    # 读取音频
+    speech_full, sr = librosa.load(audio_path, sr=16000)
+    
+    # ========== 尝试使用 pyannote diarization ==========
+    diarization_segments = service.diarize(audio_path)
+    
+    if diarization_segments:
+        # 使用 pyannote 分段结果
+        return _process_with_diarization(
+            service, audio_path, speech_full, sr, 
+            diarization_segments, threshold
+        )
+    else:
+        # 回退到 VAD 分段
+        return _process_with_vad(
+            service, audio_path, speech_full, sr, threshold
+        )
+
+
+def _process_with_diarization(service: ModelService, audio_path: str,
+                               speech_full: np.ndarray, sr: int,
+                               segments: list, threshold: float) -> list:
+    """
+    使用 pyannote diarization 结果处理会议
+    
+    Args:
+        segments: [(start_ms, end_ms, speaker_id), ...]
+    """
+    print(f"Step 1: 使用 pyannote 分离结果 ({len(segments)} 个片段)")
+    
+    transcript = []
+    total_segments = len(segments)
+    
+    # 建立 pyannote speaker_id -> 最终说话人名 的映射
+    speaker_mapping = {}  # "SPEAKER_00" -> "张三" 或 "陌生人1"
+    stranger_counter = 0
+    
+    print("Step 2: 逐段识别文本与匹配声纹...")
+    
+    for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
+        print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
+        
+        # 提取片段
+        start_sample = int(start_ms / 1000 * sr)
+        end_sample = int(end_ms / 1000 * sr)
+        speech = speech_full[start_sample:end_sample]
+        
+        if len(speech) < 0.2 * sr:
+            continue
+        
+        # 保存临时片段
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            sf.write(tmp.name, speech, sr)
+            tmp_path = tmp.name
+        
+        try:
+            # ASR 识别
+            text = service.transcribe_segment(tmp_path)
+            if not text:
+                continue
+            
+            # 确定说话人
+            if pyannote_speaker in speaker_mapping:
+                # 已经确定过这个说话人
+                speaker = speaker_mapping[pyannote_speaker]
+                confidence = 1.0
+            else:
+                # 首次遇到这个说话人，尝试匹配已注册声纹
+                try:
+                    emb = service.extract_embedding(tmp_path)
+                    if emb is not None:
+                        matched_name, score = match_speaker(
+                            emb, service.registered_embeddings, threshold
+                        )
+                        if matched_name != "未知":
+                            # 匹配到已注册用户
+                            speaker_mapping[pyannote_speaker] = matched_name
+                            speaker = matched_name
+                            confidence = score
+                        else:
+                            # 未匹配，标记为陌生人
+                            stranger_counter += 1
+                            stranger_name = f"陌生人{stranger_counter}"
+                            speaker_mapping[pyannote_speaker] = stranger_name
+                            speaker = stranger_name
+                            confidence = 1.0
+                    else:
+                        stranger_counter += 1
+                        stranger_name = f"陌生人{stranger_counter}"
+                        speaker_mapping[pyannote_speaker] = stranger_name
+                        speaker = stranger_name
+                        confidence = 1.0
+                except Exception:
+                    stranger_counter += 1
+                    stranger_name = f"陌生人{stranger_counter}"
+                    speaker_mapping[pyannote_speaker] = stranger_name
+                    speaker = stranger_name
+                    confidence = 1.0
+            
+            segment_info = {
+                "time": format_time(start_ms),
+                "speaker": speaker,
+                "confidence": round(confidence, 2),
+                "text": text,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            }
+            
+            transcript.append(segment_info)
+            
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    
+    print(f"\n✅ 处理完成! 识别出 {len(speaker_mapping)} 位说话人")
+    for pyannote_id, name in speaker_mapping.items():
+        print(f"   {pyannote_id} -> {name}")
+    
+    return transcript
+
+
+def _process_with_vad(service: ModelService, audio_path: str,
+                      speech_full: np.ndarray, sr: int,
+                      threshold: float) -> list:
+    """
+    使用 VAD 分段 + 后聚类方案处理会议 (fallback)
+    """
     print("Step 1: 正在进行 VAD 切分...")
     segments = service.vad_segment(audio_path)
     
@@ -60,13 +190,9 @@ def process_meeting(service: ModelService, audio_path: str,
     
     print(f"获得 {len(segments)} 个语音片段")
     
-    # 2. 读取音频
-    speech_full, sr = librosa.load(audio_path, sr=16000)
-    
     transcript = []
     total_segments = len(segments)
     
-    # 3. 循环处理片段
     print("Step 2: 逐段识别文本与说话人...")
     
     for i, seg in enumerate(segments):
@@ -129,7 +255,7 @@ def process_meeting(service: ModelService, audio_path: str,
     unknown_embeddings = []
     
     for i, item in enumerate(transcript):
-        if item["speaker"] == "未知" and item["embedding"] is not None:
+        if item["speaker"] == "未知" and item.get("embedding") is not None:
             unknown_indices.append(i)
             unknown_embeddings.append(item["embedding"])
     
@@ -164,6 +290,7 @@ def process_meeting(service: ModelService, audio_path: str,
             
     print("\n处理完成!")
     return transcript
+
 
 
 def print_transcript(transcript: list):
