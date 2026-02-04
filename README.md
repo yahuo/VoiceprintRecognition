@@ -12,6 +12,9 @@
 需要 Python 3.8+ (推荐 3.10)。
 
 ```bash
+# ⚠️ 重要：初始化子模块 (否则启动会报错)
+git submodule update --init --recursive
+
 # 创建虚拟环境
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -20,7 +23,21 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. 便捷脚本 (推荐)
+### 2. 启动服务与 Web 界面 (推荐)
+
+项目自带了一个现代化的 Web 界面，是快速开始的最佳方式。
+
+1. **启动服务**：
+   ```bash
+   python -m app.server
+   ```
+
+2. **访问界面**：
+   打开浏览器访问 [http://localhost:8000/client](http://localhost:8000/client)
+
+![Web UI](docs/images/web_ui.png)
+
+### 3. 便捷脚本 (推荐)
 
 使用 `run.sh` 脚本可以更方便地执行常用操作：
 
@@ -44,7 +61,7 @@ chmod +x run.sh
 ./run.sh identify samples/unknown.wav
 ```
 
-### 3. 手动运行示例
+### 4. 手动运行示例
 
 #### 基础语音识别 + 说话人分离
 ```bash
@@ -157,6 +174,18 @@ graph TD
     *   如果 `Max_Score >= speaker_threshold`: 识别结果 = `User_Best`
     *   如果 `Max_Score < speaker_threshold`: 识别结果 = `未知` (后续会被聚类为 "陌生人X")
 
+### 离线运行模式 (Offline Mode)
+
+为了在**无外网**或**免配置 Token** 环境下运行，可以将 Pyannote 模型下载到本地：
+
+```bash
+# 1. 临时配置 Token 运行下载脚本
+HF_TOKEN=hf_xxx python scripts/download_pyannote.py
+
+# 2. 脚本会自动将模型下载到 project/models/pyannote 目录
+# 3. 以后启动时，程序会自动优先加载该目录下的模型，无需再连接 HF
+```
+
 ### 陌生人聚类逻辑 (Clustering Logic)
 
 系统采用两种策略来处理**未注册用户**（陌生人）：
@@ -171,19 +200,7 @@ graph TD
     *   **参数**: `eps=0.5` (距离阈值), `metric='cosine'` (余弦距离)。
     *   **逻辑**: 自动发现声纹特征空间中的高密度区域，将其划分为同一组（如 "陌生人1"）。DBSCAN 的优势是不需要预先指定聚类数量（即不需要知道有几个陌生人）。
 
-## Web 界面
 
-提供以下功能：
-1. 实时会议录音与转写
-2. 离线会议音频上传与处理（流式反馈）
-3. 声纹注册与管理
-
-## 启动服务端
-
-```bash
-# 启动 API 服务 (包含 Web 界面)
-python -m app.server
-```
 
 ## 项目结构
 

@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment variables
+.env
+
+# Data
+voiceprint_db/
+samples/
+outputs/
+
+# IDEs
+.idea
+.vscode
+.DS_Store
+
+# Report
+optimization_report.md

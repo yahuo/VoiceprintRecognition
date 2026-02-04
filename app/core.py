@@ -286,18 +286,12 @@ class ModelService:
         """
         加载 pyannote 说话人分离模型
         
-        需要设置环境变量 HF_TOKEN 或在 .env 文件中配置
+        优先检查本地 models/pyannote/diarization/config.yaml
+        否则尝试从 HuggingFace 远程加载（需要 HF_TOKEN）
         """
         try:
             from dotenv import load_dotenv
-            load_dotenv()  # 加载 .env 文件
-            
-            hf_token = os.environ.get("HF_TOKEN")
-            if not hf_token:
-                print("⚠️ 未找到 HF_TOKEN，跳过 diarization 模型加载")
-                return False
-            
-            print("加载 pyannote 说话人分离模型...")
+            load_dotenv()
             
             # PyTorch 2.6+ 兼容性修复: monkey-patch torch.load 强制 weights_only=False
             import torch
@@ -310,18 +304,34 @@ class ModelService:
             try:
                 from pyannote.audio import Pipeline
                 
-                self.diarization_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-community-1",
-                    token=hf_token
-                )
+                # 1. 尝试加载本地模型
+                local_config_path = os.path.join(PROJECT_ROOT, "models/pyannote/diarization/config.yaml")
+                if os.path.exists(local_config_path):
+                    print(f"📦 加载本地 Pyannote 模型: {local_config_path}")
+                    self.diarization_pipeline = Pipeline.from_pretrained(local_config_path)
                 
-                # 将模型移动到指定设备
+                # 2. 回退到 HuggingFace 在线加载
+                else:
+                    hf_token = os.environ.get("HF_TOKEN")
+                    if not hf_token:
+                        print("⚠️ 未找到本地模型且未配置 HF_TOKEN，跳过 diarization 模型加载")
+                        print("提示: 可运行 `python scripts/download_pyannote.py` 下载离线模型")
+                        return False
+                    
+                    print("加载在线 Pyannote 模型 (pyannote/speaker-diarization-community-1)...")
+                    self.diarization_pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-community-1",
+                        token=hf_token
+                    )
+                
+                # 3. 将模型移动到指定设备
                 if device.startswith("cuda") or device == "mps":
                     torch_device = torch.device(device)
                     self.diarization_pipeline.to(torch_device)
                 
                 print("✅ Diarization 模型加载完成！")
                 return True
+                
             finally:
                 # 恢复原始的 torch.load
                 torch.load = _original_torch_load
