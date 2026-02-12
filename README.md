@@ -248,6 +248,33 @@ VoiceprintRecognition/
 3. 首次运行需要下载模型（约 2-3GB），请确保网络畅通
 4. GPU 可加速处理，使用 `--device cuda:0` (Linux/Windows) 或 `--device mps` (macOS Native)
 
+## 📋 会议总结 (AI Summary)
+
+转写完成后，可以点击「📋 会议总结」按钮，调用 LLM 自动生成结构化的会议摘要（参会人、关键议题、结论、待办事项等）。
+
+### 配置方式
+
+在项目根目录的 `.env` 文件中配置 LLM 接口（兼容所有 OpenAI 兼容 API）：
+
+```bash
+LLM_BASE_URL=https://api.siliconflow.cn/v1   # API 地址
+LLM_API_KEY=sk-xxx                            # API 密钥
+LLM_MODEL=Pro/deepseek-ai/DeepSeek-V3.2      # 模型名称
+```
+
+### 兼容的服务商
+
+| 服务商 | LLM_BASE_URL | LLM_MODEL 示例 |
+|--------|-------------|----------------|
+| **硅基流动** | `https://api.siliconflow.cn/v1` | `Pro/deepseek-ai/DeepSeek-V3.2` |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| **智谱 GLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
+| **Kimi** | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| **通义千问** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo` |
+
+> 💡 任何兼容 OpenAI Chat Completions API 的服务都可以使用，只需修改 `LLM_BASE_URL` 和 `LLM_MODEL` 即可。
+
 ## 🐳 Docker 部署
 
 ### 1. 构建镜像

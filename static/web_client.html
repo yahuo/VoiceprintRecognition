@@ -296,6 +296,65 @@
             animation: spin 1s linear infinite;
         }
 
+        /* 会议总结样式 */
+        .summary-section {
+            margin-top: 20px;
+        }
+
+        .summary-box {
+            background: rgba(102, 126, 234, 0.08);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 15px;
+            padding: 24px;
+            margin-top: 12px;
+            line-height: 1.8;
+            font-size: 15px;
+            white-space: pre-wrap;
+            max-height: 50vh;
+            overflow-y: auto;
+        }
+
+        .summary-box h2, .summary-box h3 {
+            color: #667eea;
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+
+        .summary-box h2:first-child, .summary-box h3:first-child {
+            margin-top: 0;
+        }
+
+        .summary-box ul, .summary-box ol {
+            padding-left: 20px;
+            margin: 6px 0;
+        }
+
+        .summary-box li {
+            margin-bottom: 4px;
+        }
+
+        .summary-box strong {
+            color: #a78bfa;
+        }
+
+        .btn-summary {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-summary:hover:not(:disabled) {
+            transform: scale(1.05);
+        }
+
+        .summary-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 30px;
+            color: #aaa;
+        }
+
         @keyframes spin {
             to {
                 transform: rotate(360deg);
@@ -342,10 +401,16 @@
             <div class="controls">
                 <button class="btn-primary" id="btnStart" onclick="startRecording()">开始录音</button>
                 <button class="btn-danger" id="btnStop" onclick="stopRecording()" disabled>停止录音</button>
+                <button class="btn-summary" id="btnLiveSummary" onclick="requestSummary('live')" disabled>📋 会议总结</button>
             </div>
 
             <div class="result-box" id="transcriptBox">
                 <div class="empty-state">点击"开始录音"后，对话内容将在这里实时显示...</div>
+            </div>
+
+            <div id="liveSummarySection" class="summary-section" style="display: none;">
+                <h3>📋 会议总结</h3>
+                <div id="liveSummaryBox" class="summary-box"></div>
             </div>
         </div>
 
@@ -368,8 +433,14 @@
             <div id="meetingResult" style="display: none;">
                 <h3 style="margin-bottom: 15px;">📝 会议记录</h3>
                 <div class="result-box" id="meetingTranscript"></div>
-                <div style="margin-top: 15px;">
+                <div class="controls" style="margin-top: 15px;">
                     <button class="btn-primary" onclick="downloadMarkdown()">下载 Markdown</button>
+                    <button class="btn-summary" id="btnUploadSummary" onclick="requestSummary('upload')" disabled>📋 会议总结</button>
+                </div>
+
+                <div id="uploadSummarySection" class="summary-section" style="display: none;">
+                    <h3>📋 会议总结</h3>
+                    <div id="uploadSummaryBox" class="summary-box"></div>
                 </div>
             </div>
         </div>
@@ -406,6 +477,7 @@
         let audioContext = null;
         let isRecording = false;
         let meetingMarkdown = '';
+        let liveTranscriptItems = [];  // 收集实时录音转写数据
 
         const serverUrlInput = document.getElementById('serverUrl');
         const statusDot = document.getElementById('statusDot');
@@ -461,10 +533,23 @@
             `;
             transcriptBox.appendChild(item);
             transcriptBox.scrollTop = transcriptBox.scrollHeight;
+
+            // 同时收集到 liveTranscriptItems 用于后续总结
+            liveTranscriptItems.push({
+                speaker: data.speaker,
+                text: data.text,
+                time: data.time || '',
+                confidence: data.confidence || 0
+            });
         }
 
         async function startRecording() {
             try {
+                // 重置上次的数据
+                liveTranscriptItems = [];
+                document.getElementById('liveSummarySection').style.display = 'none';
+                document.getElementById('btnLiveSummary').disabled = true;
+
                 websocket = new WebSocket(getWsUrl());
 
                 websocket.onopen = () => {
@@ -521,6 +606,10 @@
             updateStatus('', '已停止');
             btnStart.disabled = false;
             btnStop.disabled = true;
+            // 有转写内容时启用总结按钮
+            if (liveTranscriptItems.length > 0) {
+                document.getElementById('btnLiveSummary').disabled = false;
+            }
         }
 
         // ========== 上传会议 ==========
@@ -634,6 +723,8 @@
                                     // 处理完成
                                     uploadStatus.style.display = 'none';
                                     generateMeetingMarkdown(file.name);
+                                    // 启用总结按钮
+                                    document.getElementById('btnUploadSummary').disabled = false;
                                 }
                             } catch (e) {
                                 console.error('解析错误:', e);
@@ -778,6 +869,75 @@
             } catch (error) {
                 alert('请求失败: ' + error.message);
             }
+        }
+
+        // ========== 会议总结 ==========
+
+        async function requestSummary(source) {
+            const btnId = source === 'live' ? 'btnLiveSummary' : 'btnUploadSummary';
+            const sectionId = source === 'live' ? 'liveSummarySection' : 'uploadSummarySection';
+            const boxId = source === 'live' ? 'liveSummaryBox' : 'uploadSummaryBox';
+            const items = source === 'live' ? liveTranscriptItems : meetingTranscriptItems;
+
+            const btn = document.getElementById(btnId);
+            const section = document.getElementById(sectionId);
+            const box = document.getElementById(boxId);
+
+            if (!items || items.length === 0) {
+                alert('没有转写内容可以总结');
+                return;
+            }
+
+            // 显示 loading
+            btn.disabled = true;
+            btn.textContent = '⏳ 正在生成总结...';
+            section.style.display = 'block';
+            box.innerHTML = '<div class="summary-loading"><div class="spinner"></div><span>正在调用 AI 生成会议总结，请稍候...</span></div>';
+
+            try {
+                const response = await fetch(`${getApiUrl()}/v1/meeting/summarize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ transcript: items })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    renderSummary(box, result.summary);
+                    btn.textContent = '📋 重新生成总结';
+                    btn.disabled = false;
+                } else {
+                    box.innerHTML = `<div style="color: #ff4757;">❌ ${result.message || '生成失败'}</div>`;
+                    btn.textContent = '📋 重试总结';
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                box.innerHTML = `<div style="color: #ff4757;">❌ 请求失败: ${error.message}</div>`;
+                btn.textContent = '📋 重试总结';
+                btn.disabled = false;
+            }
+        }
+
+        function renderSummary(container, markdownText) {
+            // 简易 Markdown 渲染 (无需额外依赖)
+            let html = markdownText
+                .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/^- (.+)$/gm, '<li>$1</li>')
+                .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+                .replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+
+            // 把连续的 <li> 包裹在 <ul> 中
+            html = html.replace(/(<li>.*?<\/li>(?:<br>)?)+/gs, (match) => {
+                return '<ul>' + match.replace(/<br>/g, '') + '</ul>';
+            });
+
+            container.innerHTML = html;
         }
 
         // 页面加载时尝试获取声纹列表

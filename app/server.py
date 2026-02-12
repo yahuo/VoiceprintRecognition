@@ -7,7 +7,7 @@
 或: python server.py
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
@@ -117,6 +117,42 @@ async def reload_voiceprints():
         "count": len(service.registered_embeddings),
         "speakers": list(service.registered_embeddings.keys())
     }
+
+
+@app.post("/v1/meeting/summarize")
+async def summarize_meeting_api(request: Request):
+    """
+    生成会议总结
+    
+    Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求体必须是合法的 JSON")
+    
+    transcript = body.get("transcript", [])
+    
+    if not transcript:
+        raise HTTPException(status_code=400, detail="transcript 不能为空")
+    
+    # 可选：允许前端覆盖 LLM 参数
+    base_url = body.get("base_url", None)
+    api_key = body.get("api_key", None)
+    model = body.get("model", None)
+    
+    from .services.summarizer import summarize_meeting
+    result = summarize_meeting(
+        transcript_items=transcript,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+    )
+    
+    if result["status"] == "error":
+        return JSONResponse(status_code=502, content=result)
+    
+    return result
 
 
 @app.post("/v1/voiceprint/register")

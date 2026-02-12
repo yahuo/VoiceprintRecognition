@@ -23,6 +23,13 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
 
 from funasr import AutoModel
 
+# 加载 .env 环境变量 (确保 CONFIG 初始化前生效)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+except ImportError:
+    pass
+
 
 # ========== 配置参数 ==========
 
@@ -33,6 +40,10 @@ CONFIG = {
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "inheritance_timeout": 3.0,     # 说话人继承超时（秒）
     "silence_energy": 500,          # 静音能量阈值
+    # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
+    "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
+    "llm_api_key": os.environ.get("LLM_API_KEY", ""),
+    "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
 }
 
 
