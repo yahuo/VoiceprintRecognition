@@ -587,7 +587,7 @@ async def websocket_live(websocket: WebSocket):
                             speaker, score = tracker.update(speaker, score, service.registered_embeddings)
                         
                         # 过滤置信度极低的结果
-                        if score < CONFIG["min_confidence"]:
+                        if speaker!="未知" and score < CONFIG["min_confidence"]:
                             continue
                         
                         await websocket.send_json({

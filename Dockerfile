@@ -8,6 +8,9 @@ WORKDIR /app
 # portaudio19-dev: 用于音频处理 (PyAudio)
 # ffmpeg: 用于音频格式转换
 # git: 用于下载模型 (如果需要)
+
+RUN sed -i 's@deb.debian.org@mirrors.aliyun.com@g' /etc/apt/sources.list.d/debian.sources
+
 RUN apt-get update && apt-get install -y \
     build-essential \
     portaudio19-dev \
@@ -18,7 +21,7 @@ RUN apt-get update && apt-get install -y \
 # 2. 安装 Python 依赖
 COPY requirements.txt .
 # 补充服务端需要的库
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir -r requirements.txt \
     fastapi uvicorn python-multipart websockets
 
 # 3. 复制项目代码
@@ -31,6 +34,7 @@ COPY . .
 # 4. [关键步骤] 将模型烘焙进镜像 (Bake Models)
 # 这一步会执行下载脚本，将几 GB 的模型文件下载到镜像内的 .cache 目录
 # 这样用户启动容器时，就不需要再联网下载模型了，做到"开箱即用"
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U openai-whisper
 
 RUN python download_models.py
 
@@ -40,6 +44,8 @@ EXPOSE 8000
 # 6. 设置挂载点 (用于持久化声纹数据库)
 VOLUME /app/voiceprint_db
 
-# 7. 启动服务
-# 7. 启动服务
-CMD ["python", "-m", "app.server"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
+
