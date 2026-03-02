@@ -44,6 +44,9 @@ CONFIG = {
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
+    "vad_model_path": os.environ.get("VAD_MODEL_PATH",r"/app/modelscope/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+    "asr_model_path": os.environ.get("ASR_MODEL_PATH",r"/app/modelscope/models/FunAudioLLM/Fun-ASR-Nano-2512"),
+    "spk_model_path": os.environ.get("SPK_MODEL_PATH",r"/app/modelscope/models/iic/speech_campplus_sv_zh-cn_16k-common"),
 }
 
 
@@ -252,12 +255,19 @@ class ModelService:
         # 1. VAD 模型
         if load_vad:
             print("加载 VAD 模型...")
+            vad_mode_kwargs={
+                "model":"iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+                "max_single_segment_time":10000,
+                "max_end_silence_time":400,
+                "device":device,
+                "disable_update":True,
+            }
+            vad_model_path= CONFIG.get("vad_model_path") # r"C:\Users\Administrator\.cache\modelscope\hub\models\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch",
+            if vad_model_path is not None and os.path.exists(vad_model_path):
+                vad_mode_kwargs["model_path"] = vad_model_path
+
             self.vad_model = AutoModel(
-                model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                max_single_segment_time=10000,
-                max_end_silence_time=400,
-                device=device,
-                disable_update=True,
+                **vad_mode_kwargs
             )
         
         # 2. ASR 模型 (Fun-ASR-Nano)
@@ -265,22 +275,37 @@ class ModelService:
         model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
         fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
         model_py_path = os.path.join(fun_asr_dir, "model.py")
+
+        asr_model_kwargs = {
+            "model": model_dir,
+            "trust_remote_code": True,
+            "remote_code": model_py_path,
+            "device": device,
+            "disable_update": True,
+        }
+
+        asr_model_path= CONFIG.get("asr_model_path")
+        if asr_model_path is not None and os.path.exists(asr_model_path):
+            asr_model_kwargs["model_path"] = asr_model_path
+
         
-        self.asr_model = AutoModel(
-            model=model_dir,
-            trust_remote_code=True,
-            remote_code=model_py_path,
-            device=device,
-            disable_update=True,
-        )
+        self.asr_model = AutoModel( **asr_model_kwargs)
         
         # 3. 声纹模型 (CAM++)
         print("加载声纹模型...")
-        self.spk_model = AutoModel(
-            model="iic/speech_campplus_sv_zh-cn_16k-common",
-            device=device,
-            disable_update=True,
-        )
+
+        spk_model_kwargs = {
+            "model": "iic/speech_campplus_sv_zh-cn_16k-common",
+            "device": device,
+            "disable_update": True,
+        }
+
+        spk_model_path= CONFIG.get("spk_model_path")
+        if spk_model_path is not None and os.path.exists(spk_model_path):
+            spk_model_kwargs["model_path"] = spk_model_path
+
+
+        self.spk_model = AutoModel(**spk_model_kwargs)
         
         # 4. 加载已注册的声纹
         self.reload_voiceprints()

@@ -36,7 +36,7 @@ COPY . .
 # 这样用户启动容器时，就不需要再联网下载模型了，做到"开箱即用"
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U openai-whisper
 
-RUN python download_models.py
+# RUN python download_models.py
 
 # 5. 暴露端口
 EXPOSE 8000

@@ -65,3 +65,5 @@ samples/
 
 # 允许提交 Pyannote 模型 (尽管包含 .bin 文件)
 !models/pyannote/**/*.bin
+
+modelscope/
