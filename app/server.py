@@ -35,6 +35,7 @@ from .core import (
     load_voiceprint_embeddings,
     match_speaker,
     format_time,
+    merge_diarization_segments,
 )
 
 
@@ -320,7 +321,7 @@ async def transcribe_meeting_stream(
             seg_tmp_fd.close()
 
             # 读取音频
-            speech_full, sr = await asyncio.to_thread(librosa.load, audio_path, 16000)
+            speech_full, sr = await asyncio.to_thread(librosa.load, audio_path, sr=16000)
 
             # ========== 尝试使用 pyannote diarization ==========
             print(f"🔍 尝试 pyannote diarization, pipeline loaded: {service.diarization_pipeline is not None}")
@@ -328,6 +329,9 @@ async def transcribe_meeting_stream(
             print(f"🔍 diarization 结果: {diarization_segments is not None}, 片段数: {len(diarization_segments) if diarization_segments else 0}")
 
             if diarization_segments and len(diarization_segments) > 0:
+                # 合并同一说话人的相邻碎片段
+                diarization_segments = merge_diarization_segments(diarization_segments)
+
                 # 使用 pyannote 分段
                 yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
 
@@ -347,19 +351,26 @@ async def transcribe_meeting_stream(
                     # 复用临时片段文件
                     sf.write(seg_tmp_path, speech, sr)
 
-                    # ASR
-                    text = await asyncio.to_thread(service.transcribe_segment, seg_tmp_path)
+                    # 确定说话人：已映射的 speaker 只做 ASR，未映射的并行 ASR + 声纹
+                    need_embedding = pyannote_speaker not in speaker_mapping
+                    if need_embedding:
+                        text, emb = await asyncio.gather(
+                            asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
+                            asyncio.to_thread(service.extract_embedding, seg_tmp_path),
+                        )
+                    else:
+                        text = await asyncio.to_thread(service.transcribe_segment, seg_tmp_path)
+                        emb = None
+
                     if not text:
                         continue
 
-                    # 确定说话人
                     if pyannote_speaker in speaker_mapping:
                         speaker = speaker_mapping[pyannote_speaker]
                         confidence = 1.0
                     else:
-                        # 首次遇到这个说话人，尝试匹配已注册声纹
+                        # 首次遇到这个说话人，匹配已注册声纹
                         try:
-                            emb = await asyncio.to_thread(service.extract_embedding, seg_tmp_path)
                             if emb is not None:
                                 matched_name, score = match_speaker(emb, service.registered_embeddings, threshold)
                                 if matched_name != "未知":
@@ -422,11 +433,14 @@ async def transcribe_meeting_stream(
                     # 复用临时片段文件
                     sf.write(seg_tmp_path, speech, sr)
 
-                    text = await asyncio.to_thread(service.transcribe_segment, seg_tmp_path)
+                    # 并行 ASR + 声纹提取
+                    text, emb = await asyncio.gather(
+                        asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
+                        asyncio.to_thread(service.extract_embedding, seg_tmp_path),
+                    )
                     if not text:
                         continue
 
-                    emb = await asyncio.to_thread(service.extract_embedding, seg_tmp_path)
                     speaker = "未知"
                     score = 0.0
                     if emb is not None:
@@ -446,6 +460,11 @@ async def transcribe_meeting_stream(
 
             # 发送完成信号
             yield f"data: {json_module.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
         finally:
             if seg_tmp_path and os.path.exists(seg_tmp_path):

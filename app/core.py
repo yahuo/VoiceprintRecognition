@@ -218,6 +218,36 @@ def cluster_embeddings(embeddings: List[np.ndarray],
     return labels
 
 
+# ========== 片段合并 ==========
+
+def merge_diarization_segments(segments: list, gap_threshold_ms: int = 500) -> list:
+    """
+    合并同一说话人的相邻短片段，减少推理次数
+
+    Args:
+        segments: [(start_ms, end_ms, speaker_id), ...]
+        gap_threshold_ms: 同一说话人相邻片段间隔小于此值时合并
+
+    Returns:
+        合并后的片段列表
+    """
+    if not segments:
+        return segments
+
+    merged = [segments[0]]
+    for start_ms, end_ms, speaker in segments[1:]:
+        prev_start, prev_end, prev_speaker = merged[-1]
+        if speaker == prev_speaker and (start_ms - prev_end) < gap_threshold_ms:
+            merged[-1] = (prev_start, end_ms, speaker)
+        else:
+            merged.append((start_ms, end_ms, speaker))
+
+    if len(merged) < len(segments):
+        print(f"片段合并: {len(segments)} -> {len(merged)} (减少 {len(segments) - len(merged)} 个碎片段)")
+
+    return merged
+
+
 # ========== 工具函数 ==========
 
 def format_time(ms: int) -> str:

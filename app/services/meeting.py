@@ -12,6 +12,7 @@
 import argparse
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import numpy as np
 import librosa
@@ -23,6 +24,7 @@ from app.core import (
     ModelService,
     match_speaker,
     format_time,
+    merge_diarization_segments,
 )
 
 
@@ -59,6 +61,8 @@ def process_meeting(service: ModelService, audio_path: str,
     diarization_segments = service.diarize(audio_path, audio_data=speech_full)
     
     if diarization_segments:
+        # 合并同一说话人的相邻碎片段
+        diarization_segments = merge_diarization_segments(diarization_segments)
         # 使用 pyannote 分段结果
         return _process_with_diarization(
             service, audio_path, speech_full, sr, 
@@ -89,7 +93,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
     speaker_mapping = {}  # "SPEAKER_00" -> "张三" 或 "陌生人1"
     stranger_counter = 0
     
-    print("Step 2: 逐段识别文本与匹配声纹...")
+    print("Step 2: 逐段识别文本与匹配声纹（并行推理）...")
 
     # 创建可复用的临时片段文件
     seg_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -97,6 +101,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
     seg_tmp.close()
 
     try:
+      with ThreadPoolExecutor(max_workers=2) as pool:
         for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
             print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
 
@@ -111,8 +116,13 @@ def _process_with_diarization(service: ModelService, audio_path: str,
             # 复用临时片段文件
             sf.write(tmp_path, speech, sr)
 
-            # ASR 识别
-            text = service.transcribe_segment(tmp_path)
+            # 已映射的 speaker 只做 ASR，未映射的并行 ASR + 声纹
+            need_embedding = pyannote_speaker not in speaker_mapping
+            future_text = pool.submit(service.transcribe_segment, tmp_path)
+            if need_embedding:
+                future_emb = pool.submit(service.extract_embedding, tmp_path)
+
+            text = future_text.result()
             if not text:
                 continue
 
@@ -124,7 +134,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
             else:
                 # 首次遇到这个说话人，尝试匹配已注册声纹
                 try:
-                    emb = service.extract_embedding(tmp_path)
+                    emb = future_emb.result()
                     if emb is not None:
                         matched_name, score = match_speaker(
                             emb, service.registered_embeddings, threshold
@@ -193,7 +203,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
     transcript = []
     total_segments = len(segments)
     
-    print("Step 2: 逐段识别文本与说话人...")
+    print("Step 2: 逐段识别文本与说话人（并行推理）...")
 
     # 创建可复用的临时片段文件
     seg_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -201,6 +211,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
     seg_tmp.close()
 
     try:
+      with ThreadPoolExecutor(max_workers=2) as pool:
         for i, seg in enumerate(segments):
             start_ms, end_ms = seg
             print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
@@ -216,13 +227,12 @@ def _process_with_vad(service: ModelService, audio_path: str,
             # 复用临时片段文件
             sf.write(tmp_path, speech, sr)
 
-            # 声纹
-            try:
-                emb = service.extract_embedding(tmp_path)
-            except Exception:
-                emb = None
+            # 并行 ASR + 声纹提取
+            future_text = pool.submit(service.transcribe_segment, tmp_path)
+            future_emb = pool.submit(service.extract_embedding, tmp_path)
 
-            text = service.transcribe_segment(tmp_path)
+            text = future_text.result()
+            emb = future_emb.result()
             if not text:
                 continue
 
