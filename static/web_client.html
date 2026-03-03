@@ -382,7 +382,8 @@
         <h1>🎙️ 声纹识别会议系统</h1>
 
         <div class="server-url">
-            <input type="text" id="serverUrl" value="http://localhost:8000" placeholder="服务器地址">
+            <input type="text" id="serverUrl" placeholder="服务器地址">
+            <script>document.getElementById('serverUrl').value = window.location.origin;</script>
         </div>
 
         <div class="tabs">
