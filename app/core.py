@@ -44,9 +44,9 @@ CONFIG = {
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-    "vad_model_path": os.environ.get("VAD_MODEL_PATH",r"/app/modelscope/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"),
-    "asr_model_path": os.environ.get("ASR_MODEL_PATH",r"/app/modelscope/models/FunAudioLLM/Fun-ASR-Nano-2512"),
-    "spk_model_path": os.environ.get("SPK_MODEL_PATH",r"/app/modelscope/models/iic/speech_campplus_sv_zh-cn_16k-common"),
+    "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
+    "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
+    "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
 }
 
 
@@ -255,20 +255,18 @@ class ModelService:
         # 1. VAD 模型
         if load_vad:
             print("加载 VAD 模型...")
-            vad_mode_kwargs={
-                "model":"iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                "max_single_segment_time":10000,
-                "max_end_silence_time":400,
-                "device":device,
-                "disable_update":True,
+            vad_model_kwargs = {
+                "model": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+                "max_single_segment_time": 10000,
+                "max_end_silence_time": 400,
+                "device": device,
+                "disable_update": True,
             }
-            vad_model_path= CONFIG.get("vad_model_path") # r"C:\Users\Administrator\.cache\modelscope\hub\models\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch",
-            if vad_model_path is not None and os.path.exists(vad_model_path):
-                vad_mode_kwargs["model_path"] = vad_model_path
+            vad_model_path = CONFIG.get("vad_model_path")
+            if vad_model_path and os.path.exists(vad_model_path):
+                vad_model_kwargs["model_path"] = vad_model_path
 
-            self.vad_model = AutoModel(
-                **vad_mode_kwargs
-            )
+            self.vad_model = AutoModel(**vad_model_kwargs)
         
         # 2. ASR 模型 (Fun-ASR-Nano)
         print("加载 ASR 模型 (Fun-ASR-Nano)...")
@@ -284,12 +282,11 @@ class ModelService:
             "disable_update": True,
         }
 
-        asr_model_path= CONFIG.get("asr_model_path")
-        if asr_model_path is not None and os.path.exists(asr_model_path):
+        asr_model_path = CONFIG.get("asr_model_path")
+        if asr_model_path and os.path.exists(asr_model_path):
             asr_model_kwargs["model_path"] = asr_model_path
 
-        
-        self.asr_model = AutoModel( **asr_model_kwargs)
+        self.asr_model = AutoModel(**asr_model_kwargs)
         
         # 3. 声纹模型 (CAM++)
         print("加载声纹模型...")
@@ -300,10 +297,9 @@ class ModelService:
             "disable_update": True,
         }
 
-        spk_model_path= CONFIG.get("spk_model_path")
-        if spk_model_path is not None and os.path.exists(spk_model_path):
+        spk_model_path = CONFIG.get("spk_model_path")
+        if spk_model_path and os.path.exists(spk_model_path):
             spk_model_kwargs["model_path"] = spk_model_path
-
 
         self.spk_model = AutoModel(**spk_model_kwargs)
         
@@ -376,29 +372,33 @@ class ModelService:
             print(f"⚠️ Diarization 模型加载失败: {e}")
             return False
     
-    def diarize(self, audio_path: str) -> list:
+    def diarize(self, audio_path: str, audio_data: np.ndarray = None) -> list:
         """
         使用 pyannote 进行说话人分离
-        
+
         Args:
             audio_path: 音频文件路径
-        
+            audio_data: 已加载的 16kHz numpy 音频数据（可选，避免重复 librosa.load）
+
         Returns:
             分段列表 [(start_ms, end_ms, speaker_id), ...]
         """
         if self.diarization_pipeline is None:
             print("⚠️ Diarization 模型未加载，回退到 VAD 分段")
             return None
-        
+
         try:
             print("正在进行说话人分离...")
-            
+
             # 预处理音频：统一转换为 16kHz WAV 格式，避免采样率不匹配问题
             import librosa
             import soundfile as sf
             import tempfile
-            
-            audio, sr = librosa.load(audio_path, sr=16000)
+
+            if audio_data is not None:
+                audio = audio_data
+            else:
+                audio, sr = librosa.load(audio_path, sr=16000)
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 sf.write(tmp.name, audio, 16000)
                 processed_audio_path = tmp.name

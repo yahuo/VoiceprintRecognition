@@ -56,7 +56,7 @@ def process_meeting(service: ModelService, audio_path: str,
     speech_full, sr = librosa.load(audio_path, sr=16000)
     
     # ========== 尝试使用 pyannote diarization ==========
-    diarization_segments = service.diarize(audio_path)
+    diarization_segments = service.diarize(audio_path, audio_data=speech_full)
     
     if diarization_segments:
         # 使用 pyannote 分段结果
@@ -90,29 +90,32 @@ def _process_with_diarization(service: ModelService, audio_path: str,
     stranger_counter = 0
     
     print("Step 2: 逐段识别文本与匹配声纹...")
-    
-    for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
-        print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
-        
-        # 提取片段
-        start_sample = int(start_ms / 1000 * sr)
-        end_sample = int(end_ms / 1000 * sr)
-        speech = speech_full[start_sample:end_sample]
-        
-        if len(speech) < 0.2 * sr:
-            continue
-        
-        # 保存临时片段
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            sf.write(tmp.name, speech, sr)
-            tmp_path = tmp.name
-        
-        try:
+
+    # 创建可复用的临时片段文件
+    seg_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = seg_tmp.name
+    seg_tmp.close()
+
+    try:
+        for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
+            print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
+
+            # 提取片段
+            start_sample = int(start_ms / 1000 * sr)
+            end_sample = int(end_ms / 1000 * sr)
+            speech = speech_full[start_sample:end_sample]
+
+            if len(speech) < 0.2 * sr:
+                continue
+
+            # 复用临时片段文件
+            sf.write(tmp_path, speech, sr)
+
             # ASR 识别
             text = service.transcribe_segment(tmp_path)
             if not text:
                 continue
-            
+
             # 确定说话人
             if pyannote_speaker in speaker_mapping:
                 # 已经确定过这个说话人
@@ -127,12 +130,10 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                             emb, service.registered_embeddings, threshold
                         )
                         if matched_name != "未知":
-                            # 匹配到已注册用户
                             speaker_mapping[pyannote_speaker] = matched_name
                             speaker = matched_name
                             confidence = score
                         else:
-                            # 未匹配，标记为陌生人
                             stranger_counter += 1
                             stranger_name = f"陌生人{stranger_counter}"
                             speaker_mapping[pyannote_speaker] = stranger_name
@@ -150,7 +151,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                     speaker_mapping[pyannote_speaker] = stranger_name
                     speaker = stranger_name
                     confidence = 1.0
-            
+
             segment_info = {
                 "time": format_time(start_ms),
                 "speaker": speaker,
@@ -159,13 +160,12 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
             }
-            
+
             transcript.append(segment_info)
-            
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-    
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
     print(f"\n✅ 处理完成! 识别出 {len(speaker_mapping)} 位说话人")
     for pyannote_id, name in speaker_mapping.items():
         print(f"   {pyannote_id} -> {name}")
@@ -194,58 +194,59 @@ def _process_with_vad(service: ModelService, audio_path: str,
     total_segments = len(segments)
     
     print("Step 2: 逐段识别文本与说话人...")
-    
-    for i, seg in enumerate(segments):
-        start_ms, end_ms = seg
-        print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
-        
-        # 提取片段
-        start_sample = int(start_ms / 1000 * sr)
-        end_sample = int(end_ms / 1000 * sr)
-        speech = speech_full[start_sample:end_sample]
-        
-        if len(speech) < 0.2 * sr:
-            continue
-        
-        # 保存临时片段
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            sf.write(tmp.name, speech, sr)
-            tmp_path = tmp.name
-        
-            # ASR (使用核心模块的方法)
+
+    # 创建可复用的临时片段文件
+    seg_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = seg_tmp.name
+    seg_tmp.close()
+
+    try:
+        for i, seg in enumerate(segments):
+            start_ms, end_ms = seg
+            print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
+
+            # 提取片段
+            start_sample = int(start_ms / 1000 * sr)
+            end_sample = int(end_ms / 1000 * sr)
+            speech = speech_full[start_sample:end_sample]
+
+            if len(speech) < 0.2 * sr:
+                continue
+
+            # 复用临时片段文件
+            sf.write(tmp_path, speech, sr)
+
+            # 声纹
             try:
-                # 声纹
-                try:
-                    emb = service.extract_embedding(tmp_path)
-                except Exception:
-                    emb = None
-                
-                text = service.transcribe_segment(tmp_path)
-                if not text:
-                    continue
-                
-                speaker = "未知"
-                score = 0.0
-                
-                # 第一阶段：尝试匹配已注册声纹
-                if emb is not None:
-                    speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
-                
-                segment_info = {
-                    "time": format_time(start_ms),
-                    "speaker": speaker,
-                    "confidence": round(score, 2),
-                    "text": text,
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "embedding": emb  # 暂存 embedding 用于后续聚类
-                }
-                
-                transcript.append(segment_info)
-                
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+                emb = service.extract_embedding(tmp_path)
+            except Exception:
+                emb = None
+
+            text = service.transcribe_segment(tmp_path)
+            if not text:
+                continue
+
+            speaker = "未知"
+            score = 0.0
+
+            # 第一阶段：尝试匹配已注册声纹
+            if emb is not None:
+                speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+
+            segment_info = {
+                "time": format_time(start_ms),
+                "speaker": speaker,
+                "confidence": round(score, 2),
+                "text": text,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "embedding": emb  # 暂存 embedding 用于后续聚类
+            }
+
+            transcript.append(segment_info)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     
     # 💥 第二阶段：对陌生人进行聚类 (Diarization)
     from app.core import cluster_embeddings
