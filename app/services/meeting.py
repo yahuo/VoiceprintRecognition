@@ -22,7 +22,6 @@ import soundfile as sf
 from app.core import (
     CONFIG,
     ModelService,
-    match_speaker,
     format_time,
     merge_diarization_segments,
 )
@@ -136,8 +135,8 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 try:
                     emb = future_emb.result()
                     if emb is not None:
-                        matched_name, score = match_speaker(
-                            emb, service.registered_embeddings, threshold
+                        matched_name, score = service.match_speaker_fast(
+                            emb, threshold
                         )
                         if matched_name != "未知":
                             speaker_mapping[pyannote_speaker] = matched_name
@@ -241,7 +240,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
 
             # 第一阶段：尝试匹配已注册声纹
             if emb is not None:
-                speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+                speaker, score = service.match_speaker_fast(emb, threshold)
 
             segment_info = {
                 "time": format_time(start_ms),

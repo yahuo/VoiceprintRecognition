@@ -13,7 +13,10 @@ import os
 import sys
 import json
 import time
+import tempfile
 import numpy as np
+import librosa
+import soundfile as sf
 from typing import Dict, List, Tuple, Optional
 
 # 添加 Fun-ASR 目录到 Python 路径
@@ -340,9 +343,50 @@ class ModelService:
         print(f"✅ 模型加载完成！")
     
     def reload_voiceprints(self):
-        """重新加载声纹库"""
+        """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
         self.registered_embeddings = load_voiceprint_embeddings()
+        # 构建预归一化矩阵 (N, D) 用于向量化匹配
+        if self.registered_embeddings:
+            self._emb_names = list(self.registered_embeddings.keys())
+            matrix = np.array([self.registered_embeddings[n] for n in self._emb_names])
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0  # 防止除零
+            self._emb_matrix = matrix / norms
+        else:
+            self._emb_names = []
+            self._emb_matrix = None
         print(f"已加载 {len(self.registered_embeddings)} 个注册声纹")
+
+    def match_speaker_fast(self, embedding: np.ndarray, threshold: float = None) -> Tuple[str, float]:
+        """
+        向量化声纹匹配：单次矩阵乘法替代 Python 循环
+
+        Args:
+            embedding: 待匹配的声纹向量
+            threshold: 匹配阈值，默认使用 CONFIG["speaker_threshold"]
+
+        Returns:
+            (speaker_name, score) 元组，与 match_speaker() 返回格式一致
+        """
+        if threshold is None:
+            threshold = CONFIG["speaker_threshold"]
+
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return ("未知", 0.0)
+
+        q = embedding.flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            return ("未知", 0.0)
+        q = q / q_norm
+
+        scores = self._emb_matrix @ q  # (N,)
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+
+        if best_score >= threshold:
+            return (self._emb_names[best_idx], best_score)
+        return ("未知", best_score)
     
     def load_diarization_model(self, device: str = "cpu"):
         """
@@ -418,45 +462,46 @@ class ModelService:
             return None
 
         try:
+            import torch
             print("正在进行说话人分离...")
 
-            # 预处理音频：统一转换为 16kHz WAV 格式，避免采样率不匹配问题
-            import librosa
-            import soundfile as sf
-            import tempfile
-
+            # 优先内存直传，避免临时文件 I/O
+            processed_audio_path = None
             if audio_data is not None:
-                audio = audio_data
+                waveform = torch.from_numpy(audio_data).unsqueeze(0).float()
+                pipeline_input = {"waveform": waveform, "sample_rate": 16000}
             else:
-                audio, sr = librosa.load(audio_path, sr=16000)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                sf.write(tmp.name, audio, 16000)
-                processed_audio_path = tmp.name
-            
+                # 兜底：无内存数据时走文件路径（需转为 16kHz WAV）
+                audio, _ = librosa.load(audio_path, sr=16000)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    sf.write(tmp.name, audio, 16000)
+                    processed_audio_path = tmp.name
+                pipeline_input = processed_audio_path
+
             try:
-                output = self.diarization_pipeline(processed_audio_path)
-                
+                output = self.diarization_pipeline(pipeline_input)
+
                 # pyannote 4.0 返回 DiarizeOutput 对象，需要访问 .speaker_diarization
                 if hasattr(output, 'speaker_diarization'):
                     diarization = output.speaker_diarization
                 else:
                     # 兼容旧版本，直接使用输出
                     diarization = output
-                
+
                 segments = []
                 for turn, _, speaker in diarization.itertracks(yield_label=True):
                     start_ms = int(turn.start * 1000)
                     end_ms = int(turn.end * 1000)
                     segments.append((start_ms, end_ms, speaker))
-                
+
                 # 统计说话人数量
                 speakers = set(seg[2] for seg in segments)
                 print(f"✅ 说话人分离完成: 检测到 {len(speakers)} 位说话人，{len(segments)} 个片段")
-                
+
                 return segments
             finally:
-                # 清理临时文件
-                if os.path.exists(processed_audio_path):
+                # 清理临时文件（仅文件路径模式才有）
+                if processed_audio_path and os.path.exists(processed_audio_path):
                     os.unlink(processed_audio_path)
             
         except Exception as e:
@@ -477,7 +522,7 @@ class ModelService:
                     import torch
                     if isinstance(emb, torch.Tensor):
                         emb = emb.cpu().numpy()
-                    return np.array(emb).flatten()
+                    return emb.flatten()
         except Exception as e:
             print(f"声纹提取失败: {e}")
         return None
@@ -501,7 +546,8 @@ class ModelService:
                 input=[audio_path],
                 language=language,
                 use_itn=True,
-                batch_size=1
+                batch_size=1,
+                max_length=200,
             )
             if res and len(res) > 0:
                 return res[0].get("text", "")

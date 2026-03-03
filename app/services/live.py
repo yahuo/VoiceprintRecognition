@@ -17,11 +17,11 @@ import tempfile
 from datetime import datetime
 
 # 导入核心模块
+from concurrent.futures import ThreadPoolExecutor
 from app.core import (
     CONFIG,
     ModelService,
     SpeakerTracker,
-    match_speaker,
 )
 
 
@@ -35,70 +35,70 @@ CHUNK = 1024
 class AudioProcessor:
     def __init__(self, device: str = "cpu", output_file: str = "live_meeting.md"):
         print("正在加载模型 (可能需要一些时间)...")
-        
+
         # 使用核心模块的 ModelService
         self.service = ModelService()
         self.service.load_models(device=device, load_vad=False)  # 实时场景不需要 VAD
-        
+
         # 使用 SpeakerTracker 进行说话人追踪
         self.tracker = SpeakerTracker()
-        
+
         self.queue = queue.Queue()
         self.output_file = output_file
         self.running = True
-        
+        self._pool = ThreadPoolExecutor(max_workers=2)
+
+        # 复用临时 WAV 文件
+        _tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        self._tmp_path = _tmp.name
+        _tmp.close()
+
         # 初始化输出文件
         with open(self.output_file, "w", encoding="utf-8") as f:
             f.write(f"# 实时会议记录\n\n")
             f.write(f"日期: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n")
 
     def process_segment(self, audio_data: bytes):
-        """处理单个音频片段"""
+        """处理单个音频片段（并行 ASR + 声纹）"""
         try:
-            # 保存临时文件
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                with wave.open(tmp.name, 'wb') as wf:
-                    wf.setnchannels(CHANNELS)
-                    wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
-                    wf.setframerate(RATE)
-                    wf.writeframes(audio_data)
-                tmp_path = tmp.name
-            
-            # 1. ASR 识别 (使用核心模块的方法)
-            text = self.service.transcribe_segment(tmp_path)
-            
+            # 复用临时文件
+            with wave.open(self._tmp_path, 'wb') as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
+                wf.setframerate(RATE)
+                wf.writeframes(audio_data)
+
+            # 并行 ASR + 声纹提取
+            future_text = self._pool.submit(self.service.transcribe_segment, self._tmp_path)
+            future_emb = self._pool.submit(self.service.extract_embedding, self._tmp_path)
+
+            text = future_text.result()
             if not text:
-                os.remove(tmp_path)
                 return
-            
-            # 2. 声纹识别
-            emb = self.service.extract_embedding(tmp_path)
-            
+
+            emb = future_emb.result()
             speaker = "未知"
             score = 0.0
-            
+
             if emb is not None:
-                speaker, score = match_speaker(emb, self.service.registered_embeddings)
-                
+                speaker, score = self.service.match_speaker_fast(emb)
+
                 # 使用 SpeakerTracker 处理继承逻辑
                 speaker, score = self.tracker.update(speaker, score, self.service.registered_embeddings)
-            
+
             # 过滤低置信度结果
             if score < CONFIG["min_confidence"]:
-                os.remove(tmp_path)
                 return
-            
+
             # 输出结果
             timestamp = datetime.now().strftime("%H:%M:%S")
             print(f"\r[{timestamp}] {speaker} (conf:{score:.2f}): {text}")
             print("🎙️  正在聆听...", end="", flush=True)
-            
+
             # 写入文件
             with open(self.output_file, "a", encoding="utf-8") as f:
                 f.write(f"**[{timestamp}] {speaker}** (conf:{score:.2f}):\n> {text}\n\n")
-                
-            os.remove(tmp_path)
-            
+
         except Exception as e:
             print(f"\n处理出错: {e}")
 
@@ -171,6 +171,9 @@ class AudioProcessor:
             print("\n\n🛑 停止录音")
         finally:
             self.running = False
+            self._pool.shutdown(wait=False)
+            if os.path.exists(self._tmp_path):
+                os.remove(self._tmp_path)
             stream.stop_stream()
             stream.close()
             p.terminate()

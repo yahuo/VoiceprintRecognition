@@ -27,13 +27,10 @@ import soundfile as sf
 from .core import (
     CONFIG,
     VOICEPRINT_DB_DIR,
-    VOICEPRINT_INDEX_FILE,
     ModelService,
     SpeakerTracker,
     load_voiceprint_index,
     save_voiceprint_index,
-    load_voiceprint_embeddings,
-    match_speaker,
     format_time,
     merge_diarization_segments,
 )
@@ -372,7 +369,7 @@ async def transcribe_meeting_stream(
                         # 首次遇到这个说话人，匹配已注册声纹
                         try:
                             if emb is not None:
-                                matched_name, score = match_speaker(emb, service.registered_embeddings, threshold)
+                                matched_name, score = service.match_speaker_fast(emb, threshold)
                                 if matched_name != "未知":
                                     speaker_mapping[pyannote_speaker] = matched_name
                                     speaker = matched_name
@@ -444,7 +441,7 @@ async def transcribe_meeting_stream(
                     speaker = "未知"
                     score = 0.0
                     if emb is not None:
-                        speaker, score = match_speaker(emb, service.registered_embeddings, threshold)
+                        speaker, score = service.match_speaker_fast(emb, threshold)
 
                     result = {
                         "type": "segment",
@@ -490,74 +487,74 @@ async def websocket_live(websocket: WebSocket):
     await websocket.accept()
     print("WebSocket 连接建立")
     
-    audio_buffer = b""
+    audio_buffer = bytearray()
     silence_duration = 0
-    
+
     # 使用 SpeakerTracker 进行说话人追踪
     tracker = SpeakerTracker()
-    
+
+    # 会话级复用临时 WAV 文件
+    ws_tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    ws_tmp_path = ws_tmp_fd.name
+    ws_tmp_fd.close()
+
     try:
         while True:
             data = await websocket.receive_bytes()
-            audio_buffer += data
-            
+            audio_buffer.extend(data)
+
             # 简单的静音检测逻辑
             audio_np = np.frombuffer(data, dtype=np.int16)
             energy = np.abs(audio_np).mean()
-            
+
             if energy < CONFIG["silence_energy"]:
                 silence_duration += len(data) / (16000 * 2)  # 16kHz, 16bit
             else:
                 silence_duration = 0
-            
+
             # 如果静音超过阈值且有足够长的音频，则处理
             if silence_duration > CONFIG["silence_duration"] and len(audio_buffer) > 16000 * 2:
-                # 保存临时文件
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    with wave.open(tmp.name, 'wb') as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(16000)
-                        wf.writeframes(audio_buffer)
-                    tmp_path = tmp.name
-                
-                try:
-                    # ASR
-                    text = service.transcribe_segment(tmp_path)
-                    
-                    if text:
-                        # 声纹
-                        emb = service.extract_embedding(tmp_path)
-                        speaker = "未知"
-                        score = 0.0
-                        
-                        if emb is not None:
-                            speaker, score = match_speaker(emb, service.registered_embeddings)
-                            
-                            # 使用 SpeakerTracker 处理继承逻辑
-                            speaker, score = tracker.update(speaker, score, service.registered_embeddings)
-                        
-                        # 过滤置信度极低的结果
-                        if speaker!="未知" and score < CONFIG["min_confidence"]:
-                            continue
-                        
+                # 复用会话级临时文件
+                with wave.open(ws_tmp_path, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(bytes(audio_buffer))
+
+                # 并行 ASR + 声纹提取（不阻塞事件循环）
+                text, emb = await asyncio.gather(
+                    asyncio.to_thread(service.transcribe_segment, ws_tmp_path),
+                    asyncio.to_thread(service.extract_embedding, ws_tmp_path),
+                )
+
+                if text:
+                    speaker = "未知"
+                    score = 0.0
+
+                    if emb is not None:
+                        speaker, score = service.match_speaker_fast(emb)
+
+                        # 使用 SpeakerTracker 处理继承逻辑
+                        speaker, score = tracker.update(speaker, score, service.registered_embeddings)
+
+                    # 过滤置信度极低的结果
+                    if not (speaker != "未知" and score < CONFIG["min_confidence"]):
                         await websocket.send_json({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "speaker": speaker,
                             "confidence": round(score, 2),
                             "text": text
                         })
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                
+
                 # 重置缓冲区
-                audio_buffer = b""
+                audio_buffer = bytearray()
                 silence_duration = 0
                 
     except Exception as e:
         print(f"WebSocket 错误: {e}")
     finally:
+        if os.path.exists(ws_tmp_path):
+            os.remove(ws_tmp_path)
         print("WebSocket 连接关闭")
 
 
