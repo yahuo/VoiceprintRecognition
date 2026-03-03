@@ -27,16 +27,9 @@ RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir -r re
 # 3. 复制项目代码
 COPY . .
 
-# 4. [关键步骤] 将模型烘焙进镜像 (Bake Models)
-# 这一步会执行下载脚本，将几 GB 的模型文件下载到镜像内的 .cache 目录
-# 这样用户启动容器时，就不需要再联网下载模型了，做到"开箱即用"
-# 注意：你需要先编写一个 download_models.py 脚本
-# 4. [关键步骤] 将模型烘焙进镜像 (Bake Models)
-# 这一步会执行下载脚本，将几 GB 的模型文件下载到镜像内的 .cache 目录
-# 这样用户启动容器时，就不需要再联网下载模型了，做到"开箱即用"
+# 4. 安装额外依赖
+# 模型通过挂载本地目录或环境变量 (VAD_MODEL_PATH/ASR_MODEL_PATH/SPK_MODEL_PATH) 指定
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U openai-whisper
-
-# RUN python download_models.py
 
 # 5. 暴露端口
 EXPOSE 8000
