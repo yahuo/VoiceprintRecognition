@@ -223,7 +223,9 @@ VoiceprintRecognition/
 ├── voiceprint_db/                 # 📂 声纹数据库 (自动创建)
 ├── run.sh                         # 🚀 便捷脚本 (CLI入口)
 ├── requirements.txt               # 依赖列表
-└── Dockerfile                     # 🐳 容器化构建文件
+├── Dockerfile                     # 🐳 GPU 容器构建文件
+├── Dockerfile.cpu                 # 🐳 CPU 容器构建文件
+└── docker-compose.yml             # 🐳 Docker Compose 部署配置
 ```
 
 ## 模型说明
@@ -277,42 +279,70 @@ LLM_MODEL=Pro/deepseek-ai/DeepSeek-V3.2      # 模型名称
 
 ## 🐳 Docker 部署
 
+项目提供两个 Dockerfile：
+- `Dockerfile` — GPU 版（基于 `nvidia/cuda`，支持 CUDA 加速）
+- `Dockerfile.cpu` — CPU 版（基于 `python:3.10-slim`，体积更小）
+
 ### 1. 构建镜像
 
-构建过程会自动下载模型（Model Baking），因此构建耗时较长，但运行时的容器是即开即用的。
-
 ```bash
-docker build -t voiceprint-server .
+# GPU 版 (需要 NVIDIA GPU 的 Linux 服务器)
+docker build -t voiceprint-server:latest .
+
+# CPU 版 (macOS / 无 GPU 环境)
+docker build -f Dockerfile.cpu -t voiceprint-server:cpu .
+
+# 跨架构构建 (如在 ARM Mac 上构建 amd64 镜像并推送到私有仓库)
+docker buildx build --platform linux/amd64 -t your-registry/voiceprint-server:latest --push .
 ```
 
-### 2. 启动服务
+### 2. 使用 Docker Compose 部署 (推荐)
 
-**Linux (支持 GPU加速):**
 需要安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
 
-```bash
-docker run -d \
-  --gpus all \
-  -p 8000:8000 \
-  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
-  --name vp-server \
-  voiceprint-server \
-  python -m app.server
-```
-
-**macOS / 常规 CPU 模式:**
+在 `.env` 文件中配置参数：
 
 ```bash
-docker run -d \
-  -p 8000:8000 \
-  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
-  --name vp-server \
-  voiceprint-server \
-  python -m app.server
+# GPU 设备 ID (默认 0)
+NVIDIA_DEVICE_ID=0
+# 推理设备 (默认 cuda:0)
+DEVICE=cuda:0
+# 宿主机端口 (默认 18008)
+HOST_PORT=18008
+# 声纹数据库路径 (默认 ./voiceprint_db)
+VOICEPRINT_DB_PATH=./voiceprint_db
 ```
 
-> **⚠️ macOS 注意事项**: 
-> Docker Desktop on Mac 目前无法直接调用 M1/M2/M3 芯片的 GPU (MPS) 进行加速。
+```bash
+docker compose up -d
+```
+
+### 3. 使用 Docker Run 启动
+
+**Linux (GPU 加速):**
+
+```bash
+docker run -d \
+  --gpus '"device=0"' \
+  -p 18008:8000 \
+  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  -e DEVICE=cuda:0 \
+  --name voiceprint-server \
+  voiceprint-server:latest
+```
+
+**macOS / CPU 模式:**
+
+```bash
+docker run -d \
+  -p 18008:8000 \
+  -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  --name voiceprint-server \
+  voiceprint-server:cpu
+```
+
+> **⚠️ macOS 注意事项**:
+> Docker Desktop on Mac 无法调用 M1/M2/M3 芯片的 GPU (MPS) 进行加速。
 > 如果在 Mac 上需要高性能推理，建议直接在本地环境运行（使用 `--device mps`）。
 
 ## 参考资料
