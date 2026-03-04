@@ -29,3 +29,10 @@ outputs/
 
 # Report
 optimization_report.md
+
+# 不需要打入镜像的目录
+docs/
+scripts/
+__pycache__/
+*.md
+!requirements.txt
