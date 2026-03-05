@@ -62,6 +62,7 @@ services:
     volumes:
       - "${VENV_PATH:-./venv_docker}:/opt/venv:ro"
       - "${VOICEPRINT_DB_PATH:-./voiceprint_db}:/app/voiceprint_db"
+      - "${MODELS_PATH:-./models}:/app/models:ro"
       - "${MODEL_CACHE_PATH:-~/.cache/modelscope}:/root/.cache/modelscope"
       - "${HF_CACHE_PATH:-~/.cache/huggingface}:/root/.cache/huggingface"
 

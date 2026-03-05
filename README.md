@@ -324,9 +324,13 @@ docker images voiceprint-server-slim  # 确认镜像大小
 
 ```bash
 VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
+MODELS_PATH=./models             # 本地模型目录（挂载到 /app/models，推荐）
 MODEL_CACHE_PATH=~/.cache/modelscope   # 模型缓存（避免重复下载）
 HF_CACHE_PATH=~/.cache/huggingface     # HuggingFace 缓存
 ```
+
+> 若 `MODELS_PATH` 中已包含 `models/pyannote/diarization/config.yaml`（离线模型），可不配置 `HF_TOKEN`。
+> 仅当本地未提供 pyannote 模型、需要在线加载时才需要 `HF_TOKEN`。
 
 > **💡 venv 复用**：`venv_docker/` 构建一次后可在多台同架构机器间复制使用，无需重复构建。
 
