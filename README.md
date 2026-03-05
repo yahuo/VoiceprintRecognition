@@ -296,21 +296,42 @@ docker buildx build --platform linux/amd64  -f Dockerfile.slim -t your-registry/
 
 **前置条件：** 宿主机已安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)，它会在运行时自动将宿主机 CUDA 库注入容器。
 
+按“有网机器准备 -> 离线服务器启动”执行最不容易出错：
+
+1. 有网机器：准备离线部署产物
 ```bash
-# 第一步：构建 Python venv（一次性，约 5-10 分钟）
-# 会在当前目录生成 venv_docker/ 目录（~5GB，含 PyTorch+所有依赖）
+# 1) 生成 venv_docker（约 5-10 分钟，~5GB）
 bash scripts/build_venv.sh
-# 离线服务器部署前，建议先在**有网机器**预下载运行时模型（ASR/VAD/SPK）到 `models/`
+
+# 2) 预下载运行时模型（ASR/VAD/SPK）到 models/
 python scripts/download_all_models.py
 
-# 第二步：拉取镜像并启动
+# 3) 准备镜像（可直接 pull 已构建镜像）
 docker pull your-registry/voiceprint-server-slim:latest
+docker save -o voiceprint-server-slim.tar your-registry/voiceprint-server-slim:latest
+```
+
+2. 拷贝到离线服务器
+```bash
+# 需要拷贝的内容
+# - venv_docker/
+# - models/
+# - voiceprint-server-slim.tar
+# - docker-compose.yml / .env
+```
+
+3. 离线服务器：导入镜像并启动
+```bash
+# 1) 导入镜像
+docker load -i voiceprint-server-slim.tar
 docker tag your-registry/voiceprint-server-slim:latest voiceprint-server-slim:latest
+
+# 2) 启动
 docker compose --profile slim up -d --no-build
 
-# 第三步：验证
+# 3) 验证
 curl http://localhost:18008/
-docker images voiceprint-server-slim  # 确认镜像大小
+docker images voiceprint-server-slim
 ```
 
 可通过 `.env` 自定义路径：
