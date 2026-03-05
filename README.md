@@ -223,7 +223,8 @@ VoiceprintRecognition/
 ├── voiceprint_db/                 # 📂 声纹数据库 (自动创建)
 ├── run.sh                         # 🚀 便捷脚本 (CLI入口)
 ├── requirements.txt               # 依赖列表
-├── Dockerfile                     # 🐳 GPU 容器构建文件
+├── Dockerfile                     # 🐳 GPU 全量镜像 (~9GB)
+├── Dockerfile.slim                # 🐳 GPU 精简镜像 (< 1GB, venv 外挂)
 ├── Dockerfile.cpu                 # 🐳 CPU 容器构建文件
 └── docker-compose.yml             # 🐳 Docker Compose 部署配置
 ```
@@ -279,8 +280,9 @@ LLM_MODEL=Pro/deepseek-ai/DeepSeek-V3.2      # 模型名称
 
 ## 🐳 Docker 部署
 
-项目提供两个 Dockerfile：
-- `Dockerfile` — GPU 版（基于 `nvidia/cuda`，支持 CUDA 加速）
+项目提供三个 Dockerfile：
+- `Dockerfile` — GPU 全量版（基于 `nvidia/cuda`，包含所有依赖，~9GB）
+- `Dockerfile.slim` — GPU 精简版（基于 `python:3.10-slim`，venv 外挂，**< 1GB**）
 - `Dockerfile.cpu` — CPU 版（基于 `python:3.10-slim`，体积更小）
 
 ### 1. 构建镜像
@@ -296,7 +298,39 @@ docker build -f Dockerfile.cpu -t voiceprint-server:cpu .
 docker buildx build --platform linux/amd64 -t your-registry/voiceprint-server:latest --push .
 ```
 
-### 2. 使用 Docker Compose 部署 (推荐)
+### 2. 精简镜像部署 (推荐，镜像 < 1GB)
+
+精简镜像不包含 PyTorch、CUDA 等 Python 依赖，通过宿主机挂载 venv 目录运行。适合镜像仓库有大小限制或需要快速分发的场景。
+
+**前置条件：** 宿主机已安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)，它会在运行时自动将宿主机 CUDA 库注入容器。
+
+```bash
+# 第一步：构建 Python venv（一次性，约 5-10 分钟）
+# 会在当前目录生成 venv_docker/ 目录（~5GB，含 PyTorch+所有依赖）
+bash scripts/build_venv.sh
+
+# 第二步：构建精简镜像（< 1GB，只含系统运行时 + 项目代码）
+docker compose --profile slim build
+
+# 第三步：启动服务
+docker compose --profile slim up -d
+
+# 验证
+curl http://localhost:18008/
+docker images voiceprint-server-slim  # 确认镜像大小
+```
+
+可通过 `.env` 自定义路径：
+
+```bash
+VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
+MODEL_CACHE_PATH=~/.cache/modelscope   # 模型缓存（避免重复下载）
+HF_CACHE_PATH=~/.cache/huggingface     # HuggingFace 缓存
+```
+
+> **💡 venv 复用**：`venv_docker/` 构建一次后可在多台同架构机器间复制使用，无需重复构建。
+
+### 3. 使用 Docker Compose 部署 (全量镜像)
 
 需要安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
 
@@ -317,7 +351,7 @@ VOICEPRINT_DB_PATH=./voiceprint_db
 docker compose up -d
 ```
 
-### 3. 使用 Docker Run 启动
+### 4. 使用 Docker Run 启动
 
 **Linux (GPU 加速):**
 

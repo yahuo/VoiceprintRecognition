@@ -1,0 +1,37 @@
+# 精简镜像：只含系统运行时 + 项目代码，Python venv 由宿主机挂载
+# CUDA 库由 NVIDIA Container Toolkit 在运行时自动注入，无需打包进镜像
+# 预期镜像大小：< 1GB
+#
+# 使用方式：
+#   1. bash scripts/build_venv.sh          # 构建 venv 到 ./venv_docker/
+#   2. docker compose --profile slim up    # 启动精简容器
+
+FROM python:3.10-slim
+
+WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 只安装运行时系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libportaudio2 \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制项目代码
+COPY app/ ./app/
+COPY static/ ./static/
+COPY scripts/ ./scripts/
+COPY Fun-ASR/ ./Fun-ASR/
+COPY entrypoint.sh /entrypoint.sh
+COPY requirements.txt .
+COPY .env* ./
+RUN chmod +x /entrypoint.sh
+
+# venv 由外部挂载到 /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+EXPOSE 8000
+VOLUME /app/voiceprint_db
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
