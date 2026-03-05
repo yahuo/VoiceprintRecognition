@@ -421,7 +421,7 @@ class ModelService:
                     hf_token = os.environ.get("HF_TOKEN")
                     if not hf_token:
                         print("⚠️ 未找到本地模型且未配置 HF_TOKEN，跳过 diarization 模型加载")
-                        print("提示: 可运行 `python scripts/download_pyannote.py` 下载离线模型")
+                        print("提示: 请确保 models/pyannote/diarization 已就绪，或配置 HF_TOKEN 在线加载")
                         return False
                     
                     print("加载在线 Pyannote 模型 (pyannote/speaker-diarization-community-1)...")

@@ -174,17 +174,6 @@ graph TD
     *   如果 `Max_Score >= speaker_threshold`: 识别结果 = `User_Best`
     *   如果 `Max_Score < speaker_threshold`: 识别结果 = `未知` (后续会被聚类为 "陌生人X")
 
-### 离线运行模式 (Offline Mode)
-
-为了在**无外网**或**免配置 Token** 环境下运行，可以将 Pyannote 模型下载到本地：
-
-```bash
-# 1. 临时配置 Token 运行下载脚本
-HF_TOKEN=hf_xxx python scripts/download_pyannote.py
-
-# 2. 脚本会自动将模型下载到 project/models/pyannote 目录
-# 3. 以后启动时，程序会自动优先加载该目录下的模型，无需再连接 HF
-```
 
 ### 陌生人聚类逻辑 (Clustering Logic)
 
@@ -296,6 +285,9 @@ docker build -f Dockerfile.cpu -t voiceprint-server:cpu .
 
 # 跨架构构建 (如在 ARM Mac 上构建 amd64 镜像并推送到私有仓库)
 docker buildx build --platform linux/amd64 -t your-registry/voiceprint-server:latest --push .
+
+# 精简版
+docker buildx build --platform linux/amd64  -f Dockerfile.slim -t your-registry/voiceprint-server-slim:latest --push .
 ```
 
 ### 2. 精简镜像部署 (推荐，镜像 < 1GB)
@@ -308,14 +300,15 @@ docker buildx build --platform linux/amd64 -t your-registry/voiceprint-server:la
 # 第一步：构建 Python venv（一次性，约 5-10 分钟）
 # 会在当前目录生成 venv_docker/ 目录（~5GB，含 PyTorch+所有依赖）
 bash scripts/build_venv.sh
+# 离线服务器部署前，建议先在**有网机器**预下载运行时模型（ASR/VAD/SPK）到 `models/`
+python scripts/download_all_models.py
 
-# 第二步：构建精简镜像（< 1GB，只含系统运行时 + 项目代码）
-docker compose --profile slim build
+# 第二步：拉取镜像并启动
+docker pull your-registry/voiceprint-server-slim:latest
+docker tag your-registry/voiceprint-server-slim:latest voiceprint-server-slim:latest
+docker compose --profile slim up -d --no-build
 
-# 第三步：启动服务
-docker compose --profile slim up -d
-
-# 验证
+# 第三步：验证
 curl http://localhost:18008/
 docker images voiceprint-server-slim  # 确认镜像大小
 ```
@@ -325,13 +318,12 @@ docker images voiceprint-server-slim  # 确认镜像大小
 ```bash
 VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
 MODELS_PATH=./models             # 本地模型目录（挂载到 /app/models，推荐）
-MODEL_CACHE_PATH=~/.cache/modelscope   # 模型缓存（避免重复下载）
-HF_CACHE_PATH=~/.cache/huggingface     # HuggingFace 缓存
+ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
+VAD_MODEL_PATH=/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch
+SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 ```
 
-> 若 `MODELS_PATH` 中已包含 `models/pyannote/diarization/config.yaml`（离线模型），可不配置 `HF_TOKEN`。
-> 仅当本地未提供 pyannote 模型、需要在线加载时才需要 `HF_TOKEN`。
-
+> 纯离线且已配置上述本地模型路径时，无需挂载模型缓存目录（`MODEL_CACHE_PATH` / `HF_CACHE_PATH`）。
 > **💡 venv 复用**：`venv_docker/` 构建一次后可在多台同架构机器间复制使用，无需重复构建。
 
 ### 3. 使用 Docker Compose 部署 (全量镜像)
