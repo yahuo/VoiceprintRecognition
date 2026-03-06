@@ -488,40 +488,34 @@ async def websocket_live(websocket: WebSocket):
     print("WebSocket 连接建立")
     
     audio_buffer = bytearray()
+    is_speaking = False
     silence_duration = 0
+    min_segment_bytes = 16000  # 约 0.5 秒，16kHz * 16bit * 1ch
 
     # 使用 SpeakerTracker 进行说话人追踪
     tracker = SpeakerTracker()
+    segment_queue = asyncio.Queue()
 
-    # 会话级复用临时 WAV 文件
-    ws_tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    ws_tmp_path = ws_tmp_fd.name
-    ws_tmp_fd.close()
-
-    try:
+    async def process_segment_worker():
+        """后台处理已切分片段，避免阻塞 WebSocket 收包循环。"""
         while True:
-            data = await websocket.receive_bytes()
-            audio_buffer.extend(data)
+            audio_chunk = await segment_queue.get()
+            if audio_chunk is None:
+                segment_queue.task_done()
+                break
 
-            # 简单的静音检测逻辑
-            audio_np = np.frombuffer(data, dtype=np.int16)
-            energy = np.abs(audio_np).mean()
+            ws_tmp_path = None
+            try:
+                ws_tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                ws_tmp_path = ws_tmp_fd.name
+                ws_tmp_fd.close()
 
-            if energy < CONFIG["silence_energy"]:
-                silence_duration += len(data) / (16000 * 2)  # 16kHz, 16bit
-            else:
-                silence_duration = 0
-
-            # 如果静音超过阈值且有足够长的音频，则处理
-            if silence_duration > CONFIG["silence_duration"] and len(audio_buffer) > 16000 * 2:
-                # 复用会话级临时文件
                 with wave.open(ws_tmp_path, 'wb') as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)
                     wf.setframerate(16000)
-                    wf.writeframes(bytes(audio_buffer))
+                    wf.writeframes(audio_chunk)
 
-                # 并行 ASR + 声纹提取（不阻塞事件循环）
                 text, emb = await asyncio.gather(
                     asyncio.to_thread(service.transcribe_segment, ws_tmp_path),
                     asyncio.to_thread(service.extract_embedding, ws_tmp_path),
@@ -533,9 +527,9 @@ async def websocket_live(websocket: WebSocket):
 
                     if emb is not None:
                         speaker, score = service.match_speaker_fast(emb)
-
-                        # 使用 SpeakerTracker 处理继承逻辑
-                        speaker, score = tracker.update(speaker, score, service.registered_embeddings)
+                        speaker, score = tracker.update(
+                            speaker, score, service.registered_embeddings
+                        )
 
                     # 过滤置信度极低的结果
                     if not (speaker != "未知" and score < CONFIG["min_confidence"]):
@@ -545,16 +539,51 @@ async def websocket_live(websocket: WebSocket):
                             "confidence": round(score, 2),
                             "text": text
                         })
+            except Exception as e:
+                print(f"WebSocket 片段处理错误: {e}")
+            finally:
+                if ws_tmp_path and os.path.exists(ws_tmp_path):
+                    os.remove(ws_tmp_path)
+                segment_queue.task_done()
+
+    worker_task = asyncio.create_task(process_segment_worker())
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+
+            # 简单的静音检测逻辑
+            audio_np = np.frombuffer(data, dtype=np.int16)
+            energy = np.abs(audio_np).mean()
+
+            if energy > CONFIG["silence_energy"]:
+                is_speaking = True
+                silence_duration = 0
+            else:
+                if is_speaking:
+                    silence_duration += len(data) / (16000 * 2)  # 16kHz, 16bit
+
+            # 只有检测到开始说话后才持续累积音频，避免把纯静音/环境噪声送进 ASR
+            if is_speaking:
+                audio_buffer.extend(data)
+
+            # 如果静音超过阈值且有足够长的音频，则处理
+            if is_speaking and silence_duration > CONFIG["silence_duration"]:
+                if len(audio_buffer) >= min_segment_bytes:
+                    await segment_queue.put(bytes(audio_buffer))
 
                 # 重置缓冲区
                 audio_buffer = bytearray()
+                is_speaking = False
                 silence_duration = 0
                 
     except Exception as e:
         print(f"WebSocket 错误: {e}")
     finally:
-        if os.path.exists(ws_tmp_path):
-            os.remove(ws_tmp_path)
+        if is_speaking and len(audio_buffer) >= min_segment_bytes:
+            await segment_queue.put(bytes(audio_buffer))
+        await segment_queue.put(None)
+        await worker_task
         print("WebSocket 连接关闭")
 
 
@@ -570,4 +599,3 @@ if __name__ == "__main__":
     DEVICE = args.device
     
     uvicorn.run(app, host=args.host, port=args.port)
-
