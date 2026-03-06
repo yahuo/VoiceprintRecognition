@@ -357,6 +357,41 @@ class ModelService:
             self._emb_matrix = None
         print(f"已加载 {len(self.registered_embeddings)} 个注册声纹")
 
+    def _normalize_audio_array(self, audio_input):
+        """将内存音频统一成 float32 numpy 数组，路径输入保持原样。"""
+        if isinstance(audio_input, str):
+            return audio_input
+
+        if isinstance(audio_input, bytes):
+            audio_array = np.frombuffer(audio_input, dtype=np.int16)
+            return audio_array.astype(np.float32) / 32768.0
+
+        if isinstance(audio_input, np.ndarray):
+            if np.issubdtype(audio_input.dtype, np.integer):
+                return audio_input.astype(np.float32) / 32768.0
+            return audio_input.astype(np.float32, copy=False)
+
+        return audio_input
+
+    def _prepare_asr_input(self, audio_input):
+        """Fun-ASR Nano 的 remote code 只接受路径或 torch.Tensor。"""
+        prepared = self._normalize_audio_array(audio_input)
+        if isinstance(prepared, str):
+            return prepared
+
+        if isinstance(prepared, np.ndarray):
+            import torch
+            return torch.from_numpy(np.ascontiguousarray(prepared))
+
+        return prepared
+
+    def _prepare_embedding_input(self, audio_input):
+        """声纹模型可直接接受路径或 numpy 音频数组。"""
+        prepared = self._normalize_audio_array(audio_input)
+        if isinstance(prepared, np.ndarray):
+            return np.ascontiguousarray(prepared)
+        return prepared
+
     def match_speaker_fast(self, embedding: np.ndarray, threshold: float = None) -> Tuple[str, float]:
         """
         向量化声纹匹配：单次矩阵乘法替代 Python 循环
@@ -511,10 +546,11 @@ class ModelService:
             return None
 
     
-    def extract_embedding(self, audio_path: str) -> Optional[np.ndarray]:
-        """从音频文件提取声纹"""
+    def extract_embedding(self, audio_input) -> Optional[np.ndarray]:
+        """从音频输入提取声纹，支持文件路径、PCM bytes 或 numpy 音频数组。"""
         try:
-            res = self.spk_model.generate(input=audio_path)
+            prepared_input = self._prepare_embedding_input(audio_input)
+            res = self.spk_model.generate(input=prepared_input)
             if res and len(res) > 0:
                 emb = res[0].get("spk_embedding", None)
                 if emb is not None:
@@ -527,12 +563,12 @@ class ModelService:
             print(f"声纹提取失败: {e}")
         return None
     
-    def transcribe_segment(self, audio_path: str, language: str = None) -> str:
+    def transcribe_segment(self, audio_input, language: str = None) -> str:
         """
         识别单个音频片段
         
         Args:
-            audio_path: 音频文件路径
+            audio_input: 音频输入，支持文件路径、PCM bytes 或 numpy 音频数组
             language: 语言，默认使用 CONFIG["asr_language"]
         
         Returns:
@@ -542,8 +578,9 @@ class ModelService:
             language = CONFIG["asr_language"]
         
         try:
+            prepared_input = self._prepare_asr_input(audio_input)
             res = self.asr_model.generate(
-                input=[audio_path],
+                input=prepared_input,
                 language=language,
                 use_itn=True,
                 batch_size=1,

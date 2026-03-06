@@ -19,7 +19,6 @@ import time
 import numpy as np
 from typing import Dict
 from datetime import datetime
-import wave
 import librosa
 import soundfile as sf
 
@@ -504,21 +503,18 @@ async def websocket_live(websocket: WebSocket):
                 segment_queue.task_done()
                 break
 
-            ws_tmp_path = None
             try:
-                ws_tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                ws_tmp_path = ws_tmp_fd.name
-                ws_tmp_fd.close()
-
-                with wave.open(ws_tmp_path, 'wb') as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    wf.writeframes(audio_chunk)
+                segment_duration = len(audio_chunk) / (16000 * 2)
+                queue_size = segment_queue.qsize()
+                started_at = time.perf_counter()
+                print(
+                    f"🎙️ WebSocket 片段开始处理: "
+                    f"duration={segment_duration:.2f}s, queue_size={queue_size}"
+                )
 
                 text, emb = await asyncio.gather(
-                    asyncio.to_thread(service.transcribe_segment, ws_tmp_path),
-                    asyncio.to_thread(service.extract_embedding, ws_tmp_path),
+                    asyncio.to_thread(service.transcribe_segment, audio_chunk),
+                    asyncio.to_thread(service.extract_embedding, audio_chunk),
                 )
 
                 if text:
@@ -539,11 +535,21 @@ async def websocket_live(websocket: WebSocket):
                             "confidence": round(score, 2),
                             "text": text
                         })
+                        elapsed = time.perf_counter() - started_at
+                        print(
+                            f"✅ WebSocket 片段处理完成: "
+                            f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s, "
+                            f"speaker={speaker}, confidence={score:.2f}"
+                        )
+                else:
+                    elapsed = time.perf_counter() - started_at
+                    print(
+                        f"ℹ️ WebSocket 片段无有效文本: "
+                        f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s"
+                    )
             except Exception as e:
                 print(f"WebSocket 片段处理错误: {e}")
             finally:
-                if ws_tmp_path and os.path.exists(ws_tmp_path):
-                    os.remove(ws_tmp_path)
                 segment_queue.task_done()
 
     worker_task = asyncio.create_task(process_segment_worker())
@@ -570,7 +576,12 @@ async def websocket_live(websocket: WebSocket):
             # 如果静音超过阈值且有足够长的音频，则处理
             if is_speaking and silence_duration > CONFIG["silence_duration"]:
                 if len(audio_buffer) >= min_segment_bytes:
+                    segment_duration = len(audio_buffer) / (16000 * 2)
                     await segment_queue.put(bytes(audio_buffer))
+                    print(
+                        f"📥 WebSocket 片段入队: "
+                        f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
+                    )
 
                 # 重置缓冲区
                 audio_buffer = bytearray()
@@ -581,7 +592,12 @@ async def websocket_live(websocket: WebSocket):
         print(f"WebSocket 错误: {e}")
     finally:
         if is_speaking and len(audio_buffer) >= min_segment_bytes:
+            segment_duration = len(audio_buffer) / (16000 * 2)
             await segment_queue.put(bytes(audio_buffer))
+            print(
+                f"📥 WebSocket 尾片段入队: "
+                f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
+            )
         await segment_queue.put(None)
         await worker_task
         print("WebSocket 连接关闭")
