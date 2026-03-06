@@ -10,6 +10,7 @@ RUN sed -i 's@archive.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list && 
     python3.10 \
     python3.10-dev \
     python3.10-venv \
+    python3.10-dev \
     python3-pip \
     build-essential \
     portaudio19-dev \
