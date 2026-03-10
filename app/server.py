@@ -328,11 +328,10 @@ async def transcribe_meeting_stream(
                 # 合并同一说话人的相邻碎片段
                 diarization_segments = merge_diarization_segments(diarization_segments)
 
-                # 使用 pyannote 分段
                 yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
 
-                # 建立 pyannote speaker_id -> 最终说话人名 的映射
-                speaker_mapping = {}
+                # pyannote speaker -> 陌生人编号（仅用于未匹配注册人的片段）
+                stranger_mapping = {}
                 stranger_counter = 0
 
                 for i, (start_ms, end_ms, pyannote_speaker) in enumerate(diarization_segments):
@@ -347,50 +346,27 @@ async def transcribe_meeting_stream(
                     # 复用临时片段文件
                     sf.write(seg_tmp_path, speech, sr)
 
-                    # 确定说话人：已映射的 speaker 只做 ASR，未映射的并行 ASR + 声纹
-                    need_embedding = pyannote_speaker not in speaker_mapping
-                    if need_embedding:
-                        text, emb = await asyncio.gather(
-                            asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
-                            asyncio.to_thread(service.extract_embedding, seg_tmp_path),
-                        )
-                    else:
-                        text = await asyncio.to_thread(service.transcribe_segment, seg_tmp_path)
-                        emb = None
+                    # 每段独立: 并行 ASR + 声纹提取
+                    text, emb = await asyncio.gather(
+                        asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
+                        asyncio.to_thread(service.extract_embedding, seg_tmp_path),
+                    )
 
                     if not text:
                         continue
 
-                    if pyannote_speaker in speaker_mapping:
-                        speaker = speaker_mapping[pyannote_speaker]
-                        confidence = 1.0
-                    else:
-                        # 首次遇到这个说话人，匹配已注册声纹
-                        try:
-                            if emb is not None:
-                                matched_name, score = service.match_speaker_fast(emb, threshold)
-                                if matched_name != "未知":
-                                    speaker_mapping[pyannote_speaker] = matched_name
-                                    speaker = matched_name
-                                    confidence = score
-                                else:
-                                    stranger_counter += 1
-                                    stranger_name = f"陌生人{stranger_counter}"
-                                    speaker_mapping[pyannote_speaker] = stranger_name
-                                    speaker = stranger_name
-                                    confidence = 1.0
-                            else:
-                                stranger_counter += 1
-                                stranger_name = f"陌生人{stranger_counter}"
-                                speaker_mapping[pyannote_speaker] = stranger_name
-                                speaker = stranger_name
-                                confidence = 1.0
-                        except Exception:
+                    # 每段独立用 CAM++ 匹配注册声纹
+                    speaker = "未知"
+                    confidence = 0.0
+                    if emb is not None:
+                        speaker, confidence = service.match_speaker_fast(emb, threshold)
+
+                    # 未匹配到注册人时，用 pyannote speaker 分组做陌生人聚类
+                    if speaker == "未知":
+                        if pyannote_speaker not in stranger_mapping:
                             stranger_counter += 1
-                            stranger_name = f"陌生人{stranger_counter}"
-                            speaker_mapping[pyannote_speaker] = stranger_name
-                            speaker = stranger_name
-                            confidence = 1.0
+                            stranger_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                        speaker = stranger_mapping[pyannote_speaker]
 
                     # 发送结果
                     result = {

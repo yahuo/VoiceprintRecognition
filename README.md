@@ -122,28 +122,29 @@ python -m app.utils.voiceprint list
 ```mermaid
 graph TD
     Input[音频输入] --> Mode{场景选择}
-    
-    %% Pyannote 路径 (高精度)
+
+    %% Pyannote 路径 (高精度分段)
     Mode -->|离线/流式上传| P1[Pyannote Diarization]
-    P1 -->|全局说话人分离| P2[获得分段与 Speaker ID]
-    P1 -.->|解决重叠语音| P2
-    P2 --> Loop[逐段识别循环]
-    
+    P1 -->|时间分段 + 重叠语音处理| Loop[逐段识别循环]
+
     %% VAD 路径 (低延迟)
     Mode -->|实时 WebSocket| V1[FSMN-VAD 检测]
     V1 -->|实时切分| Loop
-    
-    %% 识别循环
+
+    %% 每段独立识别
     Loop --> ASR[FunASR 语音转写]
     Loop --> SV[CAM++ 声纹提取]
-    
+
     SV --> Match{声纹库匹配}
     Match -->|匹配成功| User["注册用户 (如:张三)"]
-    Match -->|匹配失败| Stranger["陌生人 (如:陌生人1)"]
-    
+    Match -->|匹配失败| Stranger["陌生人聚类"]
+    Stranger -.->|Pyannote 模式| PyCluster["按 Pyannote Speaker 分组"]
+    Stranger -.->|VAD 模式| DBCluster["DBSCAN 聚类"]
+
     ASR --> Output[最终结果]
     User --> Output
-    Stranger --> Output
+    PyCluster --> Output
+    DBCluster --> Output
 ```
 
 ### 核心模型组件
@@ -177,13 +178,14 @@ graph TD
 
 ### 陌生人聚类逻辑 (Clustering Logic)
 
-系统采用两种策略来处理**未注册用户**（陌生人）：
+当 CAM++ 声纹匹配未命中任何注册用户时，系统采用两种策略区分不同的陌生人：
 
-1.  **Pyannote 内置聚类 (首选)**:
-    *   在使用 `diarization` 时，Pyannote 模型内部会自动分析说话人转换。
-    *   它能直接输出全局一致的标签（如 `SPEAKER_00`, `SPEAKER_01`），即使中间间隔很久也能识别是同一个人。这是目前最准确的方式。
+1.  **Pyannote Speaker 分组 (离线模式)**:
+    *   Pyannote 负责时间分段和说话人分组（输出 `SPEAKER_00`, `SPEAKER_01` 等标签）。
+    *   **身份识别由 CAM++ 逐段独立完成**，不依赖 Pyannote 的 Speaker 分组。
+    *   仅当 CAM++ 未匹配到注册人时，才使用 Pyannote 的 Speaker 标签将同一陌生人的多个片段归为一组（如 "陌生人1"）。
 
-2.  **DBSCAN 聚类 (回退与实时方案)**:
+2.  **DBSCAN 聚类 (VAD/实时模式)**:
     *   在 VAD 模式下，系统收集所有标记为"未知"的声纹向量。
     *   使用 **DBSCAN (Density-Based Spatial Clustering)** 算法进行聚类。
     *   **参数**: `eps=0.5` (距离阈值), `metric='cosine'` (余弦距离)。
