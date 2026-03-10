@@ -325,8 +325,7 @@ async def transcribe_meeting_stream(
             print(f"🔍 diarization 结果: {diarization_segments is not None}, 片段数: {len(diarization_segments) if diarization_segments else 0}")
 
             if diarization_segments and len(diarization_segments) > 0:
-                # 合并同一说话人的相邻碎片段
-                diarization_segments = merge_diarization_segments(diarization_segments)
+                # 不再合并相邻片段：逐段声纹匹配下，短段声纹更纯净、匹配更准确
 
                 yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
 
