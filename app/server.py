@@ -20,7 +20,6 @@ import numpy as np
 from typing import Dict
 from datetime import datetime
 import librosa
-import soundfile as sf
 
 # 导入核心模块
 from .core import (
@@ -75,7 +74,8 @@ async def startup_event():
     print("正在初始化服务端模型...")
     service.load_models(device=DEVICE, load_vad=True)
     # 加载 pyannote diarization 模型 (可选)
-    service.load_diarization_model(device=DEVICE)
+    # 使用 service.device：若 CUDA 不可用，load_models 已回退到 cpu
+    service.load_diarization_model(device=service.device)
 
 
 # ========== API 端点 ==========
@@ -309,13 +309,7 @@ async def transcribe_meeting_stream(
         audio_path = tmp.name
     
     async def generate():
-        seg_tmp_path = None
         try:
-            # 创建可复用的临时片段文件
-            seg_tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            seg_tmp_path = seg_tmp_fd.name
-            seg_tmp_fd.close()
-
             # 读取音频
             speech_full, sr = await asyncio.to_thread(librosa.load, audio_path, sr=16000)
 
@@ -342,13 +336,10 @@ async def transcribe_meeting_stream(
                     if len(speech) < 0.2 * sr:
                         continue
 
-                    # 复用临时片段文件
-                    sf.write(seg_tmp_path, speech, sr)
-
-                    # 每段独立: 并行 ASR + 声纹提取
+                    # 直接传 numpy 数组给模型，避免临时文件 IO（Docker overlay 很慢）
                     text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
-                        asyncio.to_thread(service.extract_embedding, seg_tmp_path),
+                        asyncio.to_thread(service.transcribe_segment, speech),
+                        asyncio.to_thread(service.extract_embedding, speech),
                     )
 
                     if not text:
@@ -401,13 +392,10 @@ async def transcribe_meeting_stream(
                     if len(speech) < 0.2 * sr:
                         continue
 
-                    # 复用临时片段文件
-                    sf.write(seg_tmp_path, speech, sr)
-
-                    # 并行 ASR + 声纹提取
+                    # 直接传 numpy 数组给模型，避免临时文件 IO
                     text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, seg_tmp_path),
-                        asyncio.to_thread(service.extract_embedding, seg_tmp_path),
+                        asyncio.to_thread(service.transcribe_segment, speech),
+                        asyncio.to_thread(service.extract_embedding, speech),
                     )
                     if not text:
                         continue
@@ -438,8 +426,6 @@ async def transcribe_meeting_stream(
             yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
         finally:
-            if seg_tmp_path and os.path.exists(seg_tmp_path):
-                os.remove(seg_tmp_path)
             if os.path.exists(audio_path):
                 os.remove(audio_path)
     

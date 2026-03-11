@@ -284,7 +284,26 @@ class ModelService:
             load_vad: 是否加载 VAD 模型（实时场景可以不加载）
         """
         print("正在初始化模型...")
-        
+
+        # 0. CUDA 可用性检查：slim 镜像容易出现 torch.cuda 不可用的情况
+        if device.startswith("cuda"):
+            import torch
+            if not torch.cuda.is_available():
+                print("=" * 60)
+                print("⚠️  警告: 指定了 CUDA 设备但 torch.cuda.is_available() = False!")
+                print("   所有推理将回退到 CPU，性能会严重下降。")
+                print("   可能原因:")
+                print("   1. venv 中的 PyTorch 是 CPU 版本（检查 pip list | grep torch）")
+                print("   2. NVIDIA Container Toolkit 未正确安装")
+                print("   3. docker-compose 未配置 GPU 资源（deploy.resources）")
+                print("=" * 60)
+                device = "cpu"
+            else:
+                print(f"✅ CUDA 可用: {torch.cuda.get_device_name(0)}")
+
+        # 记录实际使用的设备，供后续 diarization 等组件使用
+        self.device = device
+
         # 1. VAD 模型
         if load_vad:
             print("加载 VAD 模型...")
@@ -298,6 +317,9 @@ class ModelService:
             vad_model_path = CONFIG.get("vad_model_path")
             if vad_model_path and os.path.exists(vad_model_path):
                 vad_model_kwargs["model_path"] = vad_model_path
+                print(f"  VAD 模型路径: {vad_model_path}")
+            elif vad_model_path:
+                print(f"  ⚠️ VAD 本地路径不存在: {vad_model_path}，将从网络下载")
 
             self.vad_model = AutoModel(**vad_model_kwargs)
         
@@ -318,6 +340,9 @@ class ModelService:
         asr_model_path = CONFIG.get("asr_model_path")
         if asr_model_path and os.path.exists(asr_model_path):
             asr_model_kwargs["model_path"] = asr_model_path
+            print(f"  ASR 模型路径: {asr_model_path}")
+        elif asr_model_path:
+            print(f"  ⚠️ ASR 本地路径不存在: {asr_model_path}，将从网络下载")
 
         self.asr_model = AutoModel(**asr_model_kwargs)
         
@@ -333,15 +358,38 @@ class ModelService:
         spk_model_path = CONFIG.get("spk_model_path")
         if spk_model_path and os.path.exists(spk_model_path):
             spk_model_kwargs["model_path"] = spk_model_path
+            print(f"  SPK 模型路径: {spk_model_path}")
+        elif spk_model_path:
+            print(f"  ⚠️ SPK 本地路径不存在: {spk_model_path}，将从网络下载")
 
         self.spk_model = AutoModel(**spk_model_kwargs)
         
         # 4. 加载已注册的声纹
         self.reload_voiceprints()
-        
+
         self.is_loaded = True
         print(f"✅ 模型加载完成！")
+
+        # 5. CUDA warmup: 用短音频跑一次推理，预编译 CUDA kernel
+        #    MPS 不需要此步骤，CUDA 首次推理会编译 kernel 导致延迟
+        if device.startswith("cuda"):
+            self._cuda_warmup()
     
+    def _cuda_warmup(self):
+        """CUDA warmup: 用 1 秒静音跑一次推理，触发 kernel 编译和 cuDNN autotuning"""
+        print("🔥 CUDA warmup: 预编译推理 kernel...")
+        t0 = time.time()
+        dummy = np.zeros(16000, dtype=np.float32)  # 1 秒 16kHz 静音
+        try:
+            self.transcribe_segment(dummy)
+        except Exception:
+            pass
+        try:
+            self.extract_embedding(dummy)
+        except Exception:
+            pass
+        print(f"🔥 CUDA warmup 完成，耗时 {time.time() - t0:.1f}s")
+
     def reload_voiceprints(self):
         """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
         self.registered_embeddings = load_voiceprint_embeddings()
