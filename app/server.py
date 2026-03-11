@@ -294,41 +294,72 @@ async def transcribe_meeting_stream(
 ):
     """
     流式处理会议音频（Server-Sent Events）
-    
+
     - **file**: 会议音频文件
     - **threshold**: 声纹匹配阈值
-    
+
     返回 SSE 流，每个片段处理完成后立即推送
     """
+    import io
+
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
-    
-    # 保存上传的音频
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        audio_path = tmp.name
-    
+
+    # 读取上传音频到内存，避免 Docker overlay 临时文件 IO
+    content = await file.read()
+
     async def generate():
         try:
-            # 读取音频
-            speech_full, sr = await asyncio.to_thread(librosa.load, audio_path, sr=16000)
+            t_start = time.perf_counter()
+            yield f"data: {json_module.dumps({'type': 'status', 'phase': 'loading', 'message': '正在解码音频...'}, ensure_ascii=False)}\n\n"
+
+            # 从内存加载音频（不写临时文件）
+            speech_full, sr = await asyncio.to_thread(
+                librosa.load, io.BytesIO(content), sr=16000
+            )
+            audio_duration = len(speech_full) / sr
+            t_load = time.perf_counter()
+            print(f"⏱️ SSE 音频加载: {t_load - t_start:.2f}s, 时长: {audio_duration:.1f}s")
+
+            # 单线程推理函数：ASR + 声纹提取在同一线程顺序执行
+            # CUDA/MPS 设备共享，双线程 asyncio.gather 只增加调度开销无真正并行
+            def _infer_segment(audio):
+                text = service.transcribe_segment(audio)
+                emb = service.extract_embedding(audio)
+                return text, emb
 
             # ========== 尝试使用 pyannote diarization ==========
-            print(f"🔍 尝试 pyannote diarization, pipeline loaded: {service.diarization_pipeline is not None}")
-            diarization_segments = await asyncio.to_thread(service.diarize, audio_path, speech_full)
-            print(f"🔍 diarization 结果: {diarization_segments is not None}, 片段数: {len(diarization_segments) if diarization_segments else 0}")
+            yield f"data: {json_module.dumps({'type': 'status', 'phase': 'diarizing', 'message': '正在进行说话人分离...'}, ensure_ascii=False)}\n\n"
+            diarization_segments = await asyncio.to_thread(
+                service.diarize, None, speech_full
+            )
+            t_diarize = time.perf_counter()
+            n_raw = len(diarization_segments) if diarization_segments else 0
+            print(f"⏱️ SSE 说话人分离: {t_diarize - t_load:.2f}s, 原始片段数: {n_raw}")
 
             if diarization_segments and len(diarization_segments) > 0:
-                # 不再合并相邻片段：逐段声纹匹配下，短段声纹更纯净、匹配更准确
+                diarization_segments = merge_diarization_segments(
+                    diarization_segments,
+                    gap_threshold_ms=CONFIG["diarization_merge_gap_ms"],
+                    short_segment_ms=CONFIG["diarization_short_segment_ms"],
+                    max_merged_duration_ms=CONFIG["diarization_max_merged_ms"],
+                )
+                print(
+                    "⏱️ SSE 合并后片段数: "
+                    f"{len(diarization_segments)} "
+                    f"(gap<={CONFIG['diarization_merge_gap_ms']}ms, "
+                    f"short<={CONFIG['diarization_short_segment_ms']}ms, "
+                    f"max<={CONFIG['diarization_max_merged_ms']}ms)"
+                )
 
                 yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
+                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在识别，共 {len(diarization_segments)} 个片段...'}, ensure_ascii=False)}\n\n"
 
                 # pyannote speaker -> 陌生人编号（仅用于未匹配注册人的片段）
                 stranger_mapping = {}
                 stranger_counter = 0
 
                 for i, (start_ms, end_ms, pyannote_speaker) in enumerate(diarization_segments):
-                    # 提取片段
                     start_sample = int(start_ms / 1000 * sr)
                     end_sample = int(end_ms / 1000 * sr)
                     speech = speech_full[start_sample:end_sample]
@@ -336,11 +367,7 @@ async def transcribe_meeting_stream(
                     if len(speech) < 0.2 * sr:
                         continue
 
-                    # 直接传 numpy 数组给模型，避免临时文件 IO（Docker overlay 很慢）
-                    text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, speech),
-                        asyncio.to_thread(service.extract_embedding, speech),
-                    )
+                    text, emb = await asyncio.to_thread(_infer_segment, speech)
 
                     if not text:
                         continue
@@ -358,7 +385,6 @@ async def transcribe_meeting_stream(
                             stranger_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
                         speaker = stranger_mapping[pyannote_speaker]
 
-                    # 发送结果
                     result = {
                         "type": "segment",
                         "index": i,
@@ -372,15 +398,15 @@ async def transcribe_meeting_stream(
                     await asyncio.sleep(0)
 
             else:
-                # ========== Fallback: VAD ==========
-                segments = await asyncio.to_thread(service.vad_segment, audio_path)
+                # ========== Fallback: VAD（传 numpy，避免文件 IO）==========
+                segments = await asyncio.to_thread(service.vad_segment, speech_full)
 
                 if not segments:
-                    dur = await asyncio.to_thread(librosa.get_duration, filename=audio_path)
-                    dur_ms = int(dur * 1000)
+                    dur_ms = int(audio_duration * 1000)
                     segments = [[t, min(t+10000, dur_ms)] for t in range(0, dur_ms, 10000)]
 
                 yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(segments), 'method': 'vad'})}\n\n"
+                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在识别，共 {len(segments)} 个片段...'}, ensure_ascii=False)}\n\n"
 
                 for i, seg in enumerate(segments):
                     start_ms, end_ms = seg
@@ -392,11 +418,7 @@ async def transcribe_meeting_stream(
                     if len(speech) < 0.2 * sr:
                         continue
 
-                    # 直接传 numpy 数组给模型，避免临时文件 IO
-                    text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, speech),
-                        asyncio.to_thread(service.extract_embedding, speech),
-                    )
+                    text, emb = await asyncio.to_thread(_infer_segment, speech)
                     if not text:
                         continue
 
@@ -418,6 +440,8 @@ async def transcribe_meeting_stream(
                     await asyncio.sleep(0)
 
             # 发送完成信号
+            t_done = time.perf_counter()
+            print(f"⏱️ SSE 片段处理: {t_done - t_diarize:.2f}s, 总耗时: {t_done - t_start:.2f}s")
             yield f"data: {json_module.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
@@ -425,10 +449,6 @@ async def transcribe_meeting_stream(
             traceback.print_exc()
             yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
-        finally:
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-    
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
@@ -437,6 +457,7 @@ async def transcribe_meeting_stream(
             "Connection": "keep-alive",
         }
     )
+
 @app.websocket("/ws/meeting/live")
 async def websocket_live(websocket: WebSocket):
     """

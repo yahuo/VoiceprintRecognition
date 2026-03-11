@@ -58,6 +58,7 @@ class TranscribeStreamApiTest(unittest.TestCase):
 
         started_at = time.perf_counter()
         first_event_at = None
+        first_segment_at = None
         segment_count = 0
         saw_done = False
         event_types: list[str] = []
@@ -83,6 +84,8 @@ class TranscribeStreamApiTest(unittest.TestCase):
                         event_type = payload.get("type", "unknown")
                         event_types.append(event_type)
                         if event_type == "segment":
+                            if first_segment_at is None:
+                                first_segment_at = time.perf_counter()
                             segment_count += 1
                         if event_type == "done":
                             saw_done = True
@@ -90,9 +93,11 @@ class TranscribeStreamApiTest(unittest.TestCase):
         finished_at = time.perf_counter()
 
         self.assertIsNotNone(first_event_at, "No SSE event was received from the stream endpoint.")
+        self.assertIsNotNone(first_segment_at, "No segment event was received from the stream endpoint.")
         self.assertTrue(saw_done, "Stream completed without emitting a done event.")
 
         first_event_seconds = first_event_at - started_at
+        first_segment_seconds = first_segment_at - started_at
         total_seconds = finished_at - started_at
 
         event_summary = Counter(event_types)
@@ -106,12 +111,14 @@ class TranscribeStreamApiTest(unittest.TestCase):
         print(f"Endpoint       : {endpoint}")
         print("-" * 64)
         print(f"First Event    : {first_event_seconds:8.3f} s")
+        print(f"First Segment  : {first_segment_seconds:8.3f} s")
         print(f"Total Time     : {total_seconds:8.3f} s")
         print(f"Segments       : {segment_count:8d}")
         print(f"Avg/Segment    : {avg_segment_seconds:8.3f} s")
         print("-" * 64)
         print(
             "Events         : "
+            f"status={event_summary.get('status', 0)}, "
             f"info={event_summary.get('info', 0)}, "
             f"segment={event_summary.get('segment', 0)}, "
             f"done={event_summary.get('done', 0)}, "

@@ -43,6 +43,9 @@ CONFIG = {
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "inheritance_timeout": 3.0,     # 说话人继承超时（秒）
     "silence_energy": 500,          # 静音能量阈值
+    "diarization_merge_gap_ms": int(os.environ.get("DIARIZATION_MERGE_GAP_MS", "800")),
+    "diarization_short_segment_ms": int(os.environ.get("DIARIZATION_SHORT_SEGMENT_MS", "1500")),
+    "diarization_max_merged_ms": int(os.environ.get("DIARIZATION_MAX_MERGED_MS", "12000")),
     # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
@@ -223,13 +226,20 @@ def cluster_embeddings(embeddings: List[np.ndarray],
 
 # ========== 片段合并 ==========
 
-def merge_diarization_segments(segments: list, gap_threshold_ms: int = 500) -> list:
+def merge_diarization_segments(
+    segments: list,
+    gap_threshold_ms: int = 800,
+    short_segment_ms: int = 1500,
+    max_merged_duration_ms: int = 12000,
+) -> list:
     """
-    合并同一说话人的相邻短片段，减少推理次数
+    合并同一说话人的相邻短片段，减少推理次数。
 
     Args:
         segments: [(start_ms, end_ms, speaker_id), ...]
         gap_threshold_ms: 同一说话人相邻片段间隔小于此值时合并
+        short_segment_ms: 前后任一片段很短时，优先合并
+        max_merged_duration_ms: 合并后单段最大时长，避免过度合并
 
     Returns:
         合并后的片段列表
@@ -240,13 +250,35 @@ def merge_diarization_segments(segments: list, gap_threshold_ms: int = 500) -> l
     merged = [segments[0]]
     for start_ms, end_ms, speaker in segments[1:]:
         prev_start, prev_end, prev_speaker = merged[-1]
-        if speaker == prev_speaker and (start_ms - prev_end) < gap_threshold_ms:
+        gap_ms = start_ms - prev_end
+        prev_duration_ms = prev_end - prev_start
+        current_duration_ms = end_ms - start_ms
+        merged_duration_ms = end_ms - prev_start
+
+        can_merge = (
+            speaker == prev_speaker
+            and gap_ms <= gap_threshold_ms
+            and merged_duration_ms <= max_merged_duration_ms
+            and (
+                gap_ms <= gap_threshold_ms // 2
+                or prev_duration_ms <= short_segment_ms
+                or current_duration_ms <= short_segment_ms
+            )
+        )
+
+        if can_merge:
             merged[-1] = (prev_start, end_ms, speaker)
-        else:
-            merged.append((start_ms, end_ms, speaker))
+            continue
+
+        merged.append((start_ms, end_ms, speaker))
 
     if len(merged) < len(segments):
-        print(f"片段合并: {len(segments)} -> {len(merged)} (减少 {len(segments) - len(merged)} 个碎片段)")
+        print(
+            "片段合并: "
+            f"{len(segments)} -> {len(merged)} "
+            f"(gap<={gap_threshold_ms}ms, short<={short_segment_ms}ms, "
+            f"max<={max_merged_duration_ms}ms)"
+        )
 
     return merged
 
@@ -529,7 +561,7 @@ class ModelService:
             print(f"⚠️ Diarization 模型加载失败: {e}")
             return False
     
-    def diarize(self, audio_path: str, audio_data: np.ndarray = None) -> list:
+    def diarize(self, audio_path: Optional[str], audio_data: np.ndarray = None) -> list:
         """
         使用 pyannote 进行说话人分离
 
@@ -640,20 +672,21 @@ class ModelService:
             print(f"ASR 识别失败: {e}")
         return ""
     
-    def vad_segment(self, audio_path: str) -> List[List[int]]:
+    def vad_segment(self, audio_input) -> List[List[int]]:
         """
         对音频进行 VAD 切分
-        
+
         Args:
-            audio_path: 音频文件路径
-        
+            audio_input: 音频文件路径(str)或 numpy 音频数组
+
         Returns:
             [[start_ms, end_ms], ...] 列表
         """
         if self.vad_model is None:
             raise RuntimeError("VAD 模型未加载")
-        
-        vad_res = self.vad_model.generate(input=audio_path)
+
+        prepared = self._normalize_audio_array(audio_input)
+        vad_res = self.vad_model.generate(input=prepared)
         
         if vad_res and len(vad_res) > 0 and 'value' in vad_res[0]:
             return vad_res[0]['value']
