@@ -47,9 +47,9 @@ CONFIG = {
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-    "vad_model_path": os.environ.get("VAD_MODEL_PATH",r"/app/modelscope/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"),
-    "asr_model_path": os.environ.get("ASR_MODEL_PATH",r"/app/modelscope/models/FunAudioLLM/Fun-ASR-Nano-2512"),
-    "spk_model_path": os.environ.get("SPK_MODEL_PATH",r"/app/modelscope/models/iic/speech_campplus_sv_zh-cn_16k-common"),
+    "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
+    "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
+    "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
 }
 
 
