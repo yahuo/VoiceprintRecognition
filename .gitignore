@@ -68,3 +68,4 @@ samples/
 !models/pyannote/**/*.bin
 
 modelscope/
+/VoiceprintRecognition.iml
