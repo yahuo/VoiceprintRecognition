@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制项目代码
 COPY app/ ./app/
 COPY static/ ./static/
+COPY tests/ ./tests/
 COPY Fun-ASR/ ./Fun-ASR/
 COPY entrypoint.sh /entrypoint.sh
 COPY requirements.txt .
