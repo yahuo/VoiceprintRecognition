@@ -340,6 +340,7 @@ async def transcribe_meeting_stream(
                 librosa.load, io.BytesIO(content), sr=16000
             )
             audio_duration = len(speech_full) / sr
+            audio_duration_ms = int(audio_duration * 1000)
             t_load = time.perf_counter()
             print(f"⏱️ SSE 音频加载: {t_load - t_start:.2f}s, 时长: {audio_duration:.1f}s")
 
@@ -396,28 +397,185 @@ async def transcribe_meeting_stream(
                                 best = (seg_start, seg_end, seg_speaker)
                         return best
 
-                    # 每个 pyannote speaker 只做一次声纹匹配，优先使用最长片段
-                    speaker_mapping = {}
-                    stranger_counter = 0
-                    speaker_best_segment = {}
-                    for start_ms, end_ms, pyannote_speaker in diarization_segments:
-                        duration_ms = end_ms - start_ms
-                        prev = speaker_best_segment.get(pyannote_speaker)
-                        if prev is None or duration_ms > (prev[1] - prev[0]):
-                            speaker_best_segment[pyannote_speaker] = (start_ms, end_ms)
+                    def _split_sentence_by_token_timestamps(text: str, token_timestamps):
+                        if not token_timestamps:
+                            return [], False
 
-                    for pyannote_speaker, (start_ms, end_ms) in speaker_best_segment.items():
+                        punctuation = set("，。！？；、,.!?:; ")
+                        parts = []
+                        current = None
+                        pending_prefix = ""
+                        token_idx = 0
+                        pause_split_used = False
+                        pause_gap_ms = CONFIG["asr_pause_split_gap_ms"]
+
+                        def flush_current():
+                            nonlocal current
+                            if current is not None and current["text"].strip():
+                                parts.append(current)
+                            current = None
+
+                        for ch in text:
+                            if ch in punctuation:
+                                if current is not None:
+                                    current["text"] += ch
+                                else:
+                                    pending_prefix += ch
+                                continue
+
+                            if token_idx >= len(token_timestamps):
+                                if current is not None:
+                                    current["text"] += ch
+                                else:
+                                    pending_prefix += ch
+                                continue
+
+                            tok_start_ms, tok_end_ms = token_timestamps[token_idx]
+                            token_idx += 1
+                            best_seg = _choose_best_speaker(tok_start_ms, tok_end_ms)
+                            gap_ms = 0
+                            if current is not None:
+                                gap_ms = max(0, tok_start_ms - current["end_ms"])
+
+                            if (
+                                current is not None
+                                and current["seg"] == best_seg
+                                and gap_ms <= pause_gap_ms
+                            ):
+                                current["text"] += ch
+                                current["end_ms"] = tok_end_ms
+                            else:
+                                if current is not None and gap_ms > pause_gap_ms:
+                                    pause_split_used = True
+                                flush_current()
+                                current = {
+                                    "seg": best_seg,
+                                    "text": pending_prefix + ch,
+                                    "start_ms": tok_start_ms,
+                                    "end_ms": tok_end_ms,
+                                }
+                                pending_prefix = ""
+
+                        if pending_prefix:
+                            if current is not None:
+                                current["text"] += pending_prefix
+                            elif parts:
+                                parts[-1]["text"] += pending_prefix
+
+                        flush_current()
+                        return parts, pause_split_used
+
+                    def _merge_split_outputs(outputs):
+                        if not outputs:
+                            return []
+
+                        merged = []
+                        for item in outputs:
+                            if not item["text"].strip():
+                                continue
+                            if merged and merged[-1]["speaker"] == item["speaker"]:
+                                merged[-1]["text"] += item["text"]
+                                merged[-1]["end_ms"] = item["end_ms"]
+                                merged[-1]["confidence"] = max(merged[-1]["confidence"], item["confidence"])
+                            else:
+                                merged.append(dict(item))
+
+                        def _compact_len(text: str) -> int:
+                            punctuation = set("，。！？；、,.!?:; ")
+                            return sum(1 for ch in text if ch not in punctuation)
+
+                        idx = 0
+                        while idx < len(merged):
+                            item = merged[idx]
+                            compact_len = _compact_len(item["text"])
+                            if item["speaker"] == "未知" and compact_len <= 1:
+                                if idx + 1 < len(merged):
+                                    merged[idx + 1]["text"] = item["text"] + merged[idx + 1]["text"]
+                                    merged[idx + 1]["start_ms"] = item["start_ms"]
+                                    merged.pop(idx)
+                                    continue
+                                if idx > 0:
+                                    merged[idx - 1]["text"] += item["text"]
+                                    merged[idx - 1]["end_ms"] = item["end_ms"]
+                                    merged.pop(idx)
+                                    idx -= 1
+                                    continue
+                            idx += 1
+
+                        return merged
+
+                    async def _match_registered_for_window(
+                        start_ms: int,
+                        end_ms: int,
+                    ):
                         start_sample = int(start_ms / 1000 * sr)
                         end_sample = int(end_ms / 1000 * sr)
                         speech = speech_full[start_sample:end_sample]
                         emb = await asyncio.to_thread(service.extract_embedding, speech)
+                        if emb is None:
+                            return ("未知", 0.0)
+                        return service.match_registered_speaker_guarded(
+                            emb,
+                            threshold=threshold,
+                            duration_ms=end_ms - start_ms,
+                        )
+
+                    async def _match_registered_for_short_sentence(
+                        start_ms: int,
+                        end_ms: int,
+                    ):
+                        start_sample = int(start_ms / 1000 * sr)
+                        end_sample = int(end_ms / 1000 * sr)
+                        speech = speech_full[start_sample:end_sample]
+                        emb = await asyncio.to_thread(service.extract_embedding, speech)
+                        if emb is None:
+                            return ("未知", 0.0)
+                        return service.match_registered_speaker_short_window(
+                            emb,
+                            threshold=threshold,
+                            duration_ms=end_ms - start_ms,
+                        )
+
+                    async def _match_registered_for_sentence(
+                        start_ms: int,
+                        end_ms: int,
+                    ):
+                        if (end_ms - start_ms) > CONFIG["offline_sentence_exact_match_max_duration_ms"]:
+                            return ("未知", 0.0)
+                        return await _match_registered_for_short_sentence(
+                            start_ms,
+                            end_ms,
+                        )
+
+                    # 每个 pyannote speaker 使用多个代表片段做保守匹配，
+                    # 避免单个"最长片段"把整组句子都带偏。
+                    speaker_mapping = {}
+                    stranger_counter = 0
+                    speaker_candidate_segments = {}
+                    top_k = max(1, CONFIG["offline_registered_match_top_k"])
+                    for start_ms, end_ms, pyannote_speaker in diarization_segments:
+                        speaker_candidate_segments.setdefault(pyannote_speaker, []).append((start_ms, end_ms))
+
+                    for pyannote_speaker, segments_for_speaker in speaker_candidate_segments.items():
+                        candidate_segments = sorted(
+                            segments_for_speaker,
+                            key=lambda item: item[1] - item[0],
+                            reverse=True,
+                        )[:top_k]
+                        candidate_embeddings = []
+                        for start_ms, end_ms in candidate_segments:
+                            start_sample = int(start_ms / 1000 * sr)
+                            end_sample = int(end_ms / 1000 * sr)
+                            speech = speech_full[start_sample:end_sample]
+                            emb = await asyncio.to_thread(service.extract_embedding, speech)
+                            candidate_embeddings.append((emb, end_ms - start_ms))
+
                         speaker = "未知"
                         confidence = 0.0
-                        if emb is not None:
-                            speaker, confidence = service.match_registered_speaker_guarded(
-                                emb,
+                        if candidate_embeddings:
+                            speaker, confidence = service.match_registered_speaker_consensus(
+                                candidate_embeddings,
                                 threshold=threshold,
-                                duration_ms=end_ms - start_ms,
                             )
                         if speaker == "未知":
                             stranger_counter += 1
@@ -432,15 +590,72 @@ async def transcribe_meeting_stream(
                         start_ms = item["start_ms"]
                         end_ms = item["end_ms"]
                         text = item["text"].strip()
+                        token_timestamps = item.get("token_timestamps") or []
                         if not text:
                             continue
 
-                        best_seg = _choose_best_speaker(start_ms, end_ms)
+                        split_parts, pause_split_used = _split_sentence_by_token_timestamps(text, token_timestamps)
+                        distinct_part_segs = {
+                            part["seg"] for part in split_parts if part.get("seg") is not None
+                        }
+                        if split_parts and (len(distinct_part_segs) > 1 or pause_split_used):
+                            sentence_outputs = []
+                            for part in split_parts:
+                                part_text = part["text"].strip()
+                                if not part_text:
+                                    continue
+                                seg = part["seg"]
+                                speaker = "未知"
+                                confidence = 0.0
+                                short_name, short_score = await _match_registered_for_short_sentence(
+                                    part["start_ms"],
+                                    part["end_ms"],
+                                )
+                                if short_name != "未知":
+                                    speaker = short_name
+                                    confidence = short_score
+                                elif seg is not None:
+                                    _, _, pyannote_speaker = seg
+                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+
+                                sentence_outputs.append(
+                                    {
+                                        "start_ms": part["start_ms"],
+                                        "end_ms": part["end_ms"],
+                                        "speaker": speaker,
+                                        "confidence": round(confidence, 2),
+                                        "text": part_text,
+                                    }
+                                )
+
+                            sentence_outputs = _merge_split_outputs(sentence_outputs)
+                            for part_idx, out in enumerate(sentence_outputs):
+                                result = {
+                                    "type": "segment",
+                                    "index": i if part_idx == 0 else f"{i}-{part_idx}",
+                                    "time": format_time(out["start_ms"]),
+                                    "speaker": out["speaker"],
+                                    "confidence": out["confidence"],
+                                    "text": out["text"].strip(),
+                                }
+                                yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                                await asyncio.sleep(0)
+                            continue
+
                         speaker = "未知"
                         confidence = 0.0
-                        if best_seg is not None:
-                            _, _, pyannote_speaker = best_seg
-                            speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                        sentence_speaker, sentence_confidence = await _match_registered_for_sentence(
+                            start_ms,
+                            end_ms,
+                        )
+                        if sentence_speaker != "未知":
+                            speaker = sentence_speaker
+                            confidence = sentence_confidence
+                        else:
+                            best_seg = _choose_best_speaker(start_ms, end_ms)
+                            if best_seg is not None:
+                                _, _, pyannote_speaker = best_seg
+                                speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
 
                         result = {
                             "type": "segment",

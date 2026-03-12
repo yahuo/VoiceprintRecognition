@@ -88,7 +88,33 @@ def _process_with_diarization(service: ModelService, audio_path: str,
     
     # 建立 pyannote speaker_id -> 最终说话人名 的映射
     speaker_mapping = {}  # "SPEAKER_00" -> "张三" 或 "陌生人1"
+    segment_verified_mapping = {}
     stranger_counter = 0
+    top_k = max(1, CONFIG["offline_registered_match_top_k"])
+    speaker_candidate_segments = {}
+    for start_ms, end_ms, pyannote_speaker in segments:
+        speaker_candidate_segments.setdefault(pyannote_speaker, []).append((start_ms, end_ms))
+
+    speaker_registered_mapping = {}
+    for pyannote_speaker, segments_for_speaker in speaker_candidate_segments.items():
+        candidate_segments = sorted(
+            segments_for_speaker,
+            key=lambda item: item[1] - item[0],
+            reverse=True,
+        )[:top_k]
+        candidate_embeddings = []
+        for start_ms, end_ms in candidate_segments:
+            start_sample = int(start_ms / 1000 * sr)
+            end_sample = int(end_ms / 1000 * sr)
+            speech = speech_full[start_sample:end_sample]
+            if len(speech) < 0.2 * sr:
+                continue
+            emb = service.extract_embedding(speech)
+            candidate_embeddings.append((emb, end_ms - start_ms))
+        speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
+            candidate_embeddings,
+            threshold=threshold,
+        )
     
     print("Step 2: 逐段识别文本与匹配声纹（并行推理）...")
 
@@ -115,42 +141,43 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 continue
 
             # 确定说话人
-            if pyannote_speaker in speaker_mapping:
-                # 已经确定过这个说话人
-                speaker = speaker_mapping[pyannote_speaker]
-                confidence = 1.0
+            seg_key = (start_ms, end_ms, pyannote_speaker)
+            if seg_key in segment_verified_mapping:
+                speaker, confidence = segment_verified_mapping[seg_key]
             else:
-                # 首次遇到这个说话人，尝试匹配已注册声纹
                 try:
                     emb = future_emb.result()
+                    local_name = "未知"
+                    local_score = 0.0
                     if emb is not None:
-                        matched_name, score = service.match_registered_speaker_guarded(
+                        local_name, local_score = service.match_registered_speaker_guarded(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
                         )
-                        if matched_name != "未知":
-                            speaker_mapping[pyannote_speaker] = matched_name
-                            speaker = matched_name
-                            confidence = score
-                        else:
-                            stranger_counter += 1
-                            stranger_name = f"陌生人{stranger_counter}"
-                            speaker_mapping[pyannote_speaker] = stranger_name
-                            speaker = stranger_name
-                            confidence = 1.0
+
+                    if local_name != "未知":
+                        speaker = local_name
+                        confidence = local_score
                     else:
-                        stranger_counter += 1
-                        stranger_name = f"陌生人{stranger_counter}"
-                        speaker_mapping[pyannote_speaker] = stranger_name
-                        speaker = stranger_name
-                        confidence = 1.0
+                        matched_name, score = speaker_registered_mapping.get(pyannote_speaker, ("未知", 0.0))
+                        if matched_name != "未知":
+                            speaker = "未知"
+                            confidence = 0.0
+                        else:
+                            if pyannote_speaker not in speaker_mapping:
+                                stranger_counter += 1
+                                speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                            speaker = speaker_mapping[pyannote_speaker]
+                            confidence = 1.0
                 except Exception:
-                    stranger_counter += 1
-                    stranger_name = f"陌生人{stranger_counter}"
-                    speaker_mapping[pyannote_speaker] = stranger_name
-                    speaker = stranger_name
+                    if pyannote_speaker not in speaker_mapping:
+                        stranger_counter += 1
+                        speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                    speaker = speaker_mapping[pyannote_speaker]
                     confidence = 1.0
+
+                segment_verified_mapping[seg_key] = (speaker, confidence)
 
             segment_info = {
                 "time": format_time(start_ms),

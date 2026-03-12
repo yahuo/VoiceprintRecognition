@@ -44,6 +44,18 @@ CONFIG = {
     "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
     "offline_registered_match_score_floor": float(os.environ.get("OFFLINE_REGISTERED_MATCH_SCORE_FLOOR", "0.38")),
     "offline_registered_match_min_margin": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_MARGIN", "0.03")),
+    "offline_short_match_min_duration_ms": int(os.environ.get("OFFLINE_SHORT_MATCH_MIN_DURATION_MS", "500")),
+    "offline_short_match_score_floor": float(os.environ.get("OFFLINE_SHORT_MATCH_SCORE_FLOOR", "0.48")),
+    "offline_short_match_min_margin": float(os.environ.get("OFFLINE_SHORT_MATCH_MIN_MARGIN", "0.10")),
+    "offline_ultrashort_match_min_duration_ms": int(os.environ.get("OFFLINE_ULTRASHORT_MATCH_MIN_DURATION_MS", "350")),
+    "offline_ultrashort_match_max_duration_ms": int(os.environ.get("OFFLINE_ULTRASHORT_MATCH_MAX_DURATION_MS", "700")),
+    "offline_ultrashort_match_score_floor": float(os.environ.get("OFFLINE_ULTRASHORT_MATCH_SCORE_FLOOR", "0.29")),
+    "offline_ultrashort_match_min_margin": float(os.environ.get("OFFLINE_ULTRASHORT_MATCH_MIN_MARGIN", "0.07")),
+    "offline_registered_match_top_k": int(os.environ.get("OFFLINE_REGISTERED_MATCH_TOP_K", "3")),
+    "offline_registered_match_min_support": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_SUPPORT", "2")),
+    "offline_registered_match_min_share": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_SHARE", "0.60")),
+    "offline_sentence_exact_match_max_duration_ms": int(os.environ.get("OFFLINE_SENTENCE_EXACT_MATCH_MAX_DURATION_MS", "1500")),
+    "asr_pause_split_gap_ms": int(os.environ.get("ASR_PAUSE_SPLIT_GAP_MS", "400")),
     "min_confidence": 0.15,         # 低置信度过滤（低于此值丢弃）
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "inheritance_timeout": 3.0,     # 说话人继承超时（秒）
@@ -626,6 +638,146 @@ class ModelService:
             return ("未知", best_score)
 
         return (self._emb_names[best_idx], best_score)
+
+    def match_registered_speaker_short_window(
+        self,
+        embedding: np.ndarray,
+        threshold: float = None,
+        duration_ms: int | None = None,
+    ) -> Tuple[str, float]:
+        """
+        对短句使用更保守的 exact-window 注册人匹配。
+
+        只在以下条件下放行：
+        - 片段时长达到最低短句阈值，但仍短于常规 guarded 阈值
+        - top1 分数显著高于短句下限
+        - top1 与 top2 留出更大的 margin
+        """
+        if threshold is None:
+            threshold = CONFIG["speaker_threshold"]
+
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return ("未知", 0.0)
+
+        guarded_min_duration_ms = CONFIG["offline_registered_match_min_duration_ms"]
+        ultrashort_min_duration_ms = CONFIG["offline_ultrashort_match_min_duration_ms"]
+        ultrashort_max_duration_ms = CONFIG["offline_ultrashort_match_max_duration_ms"]
+        short_min_duration_ms = CONFIG["offline_short_match_min_duration_ms"]
+        if duration_ms is None or duration_ms < ultrashort_min_duration_ms or duration_ms >= guarded_min_duration_ms:
+            return ("未知", 0.0)
+
+        q = embedding.flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            return ("未知", 0.0)
+        q = q / q_norm
+
+        scores = self._emb_matrix @ q
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
+
+        if duration_ms <= ultrashort_max_duration_ms:
+            effective_threshold = max(threshold, CONFIG["offline_ultrashort_match_score_floor"])
+            min_margin = CONFIG["offline_ultrashort_match_min_margin"]
+        elif duration_ms >= short_min_duration_ms:
+            effective_threshold = max(threshold, CONFIG["offline_short_match_score_floor"])
+            min_margin = CONFIG["offline_short_match_min_margin"]
+        else:
+            return ("未知", best_score)
+
+        if best_score < effective_threshold:
+            return ("未知", best_score)
+
+        if len(scores) > 1 and (best_score - second_best_score) < min_margin:
+            return ("未知", best_score)
+
+        return (self._emb_names[best_idx], best_score)
+
+    def match_registered_speaker_consensus(
+        self,
+        candidates: List[Tuple[np.ndarray | None, int]],
+        threshold: float = None,
+    ) -> Tuple[str, float]:
+        """
+        对同一 pyannote speaker 的多个代表片段做保守判定。
+
+        规则：
+        - 先对每个候选片段应用 guarded 匹配
+        - 多个候选片段时，至少要有足够支持票数
+        - 若多个注册人得分接近或票数接近，直接回退为"未知"
+        """
+        if threshold is None:
+            threshold = CONFIG["speaker_threshold"]
+
+        top_k = max(1, CONFIG["offline_registered_match_top_k"])
+        min_support = max(1, CONFIG["offline_registered_match_min_support"])
+        min_share = max(0.0, min(1.0, CONFIG["offline_registered_match_min_share"]))
+
+        valid_candidates = [(emb, duration_ms) for emb, duration_ms in candidates[:top_k] if emb is not None]
+        if not valid_candidates:
+            return ("未知", 0.0)
+
+        decisions: List[Tuple[str, float, int]] = []
+        for emb, duration_ms in valid_candidates:
+            name, score = self.match_registered_speaker_guarded(
+                emb,
+                threshold=threshold,
+                duration_ms=duration_ms,
+            )
+            if name != "未知":
+                decisions.append((name, score, duration_ms))
+
+        if not decisions:
+            return ("未知", 0.0)
+
+        if len(valid_candidates) == 1:
+            name, score, _ = decisions[0]
+            return (name, score)
+
+        stats: Dict[str, Dict[str, float]] = {}
+        for name, score, duration_ms in decisions:
+            entry = stats.setdefault(
+                name,
+                {"votes": 0, "score_sum": 0.0, "best_score": 0.0, "duration_sum": 0.0},
+            )
+            entry["votes"] += 1
+            entry["score_sum"] += score
+            entry["best_score"] = max(entry["best_score"], score)
+            entry["duration_sum"] += duration_ms
+
+        ranked = sorted(
+            stats.items(),
+            key=lambda item: (
+                item[1]["votes"],
+                item[1]["score_sum"] / item[1]["votes"],
+                item[1]["best_score"],
+                item[1]["duration_sum"],
+            ),
+            reverse=True,
+        )
+        best_name, best_stats = ranked[0]
+        best_votes = int(best_stats["votes"])
+        recognized_count = len(decisions)
+
+        if best_votes < min_support:
+            return ("未知", best_stats["best_score"])
+
+        if recognized_count > 1 and (best_votes / recognized_count) < min_share:
+            return ("未知", best_stats["best_score"])
+
+        if len(ranked) > 1:
+            second_name, second_stats = ranked[1]
+            if second_stats["votes"] == best_votes:
+                return ("未知", max(best_stats["best_score"], second_stats["best_score"]))
+            if (
+                second_stats["votes"] > 0
+                and best_votes == 1
+                and second_name != best_name
+            ):
+                return ("未知", best_stats["best_score"])
+
+        return (best_name, best_stats["best_score"])
     
     def load_diarization_model(self, device: str = "cpu"):
         """
@@ -869,19 +1021,25 @@ class ModelService:
             text = item.get("text", "") or item.get("sentence", "") or ""
             start = item.get("start")
             end = item.get("end")
+            token_timestamps = item.get("timestamp")
             if start is None or end is None:
-                timestamp = item.get("timestamp")
-                if isinstance(timestamp, (list, tuple)) and len(timestamp) >= 2:
-                    start, end = timestamp[0], timestamp[1]
+                if isinstance(token_timestamps, (list, tuple)) and len(token_timestamps) >= 2:
+                    start = token_timestamps[0][0] if isinstance(token_timestamps[0], (list, tuple)) else token_timestamps[0]
+                    end = token_timestamps[-1][1] if isinstance(token_timestamps[-1], (list, tuple)) else token_timestamps[-1]
             if start is None or end is None:
                 continue
-            sentences.append(
-                {
-                    "text": text,
-                    "start_ms": int(round(float(start))),
-                    "end_ms": int(round(float(end))),
-                }
-            )
+            normalized_item = {
+                "text": text,
+                "start_ms": int(round(float(start))),
+                "end_ms": int(round(float(end))),
+            }
+            if isinstance(token_timestamps, list) and token_timestamps:
+                normalized_item["token_timestamps"] = [
+                    [int(round(float(ts[0]))), int(round(float(ts[1])))]
+                    for ts in token_timestamps
+                    if isinstance(ts, (list, tuple)) and len(ts) >= 2
+                ]
+            sentences.append(normalized_item)
 
         normalized["sentences"] = sentences
         return normalized
