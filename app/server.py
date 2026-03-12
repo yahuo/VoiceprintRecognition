@@ -414,7 +414,11 @@ async def transcribe_meeting_stream(
                         speaker = "未知"
                         confidence = 0.0
                         if emb is not None:
-                            speaker, confidence = service.match_speaker_fast(emb, threshold)
+                            speaker, confidence = service.match_registered_speaker_guarded(
+                                emb,
+                                threshold=threshold,
+                                duration_ms=end_ms - start_ms,
+                            )
                         if speaker == "未知":
                             stranger_counter += 1
                             speaker = f"陌生人{stranger_counter}"
@@ -474,7 +478,11 @@ async def transcribe_meeting_stream(
                         speaker = "未知"
                         confidence = 0.0
                         if emb is not None:
-                            speaker, confidence = service.match_speaker_fast(emb, threshold)
+                            speaker, confidence = service.match_registered_speaker_guarded(
+                                emb,
+                                threshold=threshold,
+                                duration_ms=end_ms - start_ms,
+                            )
 
                         if speaker == "未知":
                             if pyannote_speaker not in stranger_mapping:
@@ -522,7 +530,11 @@ async def transcribe_meeting_stream(
                     speaker = "未知"
                     score = 0.0
                     if emb is not None:
-                        speaker, score = service.match_speaker_fast(emb, threshold)
+                        speaker, score = service.match_registered_speaker_guarded(
+                            emb,
+                            threshold=threshold,
+                            duration_ms=end_ms - start_ms,
+                        )
 
                     result = {
                         "type": "segment",

@@ -41,6 +41,9 @@ CONFIG = {
     "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
     "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
+    "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
+    "offline_registered_match_score_floor": float(os.environ.get("OFFLINE_REGISTERED_MATCH_SCORE_FLOOR", "0.38")),
+    "offline_registered_match_min_margin": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_MARGIN", "0.03")),
     "min_confidence": 0.15,         # 低置信度过滤（低于此值丢弃）
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "inheritance_timeout": 3.0,     # 说话人继承超时（秒）
@@ -578,6 +581,52 @@ class ModelService:
             return (self._emb_names[best_idx], best_score)
         return ("未知", best_score)
 
+    def match_registered_speaker_guarded(
+        self,
+        embedding: np.ndarray,
+        threshold: float = None,
+        duration_ms: int | None = None,
+    ) -> Tuple[str, float]:
+        """
+        离线/上传链路更严格的注册人匹配。
+
+        目标：
+        - 短片段不直接认成已注册用户
+        - 即使超过基础阈值，也要求达到更高分数下限
+        - top1 和 top2 太接近时，视为不确定
+        """
+        if threshold is None:
+            threshold = CONFIG["speaker_threshold"]
+
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return ("未知", 0.0)
+
+        q = embedding.flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            return ("未知", 0.0)
+        q = q / q_norm
+
+        scores = self._emb_matrix @ q
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
+
+        effective_threshold = max(threshold, CONFIG["offline_registered_match_score_floor"])
+        min_duration_ms = CONFIG["offline_registered_match_min_duration_ms"]
+        min_margin = CONFIG["offline_registered_match_min_margin"]
+
+        if duration_ms is not None and duration_ms < min_duration_ms:
+            return ("未知", best_score)
+
+        if best_score < effective_threshold:
+            return ("未知", best_score)
+
+        if len(scores) > 1 and (best_score - second_best_score) < min_margin:
+            return ("未知", best_score)
+
+        return (self._emb_names[best_idx], best_score)
+    
     def load_diarization_model(self, device: str = "cpu"):
         """
         加载 pyannote 说话人分离模型

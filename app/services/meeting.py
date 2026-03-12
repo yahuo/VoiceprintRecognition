@@ -124,8 +124,10 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 try:
                     emb = future_emb.result()
                     if emb is not None:
-                        matched_name, score = service.match_speaker_fast(
-                            emb, threshold
+                        matched_name, score = service.match_registered_speaker_guarded(
+                            emb,
+                            threshold=threshold,
+                            duration_ms=end_ms - start_ms,
                         )
                         if matched_name != "未知":
                             speaker_mapping[pyannote_speaker] = matched_name
@@ -217,7 +219,11 @@ def _process_with_vad(service: ModelService, audio_path: str,
 
             # 第一阶段：尝试匹配已注册声纹
             if emb is not None:
-                speaker, score = service.match_speaker_fast(emb, threshold)
+                speaker, score = service.match_registered_speaker_guarded(
+                    emb,
+                    threshold=threshold,
+                    duration_ms=end_ms - start_ms,
+                )
 
             segment_info = {
                 "time": format_time(start_ms),
