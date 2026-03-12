@@ -1,6 +1,6 @@
 # 声纹识别 Demo (Fun-ASR-Nano)
 
-基于阿里达摩院 FunASR + Fun-ASR-Nano-2512 的声纹识别演示项目，支持：
+基于阿里达摩院 FunASR、Paraformer 与 Fun-ASR-Nano-2512 的声纹识别演示项目，支持：
 - 🎙️ 语音识别 (ASR) - 31 种语言，7 大方言
 - 👤 说话人验证 (Speaker Verification)
 - 👥 说话人分离 (Speaker Diarization)
@@ -116,35 +116,34 @@ python -m app.utils.voiceprint list
 
 本项目采用 **双轨制混合架构 (Hybrid Architecture)**，结合了业界领先的深度学习模型，以适应不同的应用场景：
 
-1.  **Pyannote 分离 (精度优先)**：适用于会议记录生成、长音频处理。
-2.  **VAD 实时切分 (速度优先)**：适用于实时对话流。
+1.  **离线/上传链路 (Paraformer + Pyannote)**：适用于会议记录生成、长音频处理。
+2.  **实时链路 (VAD + Nano)**：适用于实时对话流。
 
 ```mermaid
 graph TD
     Input[音频输入] --> Mode{场景选择}
 
-    %% Pyannote 路径 (高精度分段)
+    %% 离线 / 上传路径
     Mode -->|离线/流式上传| P1[Pyannote Diarization]
-    P1 -->|时间分段 + 重叠语音处理| Loop[逐段识别循环]
+    Mode -->|离线/流式上传| P2[Paraformer 整段 ASR]
+    P1 --> Align[按时间轴对齐]
+    P2 --> Align
+    Align --> UploadSV[注册人保守匹配]
+    UploadSV --> UploadOut[上传转写结果]
 
-    %% VAD 路径 (低延迟)
+    %% 实时路径
     Mode -->|实时 WebSocket| V1[FSMN-VAD 检测]
-    V1 -->|实时切分| Loop
-
-    %% 每段独立识别
-    Loop --> ASR[FunASR 语音转写]
-    Loop --> SV[CAM++ 声纹提取]
-
-    SV --> Match{声纹库匹配}
+    V1 -->|实时切分| R1[Fun-ASR-Nano 逐段识别]
+    V1 -->|实时切分| R2[CAM++ 声纹提取]
+    R2 --> Match{声纹库匹配}
     Match -->|匹配成功| User["注册用户 (如:张三)"]
     Match -->|匹配失败| Stranger["陌生人聚类"]
-    Stranger -.->|Pyannote 模式| PyCluster["按 Pyannote Speaker 分组"]
-    Stranger -.->|VAD 模式| DBCluster["DBSCAN 聚类"]
-
-    ASR --> Output[最终结果]
+    Stranger --> DBCluster["DBSCAN 聚类"]
+    R1 --> Output[实时结果]
     User --> Output
-    PyCluster --> Output
     DBCluster --> Output
+    UploadOut --> Final[最终结果]
+    Output --> Final
 ```
 
 ### 核心模型组件
@@ -153,7 +152,8 @@ graph TD
 |------|----------|------|----------|
 | **Diarization** | `pyannote/speaker-diarization-community-1` | **说话人分离** | **SOTA 效果**。能精准区分"谁在说话"，支持 **Overlap (重叠人声)** 分离，能够全局追踪说话人。 |
 | **VAD** | `speech_fsmn_vad_zh-cn-16k-common` | 语音活动检测 | **超低延迟**。毫秒级切分音频，用于实时对话或 Pyannote 的回退方案。 |
-| **ASR** | `Fun-ASR-Nano-2512` | 语音转文字 | **高精度中文识别**。800M 参数 LLM，语义理解强，自动添加标点，适合口语记录。 |
+| **ASR (上传/离线)** | `speech_paraformer-large-vad-punc_asr_nat` | 整段语音转文字 + 时间戳 | **长音频优先**。支持 VAD / 标点 / 时间戳，适合上传音频和会议记录。 |
+| **ASR (实时)** | `Fun-ASR-Nano-2512` | 逐段语音转文字 | **实时语义理解强**。适合 WebSocket 低延迟场景。 |
 | **Speaker** | `speech_campplus_sv` | 声纹识别 | **高鲁棒性**。提取声纹特征向量，用于识别已知用户。支持短语音特征提取。 |
 
 ## ⚙️ 识别参数配置
@@ -182,8 +182,9 @@ graph TD
 
 1.  **Pyannote Speaker 分组 (离线模式)**:
     *   Pyannote 负责时间分段和说话人分组（输出 `SPEAKER_00`, `SPEAKER_01` 等标签）。
-    *   **身份识别由 CAM++ 逐段独立完成**，不依赖 Pyannote 的 Speaker 分组。
-    *   仅当 CAM++ 未匹配到注册人时，才使用 Pyannote 的 Speaker 标签将同一陌生人的多个片段归为一组（如 "陌生人1"）。
+    *   上传链路默认由 **Paraformer 先做整段 ASR**，再按时间轴与 Pyannote turn 对齐。
+    *   注册人匹配使用 **保守匹配 + top-K 代表片段共识**，避免把不存在的人误认出来。
+    *   当某个 Pyannote speaker 未命中注册人时，才将其归并为同一个 "陌生人X"。
 
 2.  **DBSCAN 聚类 (VAD/实时模式)**:
     *   在 VAD 模式下，系统收集所有标记为"未知"的声纹向量。
@@ -366,6 +367,8 @@ SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 NVIDIA_DEVICE_ID=0
 # 推理设备 (默认 cuda:0)
 DEVICE=cuda:0
+# 上传/离线转写后端（默认 paraformer）
+UPLOAD_ASR_BACKEND=paraformer
 # 宿主机端口 (默认 18008)
 HOST_PORT=18008
 # 声纹数据库路径 (默认 ./voiceprint_db)
