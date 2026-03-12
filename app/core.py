@@ -38,6 +38,8 @@ except ImportError:
 
 CONFIG = {
     "asr_language": "zh",           # 强制中文，避免短音频误判为日语
+    "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
+    "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
     "min_confidence": 0.15,         # 低置信度过滤（低于此值丢弃）
     "silence_duration": 0.5,        # 静音切分阈值（秒）
@@ -52,6 +54,8 @@ CONFIG = {
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
     "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
     "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
+    "upload_asr_model_path": os.environ.get("UPLOAD_ASR_MODEL_PATH", ""),
+    "punc_model_path": os.environ.get("PUNC_MODEL_PATH", ""),
     "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
 }
 
@@ -301,6 +305,8 @@ class ModelService:
     def __init__(self):
         self.vad_model = None
         self.asr_model = None
+        self.upload_asr_model = None
+        self.upload_asr_backend = CONFIG["upload_asr_backend"]
         self.spk_model = None
         self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
@@ -355,7 +361,7 @@ class ModelService:
 
             self.vad_model = AutoModel(**vad_model_kwargs)
         
-        # 2. ASR 模型 (Fun-ASR-Nano)
+        # 2. ASR 模型 (Fun-ASR-Nano) - 实时/兼容链路默认使用
         print("加载 ASR 模型 (Fun-ASR-Nano)...")
         model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
         fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
@@ -377,6 +383,9 @@ class ModelService:
             print(f"  ⚠️ ASR 本地路径不存在: {asr_model_path}，将从网络下载")
 
         self.asr_model = AutoModel(**asr_model_kwargs)
+
+        # 2.1 上传链路专用 ASR 后端
+        self._load_upload_asr_model(device=device)
         
         # 3. 声纹模型 (CAM++)
         print("加载声纹模型...")
@@ -420,7 +429,66 @@ class ModelService:
             self.extract_embedding(dummy)
         except Exception:
             pass
+        if self.upload_asr_model is not None and self.upload_asr_model is not self.asr_model:
+            try:
+                self.transcribe_full_audio(dummy, backend=self.upload_asr_backend)
+            except Exception:
+                pass
         print(f"🔥 CUDA warmup 完成，耗时 {time.time() - t0:.1f}s")
+
+    def _load_upload_asr_model(self, device: str):
+        """加载上传链路专用 ASR。"""
+        backend = CONFIG["upload_asr_backend"].lower()
+        self.upload_asr_backend = backend
+
+        if backend == "nano":
+            self.upload_asr_model = self.asr_model
+            print("上传 ASR 后端: nano (沿用实时链路模型)")
+            return
+
+        if backend != "paraformer":
+            print(f"⚠️ 未知上传 ASR 后端: {backend}，回退到 nano")
+            self.upload_asr_backend = "nano"
+            self.upload_asr_model = self.asr_model
+            return
+
+        print("加载上传 ASR 模型 (Paraformer)...")
+        upload_asr_kwargs = {
+            "model": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            "vad_model": "fsmn-vad",
+            "vad_kwargs": {"max_single_segment_time": 30000},
+            "punc_model": "ct-punc",
+            "device": device,
+            "disable_update": True,
+        }
+        upload_asr_model_path = CONFIG.get("upload_asr_model_path")
+        if upload_asr_model_path and os.path.exists(upload_asr_model_path):
+            upload_asr_kwargs["model_path"] = upload_asr_model_path
+            print(f"  上传 ASR 模型路径: {upload_asr_model_path}")
+        elif upload_asr_model_path:
+            print(f"  ⚠️ 上传 ASR 本地路径不存在: {upload_asr_model_path}，将从网络下载")
+
+        vad_model_path = CONFIG.get("vad_model_path")
+        if vad_model_path and os.path.exists(vad_model_path):
+            upload_asr_kwargs["vad_model"] = vad_model_path
+            print(f"  上传 ASR 复用 VAD 模型目录: {vad_model_path}")
+        elif vad_model_path:
+            print(f"  ⚠️ 上传 ASR 的 VAD 本地路径不存在: {vad_model_path}，将使用默认下载源")
+
+        punc_model_path = CONFIG.get("punc_model_path")
+        if punc_model_path and os.path.exists(punc_model_path):
+            upload_asr_kwargs["punc_model"] = punc_model_path
+            print(f"  上传 ASR 复用 PUNC 模型目录: {punc_model_path}")
+        elif punc_model_path:
+            print(f"  ⚠️ 上传 ASR 的 PUNC 本地路径不存在: {punc_model_path}，将使用默认下载源")
+
+        try:
+            self.upload_asr_model = AutoModel(**upload_asr_kwargs)
+            print("✅ 上传 ASR 模型加载完成")
+        except Exception as e:
+            print(f"⚠️ 上传 ASR 模型加载失败，回退到 nano: {e}")
+            self.upload_asr_backend = "nano"
+            self.upload_asr_model = self.asr_model
 
     def reload_voiceprints(self):
         """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
@@ -472,6 +540,13 @@ class ModelService:
             return np.ascontiguousarray(prepared)
         return prepared
 
+    def _prepare_upload_asr_input(self, audio_input):
+        """上传链路 ASR 输入预处理。"""
+        prepared = self._normalize_audio_array(audio_input)
+        if isinstance(prepared, np.ndarray):
+            return np.ascontiguousarray(prepared)
+        return prepared
+
     def match_speaker_fast(self, embedding: np.ndarray, threshold: float = None) -> Tuple[str, float]:
         """
         向量化声纹匹配：单次矩阵乘法替代 Python 循环
@@ -502,7 +577,7 @@ class ModelService:
         if best_score >= threshold:
             return (self._emb_names[best_idx], best_score)
         return ("未知", best_score)
-    
+
     def load_diarization_model(self, device: str = "cpu"):
         """
         加载 pyannote 说话人分离模型
@@ -671,6 +746,96 @@ class ModelService:
         except Exception as e:
             print(f"ASR 识别失败: {e}")
         return ""
+
+    def transcribe_full_audio(self, audio_input, backend: str = None, return_timestamps: bool = False) -> dict:
+        """
+        上传链路整段 ASR。优先使用更快的离线模型；若不支持时间戳则由上层回退。
+        """
+        if backend is None:
+            backend = self.upload_asr_backend
+        backend = backend.lower()
+
+        if return_timestamps and backend != "paraformer":
+            return {"text": "", "sentences": []}
+
+        model = self.upload_asr_model if backend == self.upload_asr_backend else self.asr_model
+        if model is None:
+            return {"text": "", "sentences": []}
+
+        prepared_input = self._prepare_upload_asr_input(audio_input)
+
+        try:
+            if backend == "paraformer":
+                kwargs = {
+                    "input": prepared_input,
+                    "batch_size_s": CONFIG["upload_asr_batch_size_s"],
+                }
+                if return_timestamps:
+                    kwargs["sentence_timestamp"] = True
+                res = model.generate(**kwargs)
+            else:
+                res = model.generate(
+                    input=prepared_input,
+                    language=CONFIG["asr_language"],
+                    use_itn=True,
+                    batch_size=1,
+                    max_length=200,
+                )
+            return self._normalize_asr_result(res)
+        except Exception as e:
+            print(f"整段 ASR 失败({backend}): {e}")
+            return {"text": "", "sentences": []}
+
+    def _normalize_asr_result(self, result) -> dict:
+        """兼容不同 ASR 后端的返回结构。"""
+        normalized = {"text": "", "sentences": []}
+        if not result:
+            return normalized
+
+        first = result[0] if isinstance(result, list) else result
+        if not isinstance(first, dict):
+            return normalized
+
+        normalized["text"] = first.get("text", "") or ""
+
+        sentence_candidates = None
+        for key in ("sentence_info", "sentences", "sentence_timestamp", "sentence_timestamps"):
+            value = first.get(key)
+            if isinstance(value, list) and value:
+                sentence_candidates = value
+                break
+
+        if sentence_candidates is None and isinstance(result, list):
+            if result and all(isinstance(item, dict) and "text" in item for item in result):
+                if any(("start" in item and "end" in item) for item in result):
+                    sentence_candidates = result
+
+        if not sentence_candidates:
+            return normalized
+
+        sentences = []
+        for item in sentence_candidates:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text", "") or item.get("sentence", "") or ""
+            start = item.get("start")
+            end = item.get("end")
+            if start is None or end is None:
+                timestamp = item.get("timestamp")
+                if isinstance(timestamp, (list, tuple)) and len(timestamp) >= 2:
+                    start, end = timestamp[0], timestamp[1]
+            if start is None or end is None:
+                continue
+            sentences.append(
+                {
+                    "text": text,
+                    "start_ms": int(round(float(start))),
+                    "end_ms": int(round(float(end))),
+                }
+            )
+
+        normalized["sentences"] = sentences
+        return normalized
     
     def vad_segment(self, audio_input) -> List[List[int]]:
         """

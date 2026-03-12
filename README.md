@@ -308,6 +308,9 @@ bash scripts/build_venv.sh
 # 2) 预下载运行时模型（ASR/VAD/SPK）到 models/
 python scripts/download_all_models.py
 
+# 上传/离线转写默认使用 Paraformer，建议一并下载
+python scripts/download_all_models.py --include-upload-asr
+
 # 3) 准备镜像（可直接 pull 已构建镜像）
 docker pull your-registry/voiceprint-server-slim:latest
 docker save -o voiceprint-server-slim.tar your-registry/voiceprint-server-slim:latest
@@ -342,7 +345,10 @@ docker images voiceprint-server-slim
 VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
 MODELS_PATH=./models             # 本地模型目录（挂载到 /app/models，推荐）
 ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
+UPLOAD_ASR_BACKEND=paraformer    # 上传/离线转写默认使用 Paraformer；需要旧行为时改回 nano
+UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
 VAD_MODEL_PATH=/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch
+PUNC_MODEL_PATH=/app/models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch
 SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 ```
 

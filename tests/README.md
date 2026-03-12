@@ -38,3 +38,15 @@ Optional thresholds:
 export STREAM_TEST_MAX_FIRST_EVENT_SECONDS=25
 export STREAM_TEST_MAX_TOTAL_SECONDS=60
 ```
+
+Upload/stream transcription uses Paraformer by default. If you want to pin the
+model path before starting the server:
+
+```bash
+export UPLOAD_ASR_BACKEND=paraformer
+export UPLOAD_ASR_MODEL_PATH=/absolute/path/to/paraformer-model
+```
+
+If `UPLOAD_ASR_MODEL_PATH` is omitted, the server will try to download the
+Paraformer model on first startup. Set `UPLOAD_ASR_BACKEND=nano` to keep the
+legacy per-segment Nano path.

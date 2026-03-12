@@ -11,6 +11,7 @@
 
 用法:
     python scripts/download_all_models.py
+    python scripts/download_all_models.py --include-upload-asr
     python scripts/download_all_models.py --output-dir /data/voiceprint/models --force
 """
 
@@ -54,6 +55,20 @@ MODEL_SPECS = [
     ),
 ]
 
+UPLOAD_ASR_SPEC = ModelSpec(
+    name="UPLOAD_ASR",
+    source="modelscope",
+    repo_id="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    subdir="asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+)
+
+UPLOAD_PUNC_SPEC = ModelSpec(
+    name="UPLOAD_PUNC",
+    source="modelscope",
+    repo_id="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+    subdir="punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="下载离线模型到 models/ 目录")
@@ -66,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="强制重新下载（会删除目标模型目录后重下）",
+    )
+    parser.add_argument(
+        "--include-upload-asr",
+        action="store_true",
+        help="额外下载上传链路用的 Paraformer 模型",
     )
     return parser.parse_args()
 
@@ -118,8 +138,12 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     failures: list[str] = []
+    model_specs = list(MODEL_SPECS)
+    if args.include_upload_asr:
+        model_specs.append(UPLOAD_ASR_SPEC)
+        model_specs.append(UPLOAD_PUNC_SPEC)
 
-    for spec in MODEL_SPECS:
+    for spec in model_specs:
         target = output_dir / spec.subdir
         print(f"\n==> [{spec.name}] {spec.repo_id}")
         print(f"    目标路径: {target}")
@@ -158,6 +182,16 @@ def main() -> int:
     print("✅ 全部模型下载完成")
     print("\n可用于 .env 的本地模型路径示例：")
     print(f"ASR_MODEL_PATH={output_dir / 'asr/Fun-ASR-Nano-2512'}")
+    if args.include_upload_asr:
+        print("UPLOAD_ASR_BACKEND=paraformer")
+        print(
+            "UPLOAD_ASR_MODEL_PATH="
+            f"{output_dir / 'asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch'}"
+        )
+        print(
+            "PUNC_MODEL_PATH="
+            f"{output_dir / 'punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch'}"
+        )
     print(f"VAD_MODEL_PATH={output_dir / 'vad/speech_fsmn_vad_zh-cn-16k-common-pytorch'}")
     print(f"SPK_MODEL_PATH={output_dir / 'spk/speech_campplus_sv_zh-cn_16k-common'}")
     print(f"MODELS_PATH={output_dir}")

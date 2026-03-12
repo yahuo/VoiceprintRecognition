@@ -307,11 +307,33 @@ async def transcribe_meeting_stream(
 
     # 读取上传音频到内存，避免 Docker overlay 临时文件 IO
     content = await file.read()
+    temp_upload_audio_path = None
+    if service.upload_asr_backend == "paraformer":
+        suffix = os.path.splitext(file.filename or "")[1] or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(content)
+            temp_upload_audio_path = tmp.name
 
     async def generate():
         try:
             t_start = time.perf_counter()
             yield f"data: {json_module.dumps({'type': 'status', 'phase': 'loading', 'message': '正在解码音频...'}, ensure_ascii=False)}\n\n"
+
+            def _transcribe_full_audio_timed(audio_input, backend):
+                started_at = time.perf_counter()
+                result = service.transcribe_full_audio(audio_input, backend, True)
+                return result, time.perf_counter() - started_at
+
+            full_audio_asr_task = None
+            if service.upload_asr_backend == "paraformer" and temp_upload_audio_path:
+                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'transcribing', 'message': '正在并行进行整段识别与说话人分离...'}, ensure_ascii=False)}\n\n"
+                full_audio_asr_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _transcribe_full_audio_timed,
+                        temp_upload_audio_path,
+                        service.upload_asr_backend,
+                    )
+                )
 
             # 从内存加载音频（不写临时文件）
             speech_full, sr = await asyncio.to_thread(
@@ -352,50 +374,125 @@ async def transcribe_meeting_stream(
                     f"max<={CONFIG['diarization_max_merged_ms']}ms)"
                 )
 
-                yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
-                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在识别，共 {len(diarization_segments)} 个片段...'}, ensure_ascii=False)}\n\n"
+                asr_sentences = []
+                if full_audio_asr_task is not None:
+                    asr_result, asr_elapsed = await full_audio_asr_task
+                    asr_sentences = asr_result.get("sentences", [])
+                    print(
+                        f"⏱️ SSE 整段 ASR({service.upload_asr_backend}): "
+                        f"{asr_elapsed:.2f}s, 句子数: {len(asr_sentences)}"
+                    )
+                else:
+                    print(f"ℹ️ 上传 ASR 后端 {service.upload_asr_backend} 不支持时间轴对齐，直接走逐段识别")
 
-                # pyannote speaker -> 陌生人编号（仅用于未匹配注册人的片段）
-                stranger_mapping = {}
-                stranger_counter = 0
+                if asr_sentences:
+                    def _choose_best_speaker(start_ms: int, end_ms: int):
+                        best = None
+                        best_overlap = -1
+                        for seg_start, seg_end, seg_speaker in diarization_segments:
+                            overlap = min(end_ms, seg_end) - max(start_ms, seg_start)
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                best = (seg_start, seg_end, seg_speaker)
+                        return best
 
-                for i, (start_ms, end_ms, pyannote_speaker) in enumerate(diarization_segments):
-                    start_sample = int(start_ms / 1000 * sr)
-                    end_sample = int(end_ms / 1000 * sr)
-                    speech = speech_full[start_sample:end_sample]
+                    # 每个 pyannote speaker 只做一次声纹匹配，优先使用最长片段
+                    speaker_mapping = {}
+                    stranger_counter = 0
+                    speaker_best_segment = {}
+                    for start_ms, end_ms, pyannote_speaker in diarization_segments:
+                        duration_ms = end_ms - start_ms
+                        prev = speaker_best_segment.get(pyannote_speaker)
+                        if prev is None or duration_ms > (prev[1] - prev[0]):
+                            speaker_best_segment[pyannote_speaker] = (start_ms, end_ms)
 
-                    if len(speech) < 0.2 * sr:
-                        continue
-
-                    text, emb = await asyncio.to_thread(_infer_segment, speech)
-
-                    if not text:
-                        continue
-
-                    # 每段独立用 CAM++ 匹配注册声纹
-                    speaker = "未知"
-                    confidence = 0.0
-                    if emb is not None:
-                        speaker, confidence = service.match_speaker_fast(emb, threshold)
-
-                    # 未匹配到注册人时，用 pyannote speaker 分组做陌生人聚类
-                    if speaker == "未知":
-                        if pyannote_speaker not in stranger_mapping:
+                    for pyannote_speaker, (start_ms, end_ms) in speaker_best_segment.items():
+                        start_sample = int(start_ms / 1000 * sr)
+                        end_sample = int(end_ms / 1000 * sr)
+                        speech = speech_full[start_sample:end_sample]
+                        emb = await asyncio.to_thread(service.extract_embedding, speech)
+                        speaker = "未知"
+                        confidence = 0.0
+                        if emb is not None:
+                            speaker, confidence = service.match_speaker_fast(emb, threshold)
+                        if speaker == "未知":
                             stranger_counter += 1
-                            stranger_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
-                        speaker = stranger_mapping[pyannote_speaker]
+                            speaker = f"陌生人{stranger_counter}"
+                            confidence = 1.0
+                        speaker_mapping[pyannote_speaker] = (speaker, confidence)
 
-                    result = {
-                        "type": "segment",
-                        "index": i,
-                        "time": format_time(start_ms),
-                        "speaker": speaker,
-                        "confidence": round(confidence, 2),
-                        "text": text
-                    }
-                    yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(asr_sentences), 'method': f'align-{service.upload_asr_backend}'})}\n\n"
+                    yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在对齐说话人与文本，共 {len(asr_sentences)} 句...'}, ensure_ascii=False)}\n\n"
 
-                    await asyncio.sleep(0)
+                    for i, item in enumerate(asr_sentences):
+                        start_ms = item["start_ms"]
+                        end_ms = item["end_ms"]
+                        text = item["text"].strip()
+                        if not text:
+                            continue
+
+                        best_seg = _choose_best_speaker(start_ms, end_ms)
+                        speaker = "未知"
+                        confidence = 0.0
+                        if best_seg is not None:
+                            _, _, pyannote_speaker = best_seg
+                            speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+
+                        result = {
+                            "type": "segment",
+                            "index": i,
+                            "time": format_time(start_ms),
+                            "speaker": speaker,
+                            "confidence": round(confidence, 2),
+                            "text": text,
+                        }
+                        yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                        await asyncio.sleep(0)
+                else:
+                    print("⚠️ 上传 ASR 未返回句级时间信息，回退到逐段识别模式")
+                    yield f"data: {json_module.dumps({'type': 'status', 'phase': 'fallback', 'message': '整段 ASR 未返回时间戳，回退逐段识别...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(diarization_segments), 'method': 'pyannote'})}\n\n"
+                    yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在识别，共 {len(diarization_segments)} 个片段...'}, ensure_ascii=False)}\n\n"
+
+                    # pyannote speaker -> 陌生人编号（仅用于未匹配注册人的片段）
+                    stranger_mapping = {}
+                    stranger_counter = 0
+
+                    for i, (start_ms, end_ms, pyannote_speaker) in enumerate(diarization_segments):
+                        start_sample = int(start_ms / 1000 * sr)
+                        end_sample = int(end_ms / 1000 * sr)
+                        speech = speech_full[start_sample:end_sample]
+
+                        if len(speech) < 0.2 * sr:
+                            continue
+
+                        text, emb = await asyncio.to_thread(_infer_segment, speech)
+
+                        if not text:
+                            continue
+
+                        speaker = "未知"
+                        confidence = 0.0
+                        if emb is not None:
+                            speaker, confidence = service.match_speaker_fast(emb, threshold)
+
+                        if speaker == "未知":
+                            if pyannote_speaker not in stranger_mapping:
+                                stranger_counter += 1
+                                stranger_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                            speaker = stranger_mapping[pyannote_speaker]
+
+                        result = {
+                            "type": "segment",
+                            "index": i,
+                            "time": format_time(start_ms),
+                            "speaker": speaker,
+                            "confidence": round(confidence, 2),
+                            "text": text
+                        }
+                        yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+
+                        await asyncio.sleep(0)
 
             else:
                 # ========== Fallback: VAD（传 numpy，避免文件 IO）==========
@@ -448,6 +545,9 @@ async def transcribe_meeting_stream(
             import traceback
             traceback.print_exc()
             yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            if temp_upload_audio_path and os.path.exists(temp_upload_audio_path):
+                os.unlink(temp_upload_audio_path)
 
     return StreamingResponse(
         generate(),
