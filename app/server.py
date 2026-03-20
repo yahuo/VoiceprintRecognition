@@ -253,17 +253,31 @@ async def delete_speaker(name: str):
     }
 
 
-@app.post("/v1/meeting/transcribe")
+@app.post(
+    "/v1/meeting/transcribe",
+    summary="上传音频生成会议记录",
+    response_description="完整会议转写结果与 Markdown",
+)
 async def transcribe_meeting(
-    file: UploadFile = File(...),
-    threshold: float = Form(default=None),
-    allowed_speakers: list[str] | None = Form(default=None),
+    file: UploadFile = File(
+        ...,
+        description="会议音频文件，支持 WAV、MP3、M4A 等格式。",
+    ),
+    threshold: float = Form(
+        default=None,
+        description="可选的声纹匹配阈值；不传时使用服务端默认值。",
+    ),
+    allowed_speakers: list[str] | None = Form(
+        default=None,
+        description="可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
+    ),
 ):
     """
-    上传音频文件生成会议记录
-    
-    - **file**: 会议音频文件
-    - **threshold**: 声纹匹配阈值 (默认使用 CONFIG 中的值)
+    上传音频文件，返回完整会议记录。
+
+    - `file`: 会议音频文件
+    - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
+    - `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
     """
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
@@ -326,19 +340,33 @@ import asyncio
 import json as json_module
 
 
-@app.post("/v1/meeting/transcribe/stream")
+@app.post(
+    "/v1/meeting/transcribe/stream",
+    summary="流式处理会议音频",
+    response_description="SSE 流，按阶段和分段持续返回转写结果",
+)
 async def transcribe_meeting_stream(
-    file: UploadFile = File(...),
-    threshold: float = Form(default=None),
-    allowed_speakers: list[str] | None = Form(default=None),
+    file: UploadFile = File(
+        ...,
+        description="会议音频文件，支持 WAV、MP3、M4A 等格式。",
+    ),
+    threshold: float = Form(
+        default=None,
+        description="可选的声纹匹配阈值；不传时使用服务端默认值。",
+    ),
+    allowed_speakers: list[str] | None = Form(
+        default=None,
+        description="可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
+    ),
 ):
     """
-    流式处理会议音频（Server-Sent Events）
+    流式处理会议音频（Server-Sent Events）。
 
-    - **file**: 会议音频文件
-    - **threshold**: 声纹匹配阈值
+    - `file`: 会议音频文件
+    - `threshold`: 可选的声纹匹配阈值
+    - `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
 
-    返回 SSE 流，每个片段处理完成后立即推送
+    返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
     """
     import io
 
@@ -836,9 +864,13 @@ async def transcribe_meeting_stream(
 @app.websocket("/ws/meeting/live")
 async def websocket_live(websocket: WebSocket):
     """
-    实时会议 WebSocket 接口
-    
-    客户端发送音频流 (bytes)，服务端返回识别结果 (JSON)
+    实时会议 WebSocket 接口。
+
+    Swagger/OpenAPI 不展示 WebSocket 参数；当前支持通过 query string
+    重复传 `allowed_speakers` 来限制本次会议的匹配范围，例如：
+    `/ws/meeting/live?allowed_speakers=张三&allowed_speakers=李四`
+
+    客户端发送音频流 (bytes)，服务端返回识别结果 (JSON)。
     """
     raw_allowed_speakers = websocket.query_params.getlist("allowed_speakers")
     await websocket.accept()
