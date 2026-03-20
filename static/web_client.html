@@ -243,6 +243,331 @@
             color: white;
         }
 
+        .participant-panel {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.06) 0%, rgba(118, 75, 162, 0.06) 100%);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 18px;
+            padding: 18px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+
+        .participant-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .participant-panel-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            letter-spacing: 0.3px;
+            background: linear-gradient(135deg, #a5b4fc, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .participant-panel-hint {
+            color: #8892b0;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .participant-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            flex-shrink: 0;
+        }
+
+        .btn-chip {
+            padding: 6px 14px;
+            font-size: 12px;
+            border-radius: 999px;
+            background: rgba(102, 126, 234, 0.12);
+            color: #a5b4fc;
+            border: 1px solid rgba(102, 126, 234, 0.25);
+            transition: all 0.2s ease;
+            font-weight: 500;
+        }
+
+        .btn-chip:hover:not(:disabled) {
+            background: rgba(102, 126, 234, 0.24);
+            border-color: rgba(102, 126, 234, 0.5);
+            color: #c7d2fe;
+            transform: translateY(-1px);
+        }
+
+        .participant-multiselect {
+            position: relative;
+        }
+
+        .participant-control {
+            min-height: 52px;
+            padding: 10px 14px;
+            border-radius: 14px;
+            background: rgba(10, 15, 40, 0.5);
+            border: 1.5px solid rgba(255, 255, 255, 0.1);
+            box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.2);
+            cursor: text;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .participant-control:hover {
+            border-color: rgba(102, 126, 234, 0.35);
+        }
+
+        .participant-control.is-open {
+            border-color: rgba(102, 126, 234, 0.7);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15), inset 0 2px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        .participant-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .participant-tags:empty {
+            margin-bottom: 0;
+        }
+
+        .participant-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px 5px 6px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.25), rgba(118, 75, 162, 0.2));
+            border: 1px solid rgba(122, 143, 255, 0.3);
+            color: #e0e7ff;
+            font-size: 13px;
+            line-height: 1;
+            transition: all 0.15s ease;
+        }
+
+        .participant-tag:hover {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.35), rgba(118, 75, 162, 0.3));
+        }
+
+        .participant-tag-avatar {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .participant-tag-remove {
+            width: 18px;
+            height: 18px;
+            padding: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            color: #a5b4fc;
+            font-size: 13px;
+            line-height: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+        }
+
+        .participant-tag-remove:hover {
+            background: rgba(255, 71, 87, 0.4);
+            color: #fff;
+        }
+
+        .participant-input-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .participant-search-input {
+            flex: 1;
+            min-width: 0;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: #e0e7ff;
+            font-size: 14px;
+            padding: 2px 0;
+        }
+
+        .participant-search-input::placeholder {
+            color: #4a5578;
+        }
+
+        .participant-toggle-btn {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            border-radius: 10px;
+            background: rgba(102, 126, 234, 0.1);
+            color: #7c8fc9;
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.25s ease;
+        }
+
+        .participant-toggle-btn:hover {
+            background: rgba(102, 126, 234, 0.2);
+            color: #a5b4fc;
+        }
+
+        .participant-toggle-btn svg {
+            transition: transform 0.25s ease;
+        }
+
+        .participant-control.is-open .participant-toggle-btn svg {
+            transform: rotate(180deg);
+        }
+
+        .participant-dropdown {
+            display: none;
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: calc(100% + 8px);
+            z-index: 20;
+            border-radius: 16px;
+            background: rgba(15, 20, 50, 0.97);
+            border: 1px solid rgba(102, 126, 234, 0.25);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+            overflow: hidden;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        .participant-dropdown.open {
+            display: block;
+            animation: dropdownIn 0.18s ease;
+        }
+
+        @keyframes dropdownIn {
+            from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .participant-options {
+            max-height: 260px;
+            overflow-y: auto;
+            padding: 6px;
+        }
+
+        .participant-options::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .participant-options::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .participant-options::-webkit-scrollbar-thumb {
+            background: rgba(102, 126, 234, 0.3);
+            border-radius: 4px;
+        }
+
+        .participant-option {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: transparent;
+            color: #c7d2fe;
+            font-size: 14px;
+            text-align: left;
+            transition: background 0.15s ease;
+            cursor: pointer;
+        }
+
+        .participant-option:hover {
+            background: rgba(102, 126, 234, 0.12);
+            color: #e0e7ff;
+        }
+
+        .participant-option.selected {
+            background: rgba(102, 126, 234, 0.18);
+            color: #e0e7ff;
+        }
+
+        .participant-option-checkbox {
+            width: 18px;
+            height: 18px;
+            border-radius: 6px;
+            border: 1.5px solid rgba(102, 126, 234, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: all 0.15s ease;
+            background: transparent;
+        }
+
+        .participant-option.selected .participant-option-checkbox {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-color: transparent;
+        }
+
+        .participant-option-check-icon {
+            display: none;
+            color: #fff;
+            font-size: 11px;
+            line-height: 1;
+            font-weight: 700;
+        }
+
+        .participant-option.selected .participant-option-check-icon {
+            display: block;
+        }
+
+        .participant-option-label {
+            flex: 1;
+        }
+
+        .participant-option-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.3), rgba(118, 75, 162, 0.3));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: #a5b4fc;
+            flex-shrink: 0;
+        }
+
+        .participant-option.selected .participant-option-avatar {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.5), rgba(118, 75, 162, 0.5));
+            color: #e0e7ff;
+        }
+
+        .participant-empty {
+            color: #4a5578;
+            font-size: 13px;
+            line-height: 1.6;
+            padding: 12px 8px;
+        }
+
         /* 文件上传 */
         .file-upload {
             border: 2px dashed rgba(255, 255, 255, 0.3);
@@ -405,6 +730,43 @@
                 <button class="btn-summary" id="btnLiveSummary" onclick="requestSummary('live')" disabled>📋 会议总结</button>
             </div>
 
+            <div class="participant-panel">
+                <div class="participant-panel-header">
+                    <div>
+                        <div class="participant-panel-title">本次参会人</div>
+                    </div>
+                    <div class="participant-actions">
+                        <button type="button" class="btn-chip" onclick="setParticipantSelection('live', true)">全选</button>
+                        <button type="button" class="btn-chip" onclick="setParticipantSelection('live', false)">清空</button>
+                    </div>
+                </div>
+                <div class="participant-multiselect">
+                    <div id="liveParticipantControl" class="participant-control" onclick="openParticipantDropdown('live')">
+                        <div id="liveParticipantTags" class="participant-tags"></div>
+                        <div class="participant-input-row">
+                            <input
+                                id="liveParticipantSearch"
+                                class="participant-search-input"
+                                type="text"
+                                placeholder="搜索参会人"
+                                onfocus="openParticipantDropdown('live')"
+                                oninput="handleParticipantSearch('live', this.value)"
+                                onclick="event.stopPropagation()">
+                            <button type="button" class="participant-toggle-btn" onclick="toggleParticipantDropdown('live'); event.stopPropagation();" title="展开/收起">
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="liveParticipantDropdown" class="participant-dropdown">
+                        <div id="liveParticipantOptions" class="participant-options">
+                            <div class="participant-empty">正在加载已注册声纹...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="result-box" id="transcriptBox">
                 <div class="empty-state">点击"开始录音"后，对话内容将在这里实时显示...</div>
             </div>
@@ -417,6 +779,43 @@
 
         <!-- Tab 2: 上传会议 -->
         <div id="tab-upload" class="tab-content">
+            <div class="participant-panel">
+                <div class="participant-panel-header">
+                    <div>
+                        <div class="participant-panel-title">本次参会人</div>
+                    </div>
+                    <div class="participant-actions">
+                        <button type="button" class="btn-chip" onclick="setParticipantSelection('upload', true)">全选</button>
+                        <button type="button" class="btn-chip" onclick="setParticipantSelection('upload', false)">清空</button>
+                    </div>
+                </div>
+                <div class="participant-multiselect">
+                    <div id="uploadParticipantControl" class="participant-control" onclick="openParticipantDropdown('upload')">
+                        <div id="uploadParticipantTags" class="participant-tags"></div>
+                        <div class="participant-input-row">
+                            <input
+                                id="uploadParticipantSearch"
+                                class="participant-search-input"
+                                type="text"
+                                placeholder="搜索参会人"
+                                onfocus="openParticipantDropdown('upload')"
+                                oninput="handleParticipantSearch('upload', this.value)"
+                                onclick="event.stopPropagation()">
+                            <button type="button" class="participant-toggle-btn" onclick="toggleParticipantDropdown('upload'); event.stopPropagation();" title="展开/收起">
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M2.5 5L7 9.5L11.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="uploadParticipantDropdown" class="participant-dropdown">
+                        <div id="uploadParticipantOptions" class="participant-options">
+                            <div class="participant-empty">正在加载已注册声纹...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="file-upload" onclick="document.getElementById('meetingFile').click()">
                 <div class="icon">📁</div>
                 <div>点击或拖拽上传会议音频</div>
@@ -483,6 +882,15 @@
         let isRecording = false;
         let meetingMarkdown = '';
         let liveTranscriptItems = [];  // 收集实时录音转写数据
+        let registeredSpeakers = [];
+        let voiceprintLoadError = '';
+        let voiceprintSourceUrl = '';
+        let voiceprintLoadPromise = null;
+        let voiceprintLoadToken = 0;
+        const participantState = {
+            live: { selected: new Set(), query: '', open: false },
+            upload: { selected: new Set(), query: '', open: false },
+        };
 
         const serverUrlInput = document.getElementById('serverUrl');
         const statusDot = document.getElementById('statusDot');
@@ -506,11 +914,232 @@
         }
 
         function getApiUrl() {
-            return serverUrlInput.value.replace(/\/$/, '');
+            return serverUrlInput.value.trim().replace(/\/$/, '');
         }
 
-        function getWsUrl() {
-            return getApiUrl().replace('http', 'ws') + '/ws/meeting/live';
+        function getWsUrl(selectedParticipants = []) {
+            const url = new URL(getApiUrl().replace('http', 'ws') + '/ws/meeting/live');
+            selectedParticipants.forEach(name => url.searchParams.append('allowed_speakers', name));
+            return url.toString();
+        }
+
+        function getSelectedParticipants(scope) {
+            return Array.from(participantState[scope].selected);
+        }
+
+        function invalidateVoiceprintCache() {
+            registeredSpeakers = [];
+            voiceprintLoadError = '';
+            voiceprintSourceUrl = '';
+            Object.keys(participantState).forEach(scope => {
+                participantState[scope].selected = new Set();
+                participantState[scope].open = false;
+            });
+            renderParticipantSelectors();
+        }
+
+        function getParticipantEmptyMessage() {
+            const apiUrl = getApiUrl();
+            if (!apiUrl) {
+                return '请先输入服务器地址。';
+            }
+            if (voiceprintLoadError) {
+                return '列表加载失败。';
+            }
+            if (voiceprintSourceUrl !== apiUrl) {
+                return '正在加载...';
+            }
+            return '暂无注册声纹。';
+        }
+
+        function normalizeParticipantSelection(scope) {
+            const validSpeakers = new Set(registeredSpeakers);
+            const state = participantState[scope];
+            state.selected = new Set(
+                Array.from(state.selected).filter(name => validSpeakers.has(name))
+            );
+        }
+
+        function closeAllParticipantDropdowns() {
+            Object.keys(participantState).forEach(scope => {
+                participantState[scope].open = false;
+                renderParticipantSelector(scope);
+            });
+        }
+
+        function openParticipantDropdown(scope) {
+            Object.keys(participantState).forEach(key => {
+                participantState[key].open = key === scope;
+            });
+            renderParticipantSelectors();
+        }
+
+        function toggleParticipantDropdown(scope) {
+            const nextOpen = !participantState[scope].open;
+            Object.keys(participantState).forEach(key => {
+                participantState[key].open = key === scope ? nextOpen : false;
+            });
+            renderParticipantSelectors();
+            if (nextOpen) {
+                document.getElementById(`${scope}ParticipantSearch`).focus();
+            }
+        }
+
+        function handleParticipantSearch(scope, value) {
+            participantState[scope].query = value;
+            participantState[scope].open = true;
+            renderParticipantSelector(scope);
+        }
+
+        function toggleParticipantSelection(scope, name) {
+            const state = participantState[scope];
+            if (state.selected.has(name)) {
+                state.selected.delete(name);
+            } else {
+                state.selected.add(name);
+            }
+            renderParticipantSelector(scope);
+            document.getElementById(`${scope}ParticipantSearch`).focus();
+        }
+
+        function removeParticipantTag(scope, name) {
+            participantState[scope].selected.delete(name);
+            renderParticipantSelector(scope);
+        }
+
+        function createParticipantEmpty(text) {
+            const div = document.createElement('div');
+            div.className = 'participant-empty';
+            div.textContent = text;
+            return div;
+        }
+
+        function renderParticipantSelector(scope) {
+            const state = participantState[scope];
+            const control = document.getElementById(`${scope}ParticipantControl`);
+            const tags = document.getElementById(`${scope}ParticipantTags`);
+            const dropdown = document.getElementById(`${scope}ParticipantDropdown`);
+            const options = document.getElementById(`${scope}ParticipantOptions`);
+            const searchInput = document.getElementById(`${scope}ParticipantSearch`);
+
+            if (!control || !tags || !dropdown || !options || !searchInput) {
+                return;
+            }
+
+            control.classList.toggle('is-open', state.open);
+            dropdown.classList.toggle('open', state.open && registeredSpeakers.length > 0);
+
+            tags.replaceChildren();
+            options.replaceChildren();
+            searchInput.value = state.query;
+
+            if (!registeredSpeakers.length) {
+                tags.appendChild(createParticipantEmpty(getParticipantEmptyMessage()));
+                options.appendChild(createParticipantEmpty('暂无可选参会人'));
+                return;
+            }
+
+            const selectedNames = registeredSpeakers.filter(name => state.selected.has(name));
+            if (selectedNames.length === 0) {
+                tags.appendChild(createParticipantEmpty('未选择，将从全库匹配'));
+            } else {
+                selectedNames.forEach(name => {
+                    const tag = document.createElement('span');
+                    tag.className = 'participant-tag';
+
+                    const avatar = document.createElement('span');
+                    avatar.className = 'participant-tag-avatar';
+                    avatar.textContent = name.charAt(0).toUpperCase();
+
+                    const text = document.createElement('span');
+                    text.textContent = name;
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = 'participant-tag-remove';
+                    removeBtn.innerHTML = '&times;';
+                    removeBtn.onclick = (event) => {
+                        event.stopPropagation();
+                        removeParticipantTag(scope, name);
+                    };
+
+                    tag.appendChild(avatar);
+                    tag.appendChild(text);
+                    tag.appendChild(removeBtn);
+                    tags.appendChild(tag);
+                });
+            }
+
+            const keyword = state.query.trim().toLowerCase();
+            const filteredNames = registeredSpeakers.filter(name => name.toLowerCase().includes(keyword));
+            if (filteredNames.length === 0) {
+                options.appendChild(createParticipantEmpty('没有匹配的参会人'));
+                return;
+            }
+
+            filteredNames.forEach(name => {
+                const isSelected = state.selected.has(name);
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'participant-option' + (isSelected ? ' selected' : '');
+                option.onclick = (event) => {
+                    event.stopPropagation();
+                    toggleParticipantSelection(scope, name);
+                };
+
+                // 自定义复选框
+                const checkbox = document.createElement('span');
+                checkbox.className = 'participant-option-checkbox';
+                const checkIcon = document.createElement('span');
+                checkIcon.className = 'participant-option-check-icon';
+                checkIcon.textContent = '✓';
+                checkbox.appendChild(checkIcon);
+
+                // 头像圆圈
+                const avatar = document.createElement('span');
+                avatar.className = 'participant-option-avatar';
+                avatar.textContent = name.charAt(0).toUpperCase();
+
+                // 姓名标签
+                const label = document.createElement('span');
+                label.className = 'participant-option-label';
+                label.textContent = name;
+
+                option.appendChild(checkbox);
+                option.appendChild(avatar);
+                option.appendChild(label);
+                options.appendChild(option);
+            });
+        }
+
+        function renderParticipantSelectors() {
+            normalizeParticipantSelection('live');
+            normalizeParticipantSelection('upload');
+            renderParticipantSelector('live');
+            renderParticipantSelector('upload');
+        }
+
+        function setParticipantSelection(scope, checked) {
+            participantState[scope].selected = checked ? new Set(registeredSpeakers) : new Set();
+            renderParticipantSelector(scope);
+        }
+
+        async function ensureVoiceprintsSynced() {
+            const apiUrl = getApiUrl();
+            if (!apiUrl) {
+                throw new Error('请先输入服务器地址');
+            }
+
+            if (voiceprintSourceUrl === apiUrl) {
+                return;
+            }
+
+            invalidateVoiceprintCache();
+            try {
+                await loadVoiceprints();
+            } catch (error) {
+                console.warn('参会人列表刷新失败，将继续使用空选择:', error);
+            }
         }
 
         // ========== 实时录音 ==========
@@ -628,12 +1257,14 @@
 
         async function startRecording() {
             try {
+                await ensureVoiceprintsSynced();
                 // 重置上次的数据
                 liveTranscriptItems = [];
                 document.getElementById('liveSummarySection').style.display = 'none';
                 document.getElementById('btnLiveSummary').disabled = true;
+                const selectedParticipants = getSelectedParticipants('live');
 
-                websocket = new WebSocket(getWsUrl());
+                websocket = new WebSocket(getWsUrl(selectedParticipants));
 
                 websocket.onopen = () => {
                     updateStatus('connected', '已连接，正在录音...');
@@ -641,6 +1272,10 @@
 
                 websocket.onmessage = (event) => {
                     const data = JSON.parse(event.data);
+                    if (data.type === 'error') {
+                        updateStatus('', data.message || '连接失败');
+                        return;
+                    }
                     addTranscript(data);
                 };
 
@@ -718,10 +1353,15 @@
             meetingTranscriptItems = [];
             meetingMarkdown = '';
 
-            const formData = new FormData();
-            formData.append('file', file);
-
             try {
+                await ensureVoiceprintsSynced();
+
+                const formData = new FormData();
+                formData.append('file', file);
+                getSelectedParticipants('upload').forEach(name => {
+                    formData.append('allowed_speakers', name);
+                });
+
                 const response = await fetch(`${getApiUrl()}/v1/meeting/transcribe/stream`, {
                     method: 'POST',
                     body: formData
@@ -869,27 +1509,74 @@
 
         // ========== 声纹管理 ==========
 
-        async function loadVoiceprints() {
-            try {
-                const response = await fetch(`${getApiUrl()}/v1/voiceprint/list`);
-                const result = await response.json();
-
-                const listDiv = document.getElementById('speakerList');
-
-                if (result.speakers && result.speakers.length > 0) {
-                    listDiv.innerHTML = result.speakers.map(name => `
-                        <div class="speaker-item">
-                            <span class="name">👤 ${name}</span>
-                            <button class="btn-delete" onclick="deleteVoiceprint('${name}')">删除</button>
-                        </div>
-                    `).join('');
-                } else {
-                    listDiv.innerHTML = '<div class="empty-state">暂无注册声纹</div>';
-                }
-            } catch (error) {
-                document.getElementById('speakerList').innerHTML =
-                    '<div class="empty-state">无法连接服务器</div>';
+        function renderSpeakerList() {
+            const listDiv = document.getElementById('speakerList');
+            if (!listDiv) {
+                return;
             }
+
+            if (registeredSpeakers.length > 0) {
+                listDiv.innerHTML = registeredSpeakers.map(name => `
+                    <div class="speaker-item">
+                        <span class="name">👤 ${name}</span>
+                        <button class="btn-delete" onclick="deleteVoiceprint('${name}')">删除</button>
+                    </div>
+                `).join('');
+            } else if (!getApiUrl()) {
+                listDiv.innerHTML = '<div class="empty-state">请输入服务器地址</div>';
+            } else if (voiceprintLoadError) {
+                listDiv.innerHTML = '<div class="empty-state">无法连接当前服务器</div>';
+            } else if (voiceprintSourceUrl !== getApiUrl()) {
+                listDiv.innerHTML = '<div class="empty-state">服务器地址已变更，正在等待刷新声纹列表</div>';
+            } else {
+                listDiv.innerHTML = '<div class="empty-state">暂无注册声纹</div>';
+            }
+        }
+
+        async function loadVoiceprints() {
+            const apiUrl = getApiUrl();
+            if (!apiUrl) {
+                invalidateVoiceprintCache();
+                renderSpeakerList();
+                return [];
+            }
+
+            if (voiceprintLoadPromise && voiceprintSourceUrl === apiUrl) {
+                return voiceprintLoadPromise;
+            }
+
+            const loadToken = ++voiceprintLoadToken;
+            voiceprintSourceUrl = apiUrl;
+
+            voiceprintLoadPromise = (async () => {
+                try {
+                    voiceprintLoadError = '';
+                    const response = await fetch(`${apiUrl}/v1/voiceprint/list`);
+                    const result = await response.json();
+                    if (loadToken !== voiceprintLoadToken || voiceprintSourceUrl !== apiUrl) {
+                        return registeredSpeakers;
+                    }
+                    registeredSpeakers = result.speakers || [];
+                    renderParticipantSelectors();
+                    renderSpeakerList();
+                    return registeredSpeakers;
+                } catch (error) {
+                    if (loadToken === voiceprintLoadToken && voiceprintSourceUrl === apiUrl) {
+                        registeredSpeakers = [];
+                        voiceprintLoadError = 'load_failed';
+                        renderParticipantSelectors();
+                        document.getElementById('speakerList').innerHTML =
+                            '<div class="empty-state">无法连接服务器</div>';
+                    }
+                    throw error;
+                } finally {
+                    if (loadToken === voiceprintLoadToken) {
+                        voiceprintLoadPromise = null;
+                    }
+                }
+            })();
+
+            return voiceprintLoadPromise;
         }
 
         function updateFileName(input) {
@@ -1035,8 +1722,46 @@
             container.innerHTML = html;
         }
 
-        // 页面加载时尝试获取声纹列表
-        // loadVoiceprints();
+        document.addEventListener('click', (event) => {
+            if (!event.target.closest('.participant-multiselect')) {
+                closeAllParticipantDropdowns();
+            }
+        });
+
+        serverUrlInput.addEventListener('input', () => {
+            if (voiceprintSourceUrl && voiceprintSourceUrl !== getApiUrl()) {
+                invalidateVoiceprintCache();
+                renderSpeakerList();
+            }
+        });
+
+        async function refreshVoiceprintsForCurrentServer() {
+            const apiUrl = getApiUrl();
+            if (!apiUrl) {
+                invalidateVoiceprintCache();
+                renderSpeakerList();
+                return;
+            }
+            if (voiceprintSourceUrl !== apiUrl) {
+                invalidateVoiceprintCache();
+            }
+            try {
+                await loadVoiceprints();
+            } catch (error) {
+                console.warn('刷新当前服务器声纹列表失败:', error);
+            }
+        }
+
+        serverUrlInput.addEventListener('change', () => {
+            refreshVoiceprintsForCurrentServer();
+        });
+
+        serverUrlInput.addEventListener('blur', () => {
+            refreshVoiceprintsForCurrentServer();
+        });
+
+        // 页面加载时尝试获取声纹列表，供实时/上传页面勾选参会人
+        loadVoiceprints();
     </script>
 </body>
 

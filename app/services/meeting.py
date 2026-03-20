@@ -13,6 +13,7 @@ import argparse
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from collections.abc import Collection
 import numpy as np
 import librosa
 
@@ -24,9 +25,12 @@ from app.core import (
     merge_diarization_segments,
 )
 
-
-def process_meeting(service: ModelService, audio_path: str, 
-                    threshold: float = None) -> list:
+def process_meeting(
+    service: ModelService,
+    audio_path: str,
+    threshold: float = None,
+    allowed_speakers: Collection[str] | None = None,
+) -> list:
     """
     处理会议音频
     
@@ -38,6 +42,7 @@ def process_meeting(service: ModelService, audio_path: str,
         service: ModelService 实例
         audio_path: 音频文件路径
         threshold: 声纹匹配阈值
+        allowed_speakers: 本次会议允许匹配的注册人名单；None 表示全库匹配
     
     Returns:
         transcript 列表
@@ -63,18 +68,19 @@ def process_meeting(service: ModelService, audio_path: str,
         # 使用 pyannote 分段结果
         return _process_with_diarization(
             service, audio_path, speech_full, sr, 
-            diarization_segments, threshold
+            diarization_segments, threshold, allowed_speakers
         )
     else:
         # 回退到 VAD 分段
         return _process_with_vad(
-            service, audio_path, speech_full, sr, threshold
+            service, audio_path, speech_full, sr, threshold, allowed_speakers
         )
 
 
 def _process_with_diarization(service: ModelService, audio_path: str,
                                speech_full: np.ndarray, sr: int,
-                               segments: list, threshold: float) -> list:
+                               segments: list, threshold: float,
+                               allowed_speakers: Collection[str] | None = None) -> list:
     """
     使用 pyannote diarization 结果处理会议
     
@@ -114,6 +120,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
         speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
             candidate_embeddings,
             threshold=threshold,
+            allowed_speakers=allowed_speakers,
         )
     
     print("Step 2: 逐段识别文本与匹配声纹（并行推理）...")
@@ -154,6 +161,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
+                            allowed_speakers=allowed_speakers,
                         )
 
                     if local_name != "未知":
@@ -199,7 +207,8 @@ def _process_with_diarization(service: ModelService, audio_path: str,
 
 def _process_with_vad(service: ModelService, audio_path: str,
                       speech_full: np.ndarray, sr: int,
-                      threshold: float) -> list:
+                      threshold: float,
+                      allowed_speakers: Collection[str] | None = None) -> list:
     """
     使用 VAD 分段 + 后聚类方案处理会议 (fallback)
     """
@@ -250,6 +259,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
                     emb,
                     threshold=threshold,
                     duration_ms=end_ms - start_ms,
+                    allowed_speakers=allowed_speakers,
                 )
 
             segment_info = {

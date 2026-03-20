@@ -17,6 +17,7 @@ import tempfile
 import numpy as np
 import librosa
 import soundfile as sf
+from collections.abc import Collection
 from typing import Dict, List, Tuple, Optional
 
 # 添加 Fun-ASR 目录到 Python 路径
@@ -511,12 +512,16 @@ class ModelService:
         # 构建预归一化矩阵 (N, D) 用于向量化匹配
         if self.registered_embeddings:
             self._emb_names = list(self.registered_embeddings.keys())
+            self._emb_name_to_idx = {
+                name: idx for idx, name in enumerate(self._emb_names)
+            }
             matrix = np.array([self.registered_embeddings[n] for n in self._emb_names])
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             norms[norms == 0] = 1.0  # 防止除零
             self._emb_matrix = matrix / norms
         else:
             self._emb_names = []
+            self._emb_name_to_idx = {}
             self._emb_matrix = None
         print(f"已加载 {len(self.registered_embeddings)} 个注册声纹")
 
@@ -562,13 +567,53 @@ class ModelService:
             return np.ascontiguousarray(prepared)
         return prepared
 
-    def match_speaker_fast(self, embedding: np.ndarray, threshold: float = None) -> Tuple[str, float]:
+    def _prepare_matching_candidates(
+        self,
+        embedding: np.ndarray,
+        allowed_speakers: Collection[str] | None = None,
+    ) -> Tuple[List[str], Optional[np.ndarray]]:
+        """
+        根据可选白名单准备候选说话人与相似度分数。
+
+        allowed_speakers:
+        - None: 使用全部已注册声纹
+        - 空集合: 显式表示无可匹配候选
+        """
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return [], None
+
+        q = embedding.flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            return [], None
+        q = q / q_norm
+
+        candidate_names = self._emb_names
+        candidate_matrix = self._emb_matrix
+        if allowed_speakers is not None:
+            allowed_set = {name for name in allowed_speakers if name in self._emb_name_to_idx}
+            candidate_names = [name for name in self._emb_names if name in allowed_set]
+            if not candidate_names:
+                return [], np.array([], dtype=np.float32)
+            candidate_indices = [self._emb_name_to_idx[name] for name in candidate_names]
+            candidate_matrix = self._emb_matrix[candidate_indices]
+
+        scores = candidate_matrix @ q
+        return candidate_names, scores
+
+    def match_speaker_fast(
+        self,
+        embedding: np.ndarray,
+        threshold: float = None,
+        allowed_speakers: Collection[str] | None = None,
+    ) -> Tuple[str, float]:
         """
         向量化声纹匹配：单次矩阵乘法替代 Python 循环
 
         Args:
             embedding: 待匹配的声纹向量
             threshold: 匹配阈值，默认使用 CONFIG["speaker_threshold"]
+            allowed_speakers: 可选候选说话人白名单
 
         Returns:
             (speaker_name, score) 元组，与 match_speaker() 返回格式一致
@@ -576,21 +621,18 @@ class ModelService:
         if threshold is None:
             threshold = CONFIG["speaker_threshold"]
 
-        if self._emb_matrix is None or len(self._emb_names) == 0:
+        candidate_names, scores = self._prepare_matching_candidates(
+            embedding,
+            allowed_speakers=allowed_speakers,
+        )
+        if scores is None or len(candidate_names) == 0 or len(scores) == 0:
             return ("未知", 0.0)
 
-        q = embedding.flatten()
-        q_norm = np.linalg.norm(q)
-        if q_norm == 0:
-            return ("未知", 0.0)
-        q = q / q_norm
-
-        scores = self._emb_matrix @ q  # (N,)
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
 
         if best_score >= threshold:
-            return (self._emb_names[best_idx], best_score)
+            return (candidate_names[best_idx], best_score)
         return ("未知", best_score)
 
     def match_registered_speaker_guarded(
@@ -598,6 +640,7 @@ class ModelService:
         embedding: np.ndarray,
         threshold: float = None,
         duration_ms: int | None = None,
+        allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
         离线/上传链路更严格的注册人匹配。
@@ -610,16 +653,12 @@ class ModelService:
         if threshold is None:
             threshold = CONFIG["speaker_threshold"]
 
-        if self._emb_matrix is None or len(self._emb_names) == 0:
+        candidate_names, scores = self._prepare_matching_candidates(
+            embedding,
+            allowed_speakers=allowed_speakers,
+        )
+        if scores is None or len(candidate_names) == 0 or len(scores) == 0:
             return ("未知", 0.0)
-
-        q = embedding.flatten()
-        q_norm = np.linalg.norm(q)
-        if q_norm == 0:
-            return ("未知", 0.0)
-        q = q / q_norm
-
-        scores = self._emb_matrix @ q
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
         second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
@@ -637,13 +676,14 @@ class ModelService:
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
             return ("未知", best_score)
 
-        return (self._emb_names[best_idx], best_score)
+        return (candidate_names[best_idx], best_score)
 
     def match_registered_speaker_short_window(
         self,
         embedding: np.ndarray,
         threshold: float = None,
         duration_ms: int | None = None,
+        allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
         对短句使用更保守的 exact-window 注册人匹配。
@@ -666,13 +706,13 @@ class ModelService:
         if duration_ms is None or duration_ms < ultrashort_min_duration_ms or duration_ms >= guarded_min_duration_ms:
             return ("未知", 0.0)
 
-        q = embedding.flatten()
-        q_norm = np.linalg.norm(q)
-        if q_norm == 0:
+        candidate_names, scores = self._prepare_matching_candidates(
+            embedding,
+            allowed_speakers=allowed_speakers,
+        )
+        if scores is None or len(candidate_names) == 0 or len(scores) == 0:
             return ("未知", 0.0)
-        q = q / q_norm
 
-        scores = self._emb_matrix @ q
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
         second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
@@ -692,12 +732,13 @@ class ModelService:
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
             return ("未知", best_score)
 
-        return (self._emb_names[best_idx], best_score)
+        return (candidate_names[best_idx], best_score)
 
     def match_registered_speaker_consensus(
         self,
         candidates: List[Tuple[np.ndarray | None, int]],
         threshold: float = None,
+        allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
         对同一 pyannote speaker 的多个代表片段做保守判定。
@@ -724,6 +765,7 @@ class ModelService:
                 emb,
                 threshold=threshold,
                 duration_ms=duration_ms,
+                allowed_speakers=allowed_speakers,
             )
             if name != "未知":
                 decisions.append((name, score, duration_ms))
@@ -967,6 +1009,9 @@ class ModelService:
 
         try:
             if backend == "paraformer":
+                if isinstance(prepared_input, str):
+                    audio_array, _ = librosa.load(prepared_input, sr=16000)
+                    prepared_input = np.ascontiguousarray(audio_array)
                 kwargs = {
                     "input": prepared_input,
                     "batch_size_s": CONFIG["upload_asr_batch_size_s"],

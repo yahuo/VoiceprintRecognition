@@ -66,6 +66,37 @@ service = ModelService()
 DEVICE = "cpu"  # 默认设备，可通过命令行参数修改
 
 
+def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[str] | None:
+    """
+    规范化本次会议允许匹配的注册人名单。
+
+    返回 None 表示不限制，走全库匹配。
+    """
+    if not raw_allowed_speakers:
+        return None
+
+    normalized = []
+    seen = set()
+    for name in raw_allowed_speakers:
+        cleaned = (name or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        normalized.append(cleaned)
+        seen.add(cleaned)
+
+    if not normalized:
+        return None
+
+    missing = [name for name in normalized if name not in service.registered_embeddings]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"以下参会人未注册声纹: {', '.join(missing)}",
+        )
+
+    return normalized
+
+
 # ========== 生命周期 ==========
 
 @app.on_event("startup")
@@ -225,7 +256,8 @@ async def delete_speaker(name: str):
 @app.post("/v1/meeting/transcribe")
 async def transcribe_meeting(
     file: UploadFile = File(...),
-    threshold: float = Form(default=None)
+    threshold: float = Form(default=None),
+    allowed_speakers: list[str] | None = Form(default=None),
 ):
     """
     上传音频文件生成会议记录
@@ -235,6 +267,7 @@ async def transcribe_meeting(
     """
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
+    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
 
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -246,7 +279,13 @@ async def transcribe_meeting(
         from .services.meeting import process_meeting, export_markdown
 
         # 处理会议录音
-        transcript = await asyncio.to_thread(process_meeting, service, audio_path, threshold)
+        transcript = await asyncio.to_thread(
+            process_meeting,
+            service,
+            audio_path,
+            threshold,
+            allowed_speakers,
+        )
         
         # 生成 Markdown
         # 模拟 export_markdown 的逻辑，但返回字符串
@@ -290,7 +329,8 @@ import json as json_module
 @app.post("/v1/meeting/transcribe/stream")
 async def transcribe_meeting_stream(
     file: UploadFile = File(...),
-    threshold: float = Form(default=None)
+    threshold: float = Form(default=None),
+    allowed_speakers: list[str] | None = Form(default=None),
 ):
     """
     流式处理会议音频（Server-Sent Events）
@@ -304,15 +344,14 @@ async def transcribe_meeting_stream(
 
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
+    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
 
     # 读取上传音频到内存，避免 Docker overlay 临时文件 IO
     content = await file.read()
-    temp_upload_audio_path = None
-    if service.upload_asr_backend == "paraformer":
-        suffix = os.path.splitext(file.filename or "")[1] or ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(content)
-            temp_upload_audio_path = tmp.name
+    suffix = os.path.splitext(file.filename or "")[1] or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        temp_upload_audio_path = tmp.name
 
     async def generate():
         try:
@@ -324,25 +363,29 @@ async def transcribe_meeting_stream(
                 result = service.transcribe_full_audio(audio_input, backend, True)
                 return result, time.perf_counter() - started_at
 
-            full_audio_asr_task = None
-            if service.upload_asr_backend == "paraformer" and temp_upload_audio_path:
-                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'transcribing', 'message': '正在并行进行整段识别与说话人分离...'}, ensure_ascii=False)}\n\n"
-                full_audio_asr_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        _transcribe_full_audio_timed,
-                        temp_upload_audio_path,
-                        service.upload_asr_backend,
-                    )
-                )
+            def _load_audio_from_upload():
+                try:
+                    return librosa.load(io.BytesIO(content), sr=16000)
+                except Exception as exc:
+                    print(f"⚠️ 内存解码失败，回退到临时文件: {exc}")
+                    return librosa.load(temp_upload_audio_path, sr=16000)
 
-            # 从内存加载音频（不写临时文件）
-            speech_full, sr = await asyncio.to_thread(
-                librosa.load, io.BytesIO(content), sr=16000
-            )
+            speech_full, sr = await asyncio.to_thread(_load_audio_from_upload)
             audio_duration = len(speech_full) / sr
             audio_duration_ms = int(audio_duration * 1000)
             t_load = time.perf_counter()
             print(f"⏱️ SSE 音频加载: {t_load - t_start:.2f}s, 时长: {audio_duration:.1f}s")
+
+            full_audio_asr_task = None
+            if service.upload_asr_backend == "paraformer":
+                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'transcribing', 'message': '正在并行进行整段识别与说话人分离...'}, ensure_ascii=False)}\n\n"
+                full_audio_asr_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        _transcribe_full_audio_timed,
+                        speech_full,
+                        service.upload_asr_backend,
+                    )
+                )
 
             # 单线程推理函数：ASR + 声纹提取在同一线程顺序执行
             # CUDA/MPS 设备共享，双线程 asyncio.gather 只增加调度开销无真正并行
@@ -518,6 +561,7 @@ async def transcribe_meeting_stream(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
+                            allowed_speakers=allowed_speakers,
                         )
 
                     async def _match_registered_for_short_sentence(
@@ -534,6 +578,7 @@ async def transcribe_meeting_stream(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
+                            allowed_speakers=allowed_speakers,
                         )
 
                     async def _match_registered_for_sentence(
@@ -576,6 +621,7 @@ async def transcribe_meeting_stream(
                             speaker, confidence = service.match_registered_speaker_consensus(
                                 candidate_embeddings,
                                 threshold=threshold,
+                                allowed_speakers=allowed_speakers,
                             )
                         if speaker == "未知":
                             stranger_counter += 1
@@ -697,6 +743,7 @@ async def transcribe_meeting_stream(
                                 emb,
                                 threshold=threshold,
                                 duration_ms=end_ms - start_ms,
+                                allowed_speakers=allowed_speakers,
                             )
 
                         if speaker == "未知":
@@ -749,6 +796,7 @@ async def transcribe_meeting_stream(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
+                            allowed_speakers=allowed_speakers,
                         )
 
                     result = {
@@ -792,7 +840,18 @@ async def websocket_live(websocket: WebSocket):
     
     客户端发送音频流 (bytes)，服务端返回识别结果 (JSON)
     """
+    raw_allowed_speakers = websocket.query_params.getlist("allowed_speakers")
     await websocket.accept()
+    try:
+        allowed_speakers = _normalize_allowed_speakers(raw_allowed_speakers)
+    except HTTPException as exc:
+        await websocket.send_json({
+            "type": "error",
+            "message": exc.detail,
+        })
+        await websocket.close(code=1008)
+        return
+
     print("WebSocket 连接建立")
     
     audio_buffer = bytearray()
@@ -831,7 +890,10 @@ async def websocket_live(websocket: WebSocket):
                     score = 0.0
 
                     if emb is not None:
-                        speaker, score = service.match_speaker_fast(emb)
+                        speaker, score = service.match_speaker_fast(
+                            emb,
+                            allowed_speakers=allowed_speakers,
+                        )
                         speaker, score = tracker.update(
                             speaker, score, service.registered_embeddings
                         )
