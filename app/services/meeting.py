@@ -30,6 +30,7 @@ def process_meeting(
     audio_path: str,
     threshold: float = None,
     allowed_speakers: Collection[str] | None = None,
+    matching_scope=None,
 ) -> list:
     """
     处理会议音频
@@ -49,6 +50,8 @@ def process_meeting(
     """
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
+    if matching_scope is None:
+        matching_scope = service.build_matching_scope(allowed_speakers)
     
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"音频文件不存在: {audio_path}")
@@ -68,19 +71,20 @@ def process_meeting(
         # 使用 pyannote 分段结果
         return _process_with_diarization(
             service, audio_path, speech_full, sr, 
-            diarization_segments, threshold, allowed_speakers
+            diarization_segments, threshold, allowed_speakers, matching_scope
         )
     else:
         # 回退到 VAD 分段
         return _process_with_vad(
-            service, audio_path, speech_full, sr, threshold, allowed_speakers
+            service, audio_path, speech_full, sr, threshold, allowed_speakers, matching_scope
         )
 
 
 def _process_with_diarization(service: ModelService, audio_path: str,
                                speech_full: np.ndarray, sr: int,
                                segments: list, threshold: float,
-                               allowed_speakers: Collection[str] | None = None) -> list:
+                               allowed_speakers: Collection[str] | None = None,
+                               matching_scope=None) -> list:
     """
     使用 pyannote diarization 结果处理会议
     
@@ -120,6 +124,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
         speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
             candidate_embeddings,
             threshold=threshold,
+            match_scope=matching_scope,
             allowed_speakers=allowed_speakers,
         )
     
@@ -161,6 +166,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
+                            match_scope=matching_scope,
                             allowed_speakers=allowed_speakers,
                         )
 
@@ -208,7 +214,8 @@ def _process_with_diarization(service: ModelService, audio_path: str,
 def _process_with_vad(service: ModelService, audio_path: str,
                       speech_full: np.ndarray, sr: int,
                       threshold: float,
-                      allowed_speakers: Collection[str] | None = None) -> list:
+                      allowed_speakers: Collection[str] | None = None,
+                      matching_scope=None) -> list:
     """
     使用 VAD 分段 + 后聚类方案处理会议 (fallback)
     """
@@ -259,6 +266,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
                     emb,
                     threshold=threshold,
                     duration_ms=end_ms - start_ms,
+                    match_scope=matching_scope,
                     allowed_speakers=allowed_speakers,
                 )
 

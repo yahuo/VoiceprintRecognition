@@ -14,6 +14,7 @@ import sys
 import json
 import time
 import tempfile
+from dataclasses import dataclass
 import numpy as np
 import librosa
 import soundfile as sf
@@ -45,6 +46,15 @@ CONFIG = {
     "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
     "offline_registered_match_score_floor": float(os.environ.get("OFFLINE_REGISTERED_MATCH_SCORE_FLOOR", "0.38")),
     "offline_registered_match_min_margin": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_MARGIN", "0.03")),
+    "offline_scoped_match_min_duration_ms": int(os.environ.get("OFFLINE_SCOPED_MATCH_MIN_DURATION_MS", "500")),
+    "offline_scoped_match_score_floor": float(os.environ.get("OFFLINE_SCOPED_MATCH_SCORE_FLOOR", "0.30")),
+    "offline_scoped_match_min_margin": float(os.environ.get("OFFLINE_SCOPED_MATCH_MIN_MARGIN", "0.0")),
+    "offline_scoped_single_match_min_duration_ms": int(os.environ.get("OFFLINE_SCOPED_SINGLE_MATCH_MIN_DURATION_MS", "1500")),
+    "offline_scoped_single_match_score_floor": float(os.environ.get("OFFLINE_SCOPED_SINGLE_MATCH_SCORE_FLOOR", "0.38")),
+    "offline_scoped_outside_margin": float(os.environ.get("OFFLINE_SCOPED_OUTSIDE_MARGIN", "0.03")),
+    "offline_scoped_single_inherit_min_confidence": float(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_CONFIDENCE", "0.55")),
+    "offline_scoped_single_inherit_min_overlap_ratio": float(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_OVERLAP_RATIO", "0.85")),
+    "offline_scoped_single_inherit_min_duration_ms": int(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_DURATION_MS", "1500")),
     "offline_short_match_min_duration_ms": int(os.environ.get("OFFLINE_SHORT_MATCH_MIN_DURATION_MS", "500")),
     "offline_short_match_score_floor": float(os.environ.get("OFFLINE_SHORT_MATCH_SCORE_FLOOR", "0.48")),
     "offline_short_match_min_margin": float(os.environ.get("OFFLINE_SHORT_MATCH_MIN_MARGIN", "0.10")),
@@ -80,6 +90,19 @@ CONFIG = {
 
 VOICEPRINT_DB_DIR = os.path.join(PROJECT_ROOT, "voiceprint_db")
 VOICEPRINT_INDEX_FILE = os.path.join(VOICEPRINT_DB_DIR, "index.json")
+
+
+@dataclass(frozen=True)
+class MatchingScope:
+    """一次请求内复用的候选说话人矩阵。"""
+
+    names: Tuple[str, ...]
+    matrix: np.ndarray
+    is_restricted: bool
+
+    @property
+    def size(self) -> int:
+        return len(self.names)
 
 
 # ========== 声纹数据库操作 ==========
@@ -567,9 +590,43 @@ class ModelService:
             return np.ascontiguousarray(prepared)
         return prepared
 
+    def build_matching_scope(
+        self,
+        allowed_speakers: Collection[str] | None = None,
+    ) -> MatchingScope | None:
+        """
+        为一次请求预构建候选说话人矩阵，避免每个片段重复筛选。
+        """
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return None
+
+        if allowed_speakers is None:
+            return MatchingScope(
+                names=tuple(self._emb_names),
+                matrix=self._emb_matrix,
+                is_restricted=False,
+            )
+
+        allowed_set = {name for name in allowed_speakers if name in self._emb_name_to_idx}
+        candidate_names = tuple(name for name in self._emb_names if name in allowed_set)
+        if not candidate_names:
+            return MatchingScope(
+                names=tuple(),
+                matrix=np.empty((0, 0), dtype=np.float32),
+                is_restricted=True,
+            )
+
+        candidate_indices = [self._emb_name_to_idx[name] for name in candidate_names]
+        return MatchingScope(
+            names=candidate_names,
+            matrix=self._emb_matrix[candidate_indices],
+            is_restricted=True,
+        )
+
     def _prepare_matching_candidates(
         self,
         embedding: np.ndarray,
+        match_scope: MatchingScope | None = None,
         allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[List[str], Optional[np.ndarray]]:
         """
@@ -588,23 +645,61 @@ class ModelService:
             return [], None
         q = q / q_norm
 
-        candidate_names = self._emb_names
-        candidate_matrix = self._emb_matrix
-        if allowed_speakers is not None:
-            allowed_set = {name for name in allowed_speakers if name in self._emb_name_to_idx}
-            candidate_names = [name for name in self._emb_names if name in allowed_set]
-            if not candidate_names:
-                return [], np.array([], dtype=np.float32)
-            candidate_indices = [self._emb_name_to_idx[name] for name in candidate_names]
-            candidate_matrix = self._emb_matrix[candidate_indices]
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
+        if resolved_scope is None:
+            return [], None
+
+        candidate_names = list(resolved_scope.names)
+        candidate_matrix = resolved_scope.matrix
+        if not candidate_names or candidate_matrix.size == 0:
+            return [], np.array([], dtype=np.float32)
 
         scores = candidate_matrix @ q
         return candidate_names, scores
+
+    def _best_overall_registered_match(self, embedding: np.ndarray) -> Tuple[str, float]:
+        """返回全库最相似注册人的名称与分数。"""
+        if self._emb_matrix is None or len(self._emb_names) == 0:
+            return ("未知", 0.0)
+
+        q = embedding.flatten()
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            return ("未知", 0.0)
+
+        q = q / q_norm
+        scores = self._emb_matrix @ q
+        if scores.size == 0:
+            return ("未知", 0.0)
+
+        best_idx = int(np.argmax(scores))
+        return (self._emb_names[best_idx], float(scores[best_idx]))
+
+    def _scoped_match_conflicts_with_outside_winner(
+        self,
+        embedding: np.ndarray,
+        scoped_name: str,
+        scoped_score: float,
+        threshold: float,
+        match_scope: MatchingScope | None,
+    ) -> bool:
+        """候选集外若存在更强注册人，则当前 scoped 结果应回退未知。"""
+        if match_scope is None or not match_scope.is_restricted or match_scope.size == 0:
+            return False
+
+        global_name, global_score = self._best_overall_registered_match(embedding)
+        if global_name == "未知" or global_name in match_scope.names:
+            return False
+
+        outside_floor = max(threshold, CONFIG["offline_registered_match_score_floor"])
+        outside_margin = CONFIG["offline_scoped_outside_margin"]
+        return global_score >= outside_floor and (global_score - scoped_score) >= outside_margin
 
     def match_speaker_fast(
         self,
         embedding: np.ndarray,
         threshold: float = None,
+        match_scope: MatchingScope | None = None,
         allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
@@ -623,6 +718,7 @@ class ModelService:
 
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
+            match_scope=match_scope,
             allowed_speakers=allowed_speakers,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
@@ -640,6 +736,7 @@ class ModelService:
         embedding: np.ndarray,
         threshold: float = None,
         duration_ms: int | None = None,
+        match_scope: MatchingScope | None = None,
         allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
@@ -653,8 +750,47 @@ class ModelService:
         if threshold is None:
             threshold = CONFIG["speaker_threshold"]
 
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
+        if resolved_scope is not None and resolved_scope.is_restricted:
+            if resolved_scope.size == 1:
+                selected_name = resolved_scope.names[0]
+                candidate_names, scores = self._prepare_matching_candidates(embedding)
+                if scores is None or len(candidate_names) == 0 or len(scores) == 0:
+                    return ("未知", 0.0)
+                try:
+                    selected_idx = candidate_names.index(selected_name)
+                except ValueError:
+                    return ("未知", 0.0)
+                best_idx = int(np.argmax(scores))
+                best_name = candidate_names[best_idx]
+                best_score = float(scores[best_idx])
+                selected_score = float(scores[selected_idx])
+                effective_threshold = max(threshold, CONFIG["offline_scoped_single_match_score_floor"])
+                min_duration_ms = CONFIG["offline_scoped_single_match_min_duration_ms"]
+                if duration_ms is not None and duration_ms < min_duration_ms:
+                    return ("未知", selected_score)
+                if selected_score < effective_threshold:
+                    return ("未知", selected_score)
+                if (
+                    best_name != selected_name
+                    and best_score >= max(threshold, CONFIG["offline_registered_match_score_floor"])
+                    and (best_score - selected_score) >= CONFIG["offline_scoped_outside_margin"]
+                ):
+                    return ("未知", selected_score)
+                if best_name != selected_name:
+                    return ("未知", selected_score)
+                return (selected_name, selected_score)
+            effective_threshold = max(threshold, CONFIG["offline_scoped_match_score_floor"])
+            min_duration_ms = CONFIG["offline_scoped_match_min_duration_ms"]
+            min_margin = CONFIG["offline_scoped_match_min_margin"]
+        else:
+            effective_threshold = max(threshold, CONFIG["offline_registered_match_score_floor"])
+            min_duration_ms = CONFIG["offline_registered_match_min_duration_ms"]
+            min_margin = CONFIG["offline_registered_match_min_margin"]
+
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
+            match_scope=resolved_scope,
             allowed_speakers=allowed_speakers,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
@@ -662,10 +798,6 @@ class ModelService:
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
         second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
-
-        effective_threshold = max(threshold, CONFIG["offline_registered_match_score_floor"])
-        min_duration_ms = CONFIG["offline_registered_match_min_duration_ms"]
-        min_margin = CONFIG["offline_registered_match_min_margin"]
 
         if duration_ms is not None and duration_ms < min_duration_ms:
             return ("未知", best_score)
@@ -676,6 +808,15 @@ class ModelService:
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
             return ("未知", best_score)
 
+        if self._scoped_match_conflicts_with_outside_winner(
+            embedding,
+            candidate_names[best_idx],
+            best_score,
+            threshold,
+            resolved_scope,
+        ):
+            return ("未知", best_score)
+
         return (candidate_names[best_idx], best_score)
 
     def match_registered_speaker_short_window(
@@ -683,6 +824,7 @@ class ModelService:
         embedding: np.ndarray,
         threshold: float = None,
         duration_ms: int | None = None,
+        match_scope: MatchingScope | None = None,
         allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
@@ -706,8 +848,10 @@ class ModelService:
         if duration_ms is None or duration_ms < ultrashort_min_duration_ms or duration_ms >= guarded_min_duration_ms:
             return ("未知", 0.0)
 
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
+            match_scope=resolved_scope,
             allowed_speakers=allowed_speakers,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
@@ -717,7 +861,15 @@ class ModelService:
         best_score = float(scores[best_idx])
         second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
 
-        if duration_ms <= ultrashort_max_duration_ms:
+        if resolved_scope is not None and resolved_scope.is_restricted:
+            if resolved_scope.size == 1:
+                # 单参会人模式语义更接近“验证这个人是否在说话”。
+                # 短句 exact-window 容易把陌生人短句直接吸进唯一候选人，
+                # 因此直接关闭这条快路径，交给更稳的 cluster/guarded 逻辑。
+                return ("未知", best_score)
+            effective_threshold = max(threshold, CONFIG["offline_scoped_match_score_floor"])
+            min_margin = CONFIG["offline_scoped_match_min_margin"]
+        elif duration_ms <= ultrashort_max_duration_ms:
             effective_threshold = max(threshold, CONFIG["offline_ultrashort_match_score_floor"])
             min_margin = CONFIG["offline_ultrashort_match_min_margin"]
         elif duration_ms >= short_min_duration_ms:
@@ -732,12 +884,22 @@ class ModelService:
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
             return ("未知", best_score)
 
+        if self._scoped_match_conflicts_with_outside_winner(
+            embedding,
+            candidate_names[best_idx],
+            best_score,
+            threshold,
+            resolved_scope,
+        ):
+            return ("未知", best_score)
+
         return (candidate_names[best_idx], best_score)
 
     def match_registered_speaker_consensus(
         self,
         candidates: List[Tuple[np.ndarray | None, int]],
         threshold: float = None,
+        match_scope: MatchingScope | None = None,
         allowed_speakers: Collection[str] | None = None,
     ) -> Tuple[str, float]:
         """
@@ -765,6 +927,7 @@ class ModelService:
                 emb,
                 threshold=threshold,
                 duration_ms=duration_ms,
+                match_scope=match_scope,
                 allowed_speakers=allowed_speakers,
             )
             if name != "未知":

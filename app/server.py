@@ -282,6 +282,7 @@ async def transcribe_meeting(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers)
 
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -299,6 +300,7 @@ async def transcribe_meeting(
             audio_path,
             threshold,
             allowed_speakers,
+            matching_scope,
         )
         
         # 生成 Markdown
@@ -373,6 +375,7 @@ async def transcribe_meeting_stream(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers)
 
     # 读取上传音频到内存，避免 Docker overlay 临时文件 IO
     content = await file.read()
@@ -575,6 +578,16 @@ async def transcribe_meeting_stream(
 
                         return merged
 
+                    single_allowed_mode = bool(
+                        matching_scope is not None
+                        and matching_scope.is_restricted
+                        and matching_scope.size == 1
+                    )
+                    selected_allowed_speaker = matching_scope.names[0] if single_allowed_mode else None
+                    single_allowed_stranger = "陌生人1"
+                    effective_matching_scope = None if single_allowed_mode else matching_scope
+                    effective_allowed_speakers = None if single_allowed_mode else allowed_speakers
+
                     async def _match_registered_for_window(
                         start_ms: int,
                         end_ms: int,
@@ -589,7 +602,8 @@ async def transcribe_meeting_stream(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
-                            allowed_speakers=allowed_speakers,
+                            match_scope=effective_matching_scope,
+                            allowed_speakers=effective_allowed_speakers,
                         )
 
                     async def _match_registered_for_short_sentence(
@@ -606,7 +620,8 @@ async def transcribe_meeting_stream(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
-                            allowed_speakers=allowed_speakers,
+                            match_scope=effective_matching_scope,
+                            allowed_speakers=effective_allowed_speakers,
                         )
 
                     async def _match_registered_for_sentence(
@@ -614,11 +629,51 @@ async def transcribe_meeting_stream(
                         end_ms: int,
                     ):
                         if (end_ms - start_ms) > CONFIG["offline_sentence_exact_match_max_duration_ms"]:
+                            if single_allowed_mode:
+                                return await _match_registered_for_window(start_ms, end_ms)
                             return ("未知", 0.0)
                         return await _match_registered_for_short_sentence(
                             start_ms,
                             end_ms,
                         )
+
+                    async def _resolve_single_allowed_inheritance(
+                        seg,
+                        start_ms: int,
+                        end_ms: int,
+                    ):
+                        if seg is None:
+                            return ("未知", 0.0)
+
+                        seg_start, seg_end, pyannote_speaker = seg
+                        mapped_speaker, mapped_confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                        if mapped_speaker == "未知":
+                            return ("未知", 0.0)
+
+                        overlap = max(0, min(end_ms, seg_end) - max(start_ms, seg_start))
+                        duration = max(1, end_ms - start_ms)
+                        overlap_ratio = overlap / duration
+                        if (
+                            duration >= CONFIG["offline_scoped_single_inherit_min_duration_ms"]
+                            and overlap > 0
+                            and
+                            mapped_confidence >= CONFIG["offline_scoped_single_inherit_min_confidence"]
+                            and overlap_ratio >= CONFIG["offline_scoped_single_inherit_min_overlap_ratio"]
+                        ):
+                            verify_start_ms = max(start_ms, seg_start)
+                            verify_end_ms = min(end_ms, seg_end)
+                            verified_name, verified_score = await _match_registered_for_window(
+                                verify_start_ms,
+                                verify_end_ms,
+                            )
+                            if verified_name != "未知":
+                                if str(mapped_speaker).startswith("陌生人"):
+                                    return (verified_name, verified_score)
+                                if verified_name == mapped_speaker:
+                                    return (mapped_speaker, max(mapped_confidence, verified_score))
+                        if str(mapped_speaker).startswith("陌生人"):
+                            return (mapped_speaker, mapped_confidence)
+                        return ("未知", 0.0)
 
                     # 每个 pyannote speaker 使用多个代表片段做保守匹配，
                     # 避免单个"最长片段"把整组句子都带偏。
@@ -649,9 +704,14 @@ async def transcribe_meeting_stream(
                             speaker, confidence = service.match_registered_speaker_consensus(
                                 candidate_embeddings,
                                 threshold=threshold,
-                                allowed_speakers=allowed_speakers,
+                                match_scope=effective_matching_scope,
+                                allowed_speakers=effective_allowed_speakers,
                             )
-                        if speaker == "未知":
+                        if single_allowed_mode:
+                            if speaker != selected_allowed_speaker:
+                                speaker = single_allowed_stranger
+                                confidence = 1.0
+                        elif speaker == "未知":
                             stranger_counter += 1
                             speaker = f"陌生人{stranger_counter}"
                             confidence = 1.0
@@ -681,13 +741,37 @@ async def transcribe_meeting_stream(
                                 seg = part["seg"]
                                 speaker = "未知"
                                 confidence = 0.0
+                                locally_verified = False
                                 short_name, short_score = await _match_registered_for_short_sentence(
                                     part["start_ms"],
                                     part["end_ms"],
                                 )
                                 if short_name != "未知":
-                                    speaker = short_name
-                                    confidence = short_score
+                                    if not single_allowed_mode or short_name == selected_allowed_speaker:
+                                        speaker = short_name
+                                        confidence = short_score
+                                        locally_verified = True
+                                    elif single_allowed_mode:
+                                        speaker = single_allowed_stranger
+                                        confidence = 1.0
+                                        locally_verified = True
+                                elif single_allowed_mode:
+                                    verified_name, verified_score = await _match_registered_for_window(
+                                        part["start_ms"],
+                                        part["end_ms"],
+                                    )
+                                    if verified_name == selected_allowed_speaker:
+                                        speaker = verified_name
+                                        confidence = verified_score
+                                        locally_verified = True
+                                    elif verified_name != "未知":
+                                        speaker = single_allowed_stranger
+                                        confidence = 1.0
+                                        locally_verified = True
+                                    else:
+                                        if seg is not None:
+                                            _, _, pyannote_speaker = seg
+                                            speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
                                 elif seg is not None:
                                     _, _, pyannote_speaker = seg
                                     speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
@@ -723,13 +807,27 @@ async def transcribe_meeting_stream(
                             end_ms,
                         )
                         if sentence_speaker != "未知":
-                            speaker = sentence_speaker
-                            confidence = sentence_confidence
+                            if not single_allowed_mode or sentence_speaker == selected_allowed_speaker:
+                                speaker = sentence_speaker
+                                confidence = sentence_confidence
+                            elif single_allowed_mode:
+                                speaker = single_allowed_stranger
+                                confidence = 1.0
+                            else:
+                                best_seg = _choose_best_speaker(start_ms, end_ms)
+                                if best_seg is not None:
+                                    _, _, pyannote_speaker = best_seg
+                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
                         else:
                             best_seg = _choose_best_speaker(start_ms, end_ms)
                             if best_seg is not None:
-                                _, _, pyannote_speaker = best_seg
-                                speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                if single_allowed_mode:
+                                    _, _, pyannote_speaker = best_seg
+                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                else:
+                                    _, _, pyannote_speaker = best_seg
+                                    mapped_speaker, mapped_confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                    speaker, confidence = mapped_speaker, mapped_confidence
 
                         result = {
                             "type": "segment",
@@ -771,6 +869,7 @@ async def transcribe_meeting_stream(
                                 emb,
                                 threshold=threshold,
                                 duration_ms=end_ms - start_ms,
+                                match_scope=matching_scope,
                                 allowed_speakers=allowed_speakers,
                             )
 
@@ -820,12 +919,13 @@ async def transcribe_meeting_stream(
                     speaker = "未知"
                     score = 0.0
                     if emb is not None:
-                        speaker, score = service.match_registered_speaker_guarded(
-                            emb,
-                            threshold=threshold,
-                            duration_ms=end_ms - start_ms,
-                            allowed_speakers=allowed_speakers,
-                        )
+                            speaker, score = service.match_registered_speaker_guarded(
+                                emb,
+                                threshold=threshold,
+                                duration_ms=end_ms - start_ms,
+                                match_scope=matching_scope,
+                                allowed_speakers=allowed_speakers,
+                            )
 
                     result = {
                         "type": "segment",
@@ -883,6 +983,7 @@ async def websocket_live(websocket: WebSocket):
         })
         await websocket.close(code=1008)
         return
+    matching_scope = service.build_matching_scope(allowed_speakers)
 
     print("WebSocket 连接建立")
     
@@ -924,6 +1025,7 @@ async def websocket_live(websocket: WebSocket):
                     if emb is not None:
                         speaker, score = service.match_speaker_fast(
                             emb,
+                            match_scope=matching_scope,
                             allowed_speakers=allowed_speakers,
                         )
                         speaker, score = tracker.update(
