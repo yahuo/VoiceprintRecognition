@@ -41,6 +41,7 @@ env/
 
 # 声纹数据库 (用户私有数据)
 voiceprint_db/
+recordings/
 
 # 临时文件
 *.tmp

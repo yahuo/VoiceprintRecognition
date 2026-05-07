@@ -373,6 +373,8 @@ UPLOAD_ASR_BACKEND=paraformer
 HOST_PORT=18008
 # 声纹数据库路径 (默认 ./voiceprint_db)
 VOICEPRINT_DB_PATH=./voiceprint_db
+# 实时会议录音路径 (默认 ./recordings)
+RECORDINGS_PATH=./recordings
 ```
 
 ```bash
@@ -388,6 +390,7 @@ docker run -d \
   --gpus '"device=0"' \
   -p 18008:8000 \
   -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  -v $(pwd)/recordings:/app/recordings \
   -e DEVICE=cuda:0 \
   --name voiceprint-server \
   voiceprint-server:latest
@@ -399,6 +402,7 @@ docker run -d \
 docker run -d \
   -p 18008:8000 \
   -v $(pwd)/voiceprint_db:/app/voiceprint_db \
+  -v $(pwd)/recordings:/app/recordings \
   --name voiceprint-server \
   voiceprint-server:cpu
 ```

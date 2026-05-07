@@ -7,10 +7,11 @@
 或: python server.py
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel, Field
 import uvicorn
 import os
 import shutil
@@ -31,6 +32,11 @@ from .core import (
     save_voiceprint_index,
     format_time,
     merge_diarization_segments,
+)
+from .services.recording_store import (
+    CHANNELS as RECORDING_CHANNELS,
+    SAMPLE_RATE as RECORDING_SAMPLE_RATE,
+    recording_store,
 )
 
 
@@ -97,11 +103,34 @@ def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[
     return normalized
 
 
+class DeleteRecordingsRequest(BaseModel):
+    fileIds: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    requestId: str | None = None
+
+
+def _normalize_recording_file_id(file_id: str) -> str:
+    try:
+        return recording_store.normalize_file_id(file_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法 fileId")
+
+
+def _normalize_recording_file_ids(file_ids: list[str]) -> list[str]:
+    if not file_ids:
+        raise HTTPException(status_code=400, detail="fileIds 不能为空")
+    normalized = [_normalize_recording_file_id(file_id) for file_id in file_ids]
+    return list(dict.fromkeys(normalized))
+
+
 # ========== 生命周期 ==========
 
 @app.on_event("startup")
 async def startup_event():
     """服务启动时加载模型"""
+    removed_temp_recordings = recording_store.cleanup_temp_files()
+    if removed_temp_recordings:
+        print(f"已清理未完成录音临时文件: {removed_temp_recordings}")
     print("正在初始化服务端模型...")
     service.load_models(device=DEVICE, load_vad=True)
     # 加载 pyannote diarization 模型 (可选)
@@ -961,6 +990,38 @@ async def transcribe_meeting_stream(
         }
     )
 
+
+@app.post("/v1/meeting/recordings/delete")
+async def delete_meeting_recordings(request: DeleteRecordingsRequest):
+    """
+    按 fileId 批量删除实时会议录音。
+
+    该接口由业务系统在病人出院等业务事件发生时调用。服务端不保存
+    patientId/住院号等业务字段，只按 fileId 执行幂等删除。
+    """
+    file_ids = _normalize_recording_file_ids(request.fileIds)
+    result = recording_store.delete_many(file_ids)
+    return {
+        "status": "partial" if result["failed"] else "success",
+        **result,
+    }
+
+
+@app.get("/v1/meeting/recordings/{file_id}")
+async def download_meeting_recording(file_id: str):
+    """按 fileId 下载实时会议录音 WAV 文件。"""
+    normalized = _normalize_recording_file_id(file_id)
+    try:
+        recording = recording_store.resolve(normalized)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="录音文件不存在")
+
+    return FileResponse(
+        recording.path,
+        media_type="audio/wav",
+        filename=recording.filename,
+    )
+
 @app.websocket("/ws/meeting/live")
 async def websocket_live(websocket: WebSocket):
     """
@@ -988,13 +1049,23 @@ async def websocket_live(websocket: WebSocket):
     print("WebSocket 连接建立")
     
     audio_buffer = bytearray()
+    recording_writer = recording_store.begin_pcm_wav()
     is_speaking = False
     silence_duration = 0
     min_segment_bytes = 16000  # 约 0.5 秒，16kHz * 16bit * 1ch
+    stop_requested = False
 
     # 使用 SpeakerTracker 进行说话人追踪
     tracker = SpeakerTracker()
     segment_queue = asyncio.Queue()
+
+    async def safe_send_json(payload: dict):
+        try:
+            await websocket.send_json(payload)
+            return True
+        except Exception as e:
+            print(f"WebSocket 发送失败: {e}")
+            return False
 
     async def process_segment_worker():
         """后台处理已切分片段，避免阻塞 WebSocket 收包循环。"""
@@ -1034,7 +1105,7 @@ async def websocket_live(websocket: WebSocket):
 
                     # 过滤置信度极低的结果
                     if not (speaker != "未知" and score < CONFIG["min_confidence"]):
-                        await websocket.send_json({
+                        await safe_send_json({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "speaker": speaker,
                             "confidence": round(score, 2),
@@ -1061,7 +1132,36 @@ async def websocket_live(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_bytes()
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            control_text = message.get("text")
+            if control_text is not None:
+                try:
+                    control = json_module.loads(control_text)
+                except json_module.JSONDecodeError:
+                    await safe_send_json({
+                        "type": "error",
+                        "message": "控制消息必须是合法 JSON",
+                    })
+                    continue
+
+                if control.get("type") == "stop_recording":
+                    stop_requested = True
+                    break
+
+                await safe_send_json({
+                    "type": "error",
+                    "message": "未知控制消息",
+                })
+                continue
+
+            data = message.get("bytes")
+            if data is None:
+                continue
+
+            recording_writer.write_pcm(data)
 
             # 简单的静音检测逻辑
             audio_np = np.frombuffer(data, dtype=np.int16)
@@ -1093,6 +1193,10 @@ async def websocket_live(websocket: WebSocket):
                 is_speaking = False
                 silence_duration = 0
                 
+    except WebSocketDisconnect:
+        # Abnormal disconnects are not committed as recordings; callers must
+        # explicitly send stop_recording to persist and receive a fileId.
+        pass
     except Exception as e:
         print(f"WebSocket 错误: {e}")
     finally:
@@ -1105,6 +1209,26 @@ async def websocket_live(websocket: WebSocket):
             )
         await segment_queue.put(None)
         await worker_task
+        if stop_requested:
+            try:
+                file_id = recording_writer.commit()
+                print(f"录音已落盘: {file_id}")
+                await safe_send_json({
+                    "type": "recording_saved",
+                    "fileId": file_id,
+                    "format": "wav",
+                    "sampleRate": RECORDING_SAMPLE_RATE,
+                    "channels": RECORDING_CHANNELS,
+                })
+            except Exception as e:
+                recording_writer.abort()
+                print(f"WebSocket 录音保存错误: {e}")
+                await safe_send_json({
+                    "type": "error",
+                    "message": f"录音保存失败: {e}",
+                })
+        else:
+            recording_writer.abort()
         print("WebSocket 连接关闭")
 
 

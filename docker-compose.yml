@@ -14,6 +14,7 @@ services:
 
     volumes:
       - "${VOICEPRINT_DB_PATH:-./voiceprint_db}:/app/voiceprint_db"
+      - "${RECORDINGS_PATH:-./recordings}:/app/recordings"
 
     env_file:
       - .env
@@ -66,6 +67,7 @@ services:
     volumes:
       - "${VENV_PATH:-./venv_docker}:/opt/venv:ro"
       - "${VOICEPRINT_DB_PATH:-./voiceprint_db}:/app/voiceprint_db"
+      - "${RECORDINGS_PATH:-./recordings}:/app/recordings"
       - "${MODELS_PATH:-./models}:/app/models:ro"
 
     env_file:

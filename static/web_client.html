@@ -730,6 +730,8 @@
                 <button class="btn-summary" id="btnLiveSummary" onclick="requestSummary('live')" disabled>📋 会议总结</button>
             </div>
 
+            <div id="liveRecordingFile" style="display: none; margin-bottom: 16px;"></div>
+
             <div class="participant-panel">
                 <div class="participant-panel-header">
                     <div>
@@ -880,8 +882,10 @@
         let audioProcessorNode = null;
         let audioSinkNode = null;
         let isRecording = false;
+        let isStoppingRecording = false;
         let meetingMarkdown = '';
         let liveTranscriptItems = [];  // 收集实时录音转写数据
+        let liveRecordingFileId = '';
         let registeredSpeakers = [];
         let voiceprintLoadError = '';
         let voiceprintSourceUrl = '';
@@ -1144,9 +1148,90 @@
 
         // ========== 实时录音 ==========
 
+        const TARGET_RECORDING_SAMPLE_RATE = 16000;
+        let scriptResampleRemainder = new Float32Array(0);
+        let scriptResampleIndex = 0;
+
+        function floatToPcm16(sample) {
+            const clamped = Math.max(-1, Math.min(1, sample));
+            return clamped < 0 ? clamped * 32768 : clamped * 32767;
+        }
+
+        function downsampleToPcm16(inputData, sourceSampleRate) {
+            if (sourceSampleRate === TARGET_RECORDING_SAMPLE_RATE) {
+                const pcmData = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    pcmData[i] = floatToPcm16(inputData[i]);
+                }
+                return pcmData;
+            }
+
+            const combined = new Float32Array(scriptResampleRemainder.length + inputData.length);
+            combined.set(scriptResampleRemainder);
+            combined.set(inputData, scriptResampleRemainder.length);
+
+            const step = sourceSampleRate / TARGET_RECORDING_SAMPLE_RATE;
+            const output = [];
+            let sourceIndex = scriptResampleIndex;
+            while (sourceIndex + 1 < combined.length) {
+                const index = Math.floor(sourceIndex);
+                const fraction = sourceIndex - index;
+                const sample = combined[index] + (combined[index + 1] - combined[index]) * fraction;
+                output.push(floatToPcm16(sample));
+                sourceIndex += step;
+            }
+
+            const consumed = Math.floor(sourceIndex);
+            scriptResampleIndex = sourceIndex - consumed;
+            scriptResampleRemainder = combined.slice(consumed);
+            return new Int16Array(output);
+        }
+
         async function createAudioWorkletNode() {
             const workletCode = `
                 class PCMWorkletProcessor extends AudioWorkletProcessor {
+                    constructor() {
+                        super();
+                        this.targetSampleRate = 16000;
+                        this.remainder = new Float32Array(0);
+                        this.sourceIndex = 0;
+                    }
+
+                    floatToPcm16(sample) {
+                        const clamped = Math.max(-1, Math.min(1, sample));
+                        return clamped < 0 ? clamped * 32768 : clamped * 32767;
+                    }
+
+                    convertToPcm16(inputData) {
+                        if (sampleRate === this.targetSampleRate) {
+                            const pcmData = new Int16Array(inputData.length);
+                            for (let i = 0; i < inputData.length; i++) {
+                                pcmData[i] = this.floatToPcm16(inputData[i]);
+                            }
+                            return pcmData;
+                        }
+
+                        const combined = new Float32Array(this.remainder.length + inputData.length);
+                        combined.set(this.remainder);
+                        combined.set(inputData, this.remainder.length);
+
+                        const step = sampleRate / this.targetSampleRate;
+                        const output = [];
+                        let currentIndex = this.sourceIndex;
+                        while (currentIndex + 1 < combined.length) {
+                            const index = Math.floor(currentIndex);
+                            const fraction = currentIndex - index;
+                            const sample = combined[index] + (combined[index + 1] - combined[index]) * fraction;
+                            output.push(this.floatToPcm16(sample));
+                            currentIndex += step;
+                        }
+
+                        const consumed = Math.floor(currentIndex);
+                        this.sourceIndex = currentIndex - consumed;
+                        this.remainder = combined.slice(consumed);
+                        return new Int16Array(output);
+                    }
+
                     process(inputs) {
                         const input = inputs[0];
                         if (!input || !input[0]) {
@@ -1154,11 +1239,8 @@
                         }
 
                         const channelData = input[0];
-                        const pcmData = new Int16Array(channelData.length);
-                        for (let i = 0; i < channelData.length; i++) {
-                            const sample = Math.max(-1, Math.min(1, channelData[i]));
-                            pcmData[i] = sample < 0 ? sample * 32768 : sample * 32767;
-                        }
+                        const pcmData = this.convertToPcm16(channelData);
+                        if (pcmData.length === 0) return true;
                         this.port.postMessage(pcmData.buffer, [pcmData.buffer]);
                         return true;
                     }
@@ -1189,10 +1271,8 @@
             processor.onaudioprocess = (e) => {
                 if (!isRecording || !websocket || websocket.readyState !== WebSocket.OPEN) return;
                 const inputData = e.inputBuffer.getChannelData(0);
-                const pcmData = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) {
-                    pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
-                }
+                const pcmData = downsampleToPcm16(inputData, audioContext.sampleRate);
+                if (pcmData.length === 0) return;
                 websocket.send(pcmData.buffer);
             };
             return processor;
@@ -1255,11 +1335,55 @@
             });
         }
 
+        function resetLiveRecordingFile() {
+            liveRecordingFileId = '';
+            const box = document.getElementById('liveRecordingFile');
+            box.style.display = 'none';
+            box.replaceChildren();
+        }
+
+        function renderLiveRecordingFile(fileId) {
+            const box = document.getElementById('liveRecordingFile');
+            box.replaceChildren();
+            if (!fileId) {
+                box.style.display = 'none';
+                return;
+            }
+
+            const label = document.createElement('span');
+            label.textContent = `录音文件 ID: ${fileId} `;
+
+            const link = document.createElement('a');
+            link.href = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}`;
+            link.download = `${fileId}.wav`;
+            link.textContent = '下载录音';
+
+            box.appendChild(label);
+            box.appendChild(link);
+            box.style.display = 'block';
+        }
+
+        function finishRecordingUi(statusTextValue) {
+            isRecording = false;
+            isStoppingRecording = false;
+            cleanupAudioPipeline();
+            websocket = null;
+            updateStatus('', statusTextValue || '已停止');
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            if (liveTranscriptItems.length > 0) {
+                document.getElementById('btnLiveSummary').disabled = false;
+            }
+        }
+
         async function startRecording() {
             try {
                 await ensureVoiceprintsSynced();
                 // 重置上次的数据
                 liveTranscriptItems = [];
+                scriptResampleRemainder = new Float32Array(0);
+                scriptResampleIndex = 0;
+                resetLiveRecordingFile();
                 document.getElementById('liveSummarySection').style.display = 'none';
                 document.getElementById('btnLiveSummary').disabled = true;
                 const selectedParticipants = getSelectedParticipants('live');
@@ -1276,63 +1400,96 @@
                         updateStatus('', data.message || '连接失败');
                         return;
                     }
+                    if (data.type === 'recording_saved') {
+                        liveRecordingFileId = data.fileId || '';
+                        renderLiveRecordingFile(liveRecordingFileId);
+                        updateStatus('connected', liveRecordingFileId ? '录音已保存' : '已停止');
+                        if (websocket && websocket.readyState === WebSocket.OPEN) websocket.close();
+                        return;
+                    }
                     addTranscript(data);
                 };
 
-                websocket.onerror = () => updateStatus('', '连接错误');
-	                websocket.onclose = () => {
-	                    updateStatus('', '连接已断开');
-	                    stopRecording();
-	                };
+                websocket.onerror = () => {
+                    if (!isStoppingRecording) updateStatus('', '连接错误');
+                };
+                websocket.onclose = () => {
+                    if (isStoppingRecording) {
+                        finishRecordingUi(liveRecordingFileId ? '录音已保存' : '已停止');
+                        return;
+                    }
+                    finishRecordingUi('连接已断开');
+                };
 
-	                audioStream = await navigator.mediaDevices.getUserMedia({
-	                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
-	                });
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: TARGET_RECORDING_SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
 
-	                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-	                await audioContext.resume();
-	                audioSource = audioContext.createMediaStreamSource(audioStream);
-	                audioSinkNode = audioContext.createGain();
-	                audioSinkNode.gain.value = 0;
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: TARGET_RECORDING_SAMPLE_RATE
+                });
+                await audioContext.resume();
+                audioSource = audioContext.createMediaStreamSource(audioStream);
+                audioSinkNode = audioContext.createGain();
+                audioSinkNode.gain.value = 0;
 
-	                if (audioContext.audioWorklet) {
-	                    try {
-	                        audioProcessorNode = await createAudioWorkletNode();
-	                    } catch (error) {
-	                        console.warn('AudioWorklet 初始化失败，回退到 ScriptProcessor:', error);
-	                        audioProcessorNode = createScriptProcessorNode();
-	                    }
-	                } else {
-	                    audioProcessorNode = createScriptProcessorNode();
-	                }
+                if (audioContext.audioWorklet) {
+                    try {
+                        audioProcessorNode = await createAudioWorkletNode();
+                    } catch (error) {
+                        console.warn('AudioWorklet 初始化失败，回退到 ScriptProcessor:', error);
+                        audioProcessorNode = createScriptProcessorNode();
+                    }
+                } else {
+                    audioProcessorNode = createScriptProcessorNode();
+                }
 
-	                audioSource.connect(audioProcessorNode);
-	                audioProcessorNode.connect(audioSinkNode);
-	                audioSinkNode.connect(audioContext.destination);
+                audioSource.connect(audioProcessorNode);
+                audioProcessorNode.connect(audioSinkNode);
+                audioSinkNode.connect(audioContext.destination);
 
-	                isRecording = true;
-	                updateStatus('recording', '录音中...');
-	                btnStart.disabled = true;
-	                btnStop.disabled = false;
+                isRecording = true;
+                updateStatus('recording', '录音中...');
+                btnStart.disabled = true;
+                btnStop.disabled = false;
 
-	            } catch (error) {
-	                cleanupAudioPipeline();
-	                updateStatus('', '启动失败: ' + error.message);
-	            }
-	        }
-
-	        function stopRecording() {
-	            isRecording = false;
-	            cleanupAudioPipeline();
-	            if (websocket && websocket.readyState === WebSocket.OPEN) websocket.close();
-	            websocket = null;
-	            updateStatus('', '已停止');
-            btnStart.disabled = false;
-            btnStop.disabled = true;
-            // 有转写内容时启用总结按钮
-            if (liveTranscriptItems.length > 0) {
-                document.getElementById('btnLiveSummary').disabled = false;
+            } catch (error) {
+                cleanupAudioPipeline();
+                updateStatus('', '启动失败: ' + error.message);
             }
+        }
+
+        async function stopRecording() {
+            if (isStoppingRecording) return;
+            btnStop.disabled = true;
+
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                isStoppingRecording = true;
+                updateStatus('connected', '正在保存录音...');
+                // 让 worklet 通过 port 推送的最后一批 PCM 进入主线程发送队列。
+                await new Promise(resolve => setTimeout(resolve, 0));
+                isRecording = false;
+                cleanupAudioPipeline();
+                try {
+                    websocket.send(JSON.stringify({ type: 'stop_recording' }));
+                } catch (error) {
+                    finishRecordingUi('停止失败: ' + error.message);
+                }
+                return;
+            }
+
+            isRecording = false;
+            cleanupAudioPipeline();
+            if (websocket && websocket.readyState === WebSocket.CONNECTING) {
+                websocket.close();
+            }
+            finishRecordingUi('已停止');
         }
 
         // ========== 上传会议 ==========
