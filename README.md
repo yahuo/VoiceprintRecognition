@@ -35,6 +35,12 @@ pip install -r requirements.txt
 2. **访问界面**：
    打开浏览器访问 [http://localhost:8000/client](http://localhost:8000/client)
 
+实时录音结束后会保存为本地 WAV 文件，并返回 `fileId`。本地直接启动时无需额外配置，默认保存到项目根目录 `recordings/`；如需调整服务进程内目录，可设置：
+
+```bash
+RECORDINGS_DIR=/absolute/path/to/recordings
+```
+
 ![Web UI](docs/images/web_ui.png)
 
 ### 3. 便捷脚本 (推荐)
@@ -373,7 +379,7 @@ UPLOAD_ASR_BACKEND=paraformer
 HOST_PORT=18008
 # 声纹数据库路径 (默认 ./voiceprint_db)
 VOICEPRINT_DB_PATH=./voiceprint_db
-# 实时会议录音路径 (默认 ./recordings)
+# 实时会议录音宿主机路径 (默认 ./recordings，挂载到容器 /app/recordings)
 RECORDINGS_PATH=./recordings
 ```
 
