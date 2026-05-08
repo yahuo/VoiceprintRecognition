@@ -180,6 +180,38 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 }
 ```
 
+暂停录音控制消息:
+
+```json
+{
+  "type": "pause_recording"
+}
+```
+
+暂停成功消息:
+
+```json
+{
+  "type": "recording_paused"
+}
+```
+
+继续录音控制消息:
+
+```json
+{
+  "type": "resume_recording"
+}
+```
+
+继续成功消息:
+
+```json
+{
+  "type": "recording_resumed"
+}
+```
+
 停止录音控制消息:
 
 ```json
@@ -199,6 +231,10 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
   "channels": 1
 }
 ```
+
+暂停期间客户端不发送 PCM，服务端不录音也不转写。
+
+**最终 WAV 会直接跳过暂停时间段，不写入静音。**
 
 错误消息示例:
 

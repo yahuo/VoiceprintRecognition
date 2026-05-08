@@ -1054,6 +1054,7 @@ async def websocket_live(websocket: WebSocket):
     silence_duration = 0
     min_segment_bytes = 16000  # 约 0.5 秒，16kHz * 16bit * 1ch
     stop_requested = False
+    is_paused = False
 
     # 使用 SpeakerTracker 进行说话人追踪
     tracker = SpeakerTracker()
@@ -1066,6 +1067,19 @@ async def websocket_live(websocket: WebSocket):
         except Exception as e:
             print(f"WebSocket 发送失败: {e}")
             return False
+
+    async def flush_audio_buffer(reason: str):
+        nonlocal audio_buffer, is_speaking, silence_duration
+        if len(audio_buffer) >= min_segment_bytes:
+            segment_duration = len(audio_buffer) / (16000 * 2)
+            await segment_queue.put(bytes(audio_buffer))
+            print(
+                f"📥 WebSocket {reason}片段入队: "
+                f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
+            )
+        audio_buffer = bytearray()
+        is_speaking = False
+        silence_duration = 0
 
     async def process_segment_worker():
         """后台处理已切分片段，避免阻塞 WebSocket 收包循环。"""
@@ -1151,6 +1165,22 @@ async def websocket_live(websocket: WebSocket):
                     stop_requested = True
                     break
 
+                if control.get("type") == "pause_recording":
+                    if not is_paused:
+                        await flush_audio_buffer("暂停前")
+                    is_paused = True
+                    await safe_send_json({"type": "recording_paused"})
+                    continue
+
+                if control.get("type") == "resume_recording":
+                    if is_paused:
+                        is_paused = False
+                        audio_buffer = bytearray()
+                        is_speaking = False
+                        silence_duration = 0
+                    await safe_send_json({"type": "recording_resumed"})
+                    continue
+
                 await safe_send_json({
                     "type": "error",
                     "message": "未知控制消息",
@@ -1159,6 +1189,8 @@ async def websocket_live(websocket: WebSocket):
 
             data = message.get("bytes")
             if data is None:
+                continue
+            if is_paused:
                 continue
 
             recording_writer.write_pcm(data)
@@ -1180,18 +1212,7 @@ async def websocket_live(websocket: WebSocket):
 
             # 如果静音超过阈值且有足够长的音频，则处理
             if is_speaking and silence_duration > CONFIG["silence_duration"]:
-                if len(audio_buffer) >= min_segment_bytes:
-                    segment_duration = len(audio_buffer) / (16000 * 2)
-                    await segment_queue.put(bytes(audio_buffer))
-                    print(
-                        f"📥 WebSocket 片段入队: "
-                        f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
-                    )
-
-                # 重置缓冲区
-                audio_buffer = bytearray()
-                is_speaking = False
-                silence_duration = 0
+                await flush_audio_buffer("")
                 
     except WebSocketDisconnect:
         # Abnormal disconnects are not committed as recordings; callers must
@@ -1200,13 +1221,8 @@ async def websocket_live(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket 错误: {e}")
     finally:
-        if is_speaking and len(audio_buffer) >= min_segment_bytes:
-            segment_duration = len(audio_buffer) / (16000 * 2)
-            await segment_queue.put(bytes(audio_buffer))
-            print(
-                f"📥 WebSocket 尾片段入队: "
-                f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
-            )
+        if not is_paused:
+            await flush_audio_buffer("尾")
         await segment_queue.put(None)
         await worker_task
         if stop_requested:

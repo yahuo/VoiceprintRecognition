@@ -140,6 +140,11 @@
             color: white;
         }
 
+        .btn-warning {
+            background: #ffa502;
+            color: white;
+        }
+
         .btn-success {
             background: #2ed573;
             color: white;
@@ -726,6 +731,7 @@
 
             <div class="controls">
                 <button class="btn-primary" id="btnStart" onclick="startRecording()">开始录音</button>
+                <button class="btn-warning" id="btnPause" onclick="togglePauseRecording()" disabled>暂停录音</button>
                 <button class="btn-danger" id="btnStop" onclick="stopRecording()" disabled>停止录音</button>
                 <button class="btn-summary" id="btnLiveSummary" onclick="requestSummary('live')" disabled>📋 会议总结</button>
             </div>
@@ -882,6 +888,8 @@
         let audioProcessorNode = null;
         let audioSinkNode = null;
         let isRecording = false;
+        let isRecordingPaused = false;
+        let pauseAckTimer = null;
         let isStoppingRecording = false;
         let meetingMarkdown = '';
         let liveTranscriptItems = [];  // 收集实时录音转写数据
@@ -900,6 +908,7 @@
         const statusDot = document.getElementById('statusDot');
         const statusText = document.getElementById('statusText');
         const btnStart = document.getElementById('btnStart');
+        const btnPause = document.getElementById('btnPause');
         const btnStop = document.getElementById('btnStop');
         const transcriptBox = document.getElementById('transcriptBox');
 
@@ -1260,7 +1269,7 @@
 
             const processorNode = new AudioWorkletNode(audioContext, 'pcm-worklet-processor');
             processorNode.port.onmessage = (event) => {
-                if (!isRecording || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+                if (!isRecording || isRecordingPaused || !websocket || websocket.readyState !== WebSocket.OPEN) return;
                 websocket.send(event.data);
             };
             return processorNode;
@@ -1269,7 +1278,7 @@
         function createScriptProcessorNode() {
             const processor = audioContext.createScriptProcessor(2048, 1, 1);
             processor.onaudioprocess = (e) => {
-                if (!isRecording || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+                if (!isRecording || isRecordingPaused || !websocket || websocket.readyState !== WebSocket.OPEN) return;
                 const inputData = e.inputBuffer.getChannelData(0);
                 const pcmData = downsampleToPcm16(inputData, audioContext.sampleRate);
                 if (pcmData.length === 0) return;
@@ -1305,6 +1314,24 @@
         function updateStatus(status, text) {
             statusDot.className = 'status-dot ' + status;
             statusText.textContent = text;
+        }
+
+        function clearPauseAckTimer() {
+            if (pauseAckTimer) {
+                clearTimeout(pauseAckTimer);
+                pauseAckTimer = null;
+            }
+        }
+
+        function startPauseAckTimer(expectedPaused) {
+            clearPauseAckTimer();
+            pauseAckTimer = setTimeout(() => {
+                pauseAckTimer = null;
+                if (!isRecording || isStoppingRecording) return;
+                btnPause.disabled = false;
+                btnPause.textContent = isRecordingPaused ? '继续录音' : '暂停录音';
+                updateStatus('', expectedPaused ? '暂停确认超时' : '继续确认超时');
+            }, 5000);
         }
 
         function addTranscript(data) {
@@ -1365,11 +1392,15 @@
 
         function finishRecordingUi(statusTextValue) {
             isRecording = false;
+            isRecordingPaused = false;
             isStoppingRecording = false;
+            clearPauseAckTimer();
             cleanupAudioPipeline();
             websocket = null;
             updateStatus('', statusTextValue || '已停止');
             btnStart.disabled = false;
+            btnPause.disabled = true;
+            btnPause.textContent = '暂停录音';
             btnStop.disabled = true;
             if (liveTranscriptItems.length > 0) {
                 document.getElementById('btnLiveSummary').disabled = false;
@@ -1381,6 +1412,7 @@
                 await ensureVoiceprintsSynced();
                 // 重置上次的数据
                 liveTranscriptItems = [];
+                isRecordingPaused = false;
                 scriptResampleRemainder = new Float32Array(0);
                 scriptResampleIndex = 0;
                 resetLiveRecordingFile();
@@ -1405,6 +1437,22 @@
                         renderLiveRecordingFile(liveRecordingFileId);
                         updateStatus('connected', liveRecordingFileId ? '录音已保存' : '已停止');
                         if (websocket && websocket.readyState === WebSocket.OPEN) websocket.close();
+                        return;
+                    }
+                    if (data.type === 'recording_paused') {
+                        clearPauseAckTimer();
+                        isRecordingPaused = true;
+                        btnPause.textContent = '继续录音';
+                        btnPause.disabled = false;
+                        updateStatus('connected', '已暂停');
+                        return;
+                    }
+                    if (data.type === 'recording_resumed') {
+                        clearPauseAckTimer();
+                        isRecordingPaused = false;
+                        btnPause.textContent = '暂停录音';
+                        btnPause.disabled = false;
+                        updateStatus('recording', '录音中...');
                         return;
                     }
                     addTranscript(data);
@@ -1455,8 +1503,11 @@
                 audioSinkNode.connect(audioContext.destination);
 
                 isRecording = true;
+                isRecordingPaused = false;
                 updateStatus('recording', '录音中...');
                 btnStart.disabled = true;
+                btnPause.disabled = false;
+                btnPause.textContent = '暂停录音';
                 btnStop.disabled = false;
 
             } catch (error) {
@@ -1465,15 +1516,47 @@
             }
         }
 
+        function togglePauseRecording() {
+            if (!isRecording || isStoppingRecording || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+
+            const previousPaused = isRecordingPaused;
+            try {
+                if (isRecordingPaused) {
+                    websocket.send(JSON.stringify({ type: 'resume_recording' }));
+                    isRecordingPaused = false;
+                    btnPause.textContent = '暂停录音';
+                    updateStatus('connected', '正在继续录音...');
+                    startPauseAckTimer(false);
+                } else {
+                    isRecordingPaused = true;
+                    btnPause.textContent = '继续录音';
+                    websocket.send(JSON.stringify({ type: 'pause_recording' }));
+                    updateStatus('connected', '正在暂停...');
+                    startPauseAckTimer(true);
+                }
+                btnPause.disabled = true;
+            } catch (error) {
+                isRecordingPaused = previousPaused;
+                clearPauseAckTimer();
+                updateStatus('', '暂停操作失败: ' + error.message);
+                btnPause.textContent = isRecordingPaused ? '继续录音' : '暂停录音';
+                btnPause.disabled = false;
+            }
+        }
+
         async function stopRecording() {
             if (isStoppingRecording) return;
+            clearPauseAckTimer();
             btnStop.disabled = true;
+            btnPause.disabled = true;
 
             if (websocket && websocket.readyState === WebSocket.OPEN) {
                 isStoppingRecording = true;
                 updateStatus('connected', '正在保存录音...');
-                // 让 worklet 通过 port 推送的最后一批 PCM 进入主线程发送队列。
-                await new Promise(resolve => setTimeout(resolve, 0));
+                if (!isRecordingPaused) {
+                    // 让 worklet 通过 port 推送的最后一批 PCM 进入主线程发送队列。
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
                 isRecording = false;
                 cleanupAudioPipeline();
                 try {

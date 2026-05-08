@@ -186,6 +186,52 @@ class RecordingApiTest(unittest.TestCase):
             os.path.exists(os.path.join(self.tmpdir.name, f"{payload['fileId']}.wav"))
         )
 
+    def test_live_websocket_pause_resume_skips_paused_audio(self):
+        websocket = FakeWebSocket([
+            {"type": "websocket.receive", "bytes": b"\x01\x00" * 10},
+            {"type": "websocket.receive", "text": '{"type":"pause_recording"}'},
+            {"type": "websocket.receive", "bytes": b"\x02\x00" * 10},
+            {"type": "websocket.receive", "text": '{"type":"resume_recording"}'},
+            {"type": "websocket.receive", "bytes": b"\x03\x00" * 10},
+            {"type": "websocket.receive", "text": '{"type":"stop_recording"}'},
+        ])
+
+        asyncio.run(server.websocket_live(websocket))
+
+        message_types = [payload["type"] for payload in websocket.sent_json]
+        self.assertIn("recording_paused", message_types)
+        self.assertIn("recording_resumed", message_types)
+        recording_saved = websocket.sent_json[-1]
+        self.assertEqual(recording_saved["type"], "recording_saved")
+
+        wav_path = os.path.join(self.tmpdir.name, f"{recording_saved['fileId']}.wav")
+        with wave.open(wav_path, "rb") as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            samples = [
+                int.from_bytes(frames[i:i + 2], "little", signed=True)
+                for i in range(0, len(frames), 2)
+            ]
+
+        self.assertEqual(len(samples), 20)
+        self.assertEqual(samples[:10], [1] * 10)
+        self.assertEqual(samples[10:], [3] * 10)
+
+    def test_live_websocket_pause_then_stop_saves_audio_before_pause(self):
+        websocket = FakeWebSocket([
+            {"type": "websocket.receive", "bytes": b"\x04\x00" * 10},
+            {"type": "websocket.receive", "text": '{"type":"pause_recording"}'},
+            {"type": "websocket.receive", "bytes": b"\x05\x00" * 10},
+            {"type": "websocket.receive", "text": '{"type":"stop_recording"}'},
+        ])
+
+        asyncio.run(server.websocket_live(websocket))
+
+        recording_saved = websocket.sent_json[-1]
+        self.assertEqual(recording_saved["type"], "recording_saved")
+        wav_path = os.path.join(self.tmpdir.name, f"{recording_saved['fileId']}.wav")
+        with wave.open(wav_path, "rb") as wav_file:
+            self.assertEqual(wav_file.getnframes(), 10)
+
     def test_live_websocket_stop_send_failure_does_not_raise(self):
         websocket = FakeWebSocket(
             [
