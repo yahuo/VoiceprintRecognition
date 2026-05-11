@@ -1,0 +1,2379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实时 KWS 事件交互场景 · 可玩设计文档</title>
+<style>
+/* ============ Reset ============ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body, button, input { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; }
+
+/* ============ Theme ============ */
+:root {
+  --bg: #0a0e1a;
+  --bg-2: #131826;
+  --bg-3: #1c2235;
+  --bg-4: #252b40;
+  --border: #2a3145;
+  --border-strong: #3a4262;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --cyan: #06b6d4;
+  --cyan-bg: rgba(6, 182, 212, 0.12);
+  --purple: #a855f7;
+  --purple-bg: rgba(168, 85, 247, 0.12);
+  --green: #10b981;
+  --green-bg: rgba(16, 185, 129, 0.12);
+  --amber: #f59e0b;
+  --amber-bg: rgba(245, 158, 11, 0.12);
+  --red: #ef4444;
+  --red-bg: rgba(239, 68, 68, 0.12);
+  --pink: #ec4899;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.65;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(6, 182, 212, 0.07), transparent 45%),
+    radial-gradient(circle at 85% 30%, rgba(168, 85, 247, 0.06), transparent 45%),
+    radial-gradient(circle at 50% 100%, rgba(236, 72, 153, 0.04), transparent 50%);
+  background-attachment: fixed;
+}
+
+/* ============ Layout ============ */
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.section {
+  padding: 88px 0;
+  position: relative;
+}
+
+.section + .section { border-top: 1px solid var(--border); }
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 48px;
+}
+
+.section-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: var(--cyan);
+  padding: 4px 10px;
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  background: var(--cyan-bg);
+}
+
+.section-head h2 {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.section-sub {
+  color: var(--text-muted);
+  font-size: 16px;
+  margin-top: -32px;
+  margin-bottom: 48px;
+  max-width: 640px;
+}
+
+/* ============ Top Nav ============ */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(10, 14, 26, 0.85);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.nav-brand .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 12px var(--cyan);
+  animation: pulse 2s infinite;
+}
+
+.nav-links {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.nav-links a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+
+.nav-links a:hover { color: var(--text); background: var(--bg-3); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.3); }
+}
+
+/* ============ Hero ============ */
+.hero {
+  padding: 96px 0 64px;
+  text-align: center;
+  position: relative;
+}
+
+.hero-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--cyan);
+  padding: 6px 14px;
+  border: 1px solid var(--cyan);
+  border-radius: 100px;
+  background: var(--cyan-bg);
+  margin-bottom: 28px;
+}
+
+.hero h1 {
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero p.lead {
+  font-size: 19px;
+  color: var(--text-muted);
+  max-width: 620px;
+  margin: 0 auto 40px;
+  line-height: 1.6;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 12px 24px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.18s;
+  border: 1px solid transparent;
+}
+
+.btn-primary {
+  background: var(--cyan);
+  color: #0a0e1a;
+}
+.btn-primary:hover { background: #22d3ee; transform: translateY(-1px); box-shadow: 0 8px 24px rgba(6, 182, 212, 0.3); }
+
+.btn-ghost {
+  background: var(--bg-3);
+  border-color: var(--border);
+  color: var(--text);
+}
+.btn-ghost:hover { background: var(--bg-4); border-color: var(--border-strong); }
+
+/* Hero waveform decoration */
+.hero-wave {
+  display: flex;
+  justify-content: center;
+  align-items: end;
+  gap: 4px;
+  height: 50px;
+  margin: 56px auto 0;
+  max-width: 320px;
+}
+
+.hero-wave span {
+  width: 4px;
+  background: linear-gradient(to top, var(--cyan), var(--purple));
+  border-radius: 2px;
+  animation: wave 1.4s ease-in-out infinite;
+  opacity: 0.6;
+}
+.hero-wave span:nth-child(1) { height: 30%; animation-delay: 0.0s; }
+.hero-wave span:nth-child(2) { height: 60%; animation-delay: 0.1s; }
+.hero-wave span:nth-child(3) { height: 90%; animation-delay: 0.2s; }
+.hero-wave span:nth-child(4) { height: 50%; animation-delay: 0.3s; }
+.hero-wave span:nth-child(5) { height: 80%; animation-delay: 0.4s; }
+.hero-wave span:nth-child(6) { height: 40%; animation-delay: 0.5s; }
+.hero-wave span:nth-child(7) { height: 70%; animation-delay: 0.6s; }
+.hero-wave span:nth-child(8) { height: 100%; animation-delay: 0.5s; }
+.hero-wave span:nth-child(9) { height: 60%; animation-delay: 0.4s; }
+.hero-wave span:nth-child(10) { height: 30%; animation-delay: 0.3s; }
+.hero-wave span:nth-child(11) { height: 80%; animation-delay: 0.2s; }
+.hero-wave span:nth-child(12) { height: 50%; animation-delay: 0.1s; }
+.hero-wave span:nth-child(13) { height: 90%; animation-delay: 0.0s; }
+.hero-wave span:nth-child(14) { height: 40%; animation-delay: 0.1s; }
+.hero-wave span:nth-child(15) { height: 70%; animation-delay: 0.2s; }
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.4; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+/* ============ Cards ============ */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+  transition: all 0.2s;
+}
+
+.card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+
+.card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin-bottom: 18px;
+}
+
+.card-icon.cyan { background: var(--cyan-bg); color: var(--cyan); }
+.card-icon.purple { background: var(--purple-bg); color: var(--purple); }
+.card-icon.green { background: var(--green-bg); color: var(--green); }
+.card-icon.amber { background: var(--amber-bg); color: var(--amber); }
+
+.card h3 {
+  font-size: 18px;
+  margin-bottom: 8px;
+  letter-spacing: -0.01em;
+}
+
+.card p {
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.card-demo {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* Mini demos in cards */
+.mini-wave {
+  display: flex;
+  align-items: end;
+  gap: 2px;
+  height: 32px;
+  position: relative;
+}
+.mini-wave span {
+  flex: 1;
+  background: var(--text-dim);
+  border-radius: 1px;
+  transition: background 0.3s;
+}
+.mini-wave span.hot { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+
+.mini-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-3);
+  border-radius: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.mini-event .tag {
+  padding: 2px 6px;
+  background: var(--cyan-bg);
+  color: var(--cyan);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.gate-flow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.gate-flow .gate-block {
+  flex: 1;
+  padding: 8px;
+  border-radius: 6px;
+  text-align: center;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+}
+.gate-flow .gate-block.in { color: var(--cyan); border-color: var(--cyan-bg); }
+.gate-flow .gate-block.out { color: var(--green); border-color: var(--green-bg); }
+.gate-flow .arrow { color: var(--text-dim); }
+
+/* ============ Event JSON Inspector ============ */
+.json-inspect {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 24px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+}
+
+@media (max-width: 800px) {
+  .json-inspect { grid-template-columns: 1fr; }
+}
+
+.json-block {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.75;
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 20px;
+  overflow-x: auto;
+}
+
+.json-block .punct { color: var(--text-dim); }
+.json-block .key { color: var(--cyan); }
+.json-block .str { color: var(--green); }
+.json-block .num { color: var(--amber); }
+.json-block .field {
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin: -1px -4px;
+  transition: background 0.15s;
+}
+.json-block .field:hover { background: var(--bg-4); }
+.json-block .field.active { background: var(--cyan-bg); outline: 1px solid var(--cyan); }
+
+.field-info {
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+  position: relative;
+  min-height: 200px;
+}
+
+.field-info-default {
+  color: var(--text-dim);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  padding: 20px;
+}
+
+.field-info h4 {
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.field-info p {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.field-info .example {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--green);
+}
+
+/* ============ Simulator ============ */
+.sim {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+
+.sim-tabs {
+  display: flex;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+  padding: 0 12px;
+}
+
+.sim-tab {
+  padding: 14px 20px;
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-tab .badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--bg-4);
+  border-radius: 4px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.sim-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--cyan);
+}
+.sim-tab.active .badge { background: var(--cyan-bg); color: var(--cyan); }
+.sim-tab:hover:not(.active) { color: var(--text); }
+
+.sim-tab-info {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 12px;
+  color: var(--text-dim);
+  gap: 8px;
+}
+
+.sim-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr 380px;
+  min-height: 580px;
+}
+
+@media (max-width: 1024px) {
+  .sim-grid { grid-template-columns: 1fr; min-height: auto; }
+}
+
+.sim-col {
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.sim-col:last-child { border-right: 0; }
+
+@media (max-width: 1024px) {
+  .sim-col { border-right: 0; border-bottom: 1px solid var(--border); }
+}
+
+.sim-col-head {
+  padding: 14px 18px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-3);
+}
+
+.sim-col-body {
+  padding: 18px;
+  flex: 1;
+  overflow-y: auto;
+  max-height: 540px;
+}
+
+/* Left: Speak controls */
+.speak-section h4 {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 16px 0 8px;
+}
+.speak-section h4:first-child { margin-top: 0; }
+
+.speak-btn {
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.speak-btn:hover:not(:disabled) {
+  background: var(--bg-4);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.speak-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.speak-btn.danger:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.speak-btn .mic-icon {
+  width: 16px; height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.speak-btn.b-only::after {
+  content: 'B';
+  position: absolute;
+  right: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  background: var(--purple-bg);
+  color: var(--purple);
+  border-radius: 3px;
+}
+
+.scenario-script {
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, var(--cyan-bg), var(--purple-bg));
+  border: 1px solid var(--cyan);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  width: 100%;
+  transition: all 0.15s;
+}
+.scenario-script:hover { transform: translateY(-1px); }
+.scenario-script:disabled { opacity: 0.5; }
+
+.reset-btn {
+  margin-top: 12px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  width: 100%;
+  transition: all 0.15s;
+}
+.reset-btn:hover { color: var(--red); border-color: var(--red); }
+
+/* Middle: Business UI */
+.biz-status-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.status-pill {
+  flex: 1;
+  padding: 14px 16px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.status-pill .label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.status-pill .value {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+
+.status-pill.bed.active {
+  border-color: var(--cyan);
+  background: var(--cyan-bg);
+}
+.status-pill.bed.active .value { color: var(--cyan); }
+
+.status-pill .rec-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rec-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.rec-dot.recording { background: var(--red); animation: pulse 1.4s infinite; }
+.rec-dot.paused { background: var(--amber); }
+
+.beds-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.bed-card {
+  padding: 12px 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  transition: all 0.25s;
+  cursor: default;
+}
+
+.bed-card.active {
+  background: var(--cyan-bg);
+  border-color: var(--cyan);
+  color: var(--cyan);
+  transform: scale(1.04);
+  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.25);
+}
+
+.bed-card.queued {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.records-section {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.records-section .label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.record-item {
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border-left: 3px solid var(--cyan);
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 6px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  animation: slideIn 0.3s ease-out;
+}
+
+.record-item.partial {
+  border-left-color: var(--amber);
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.record-item.partial::after {
+  content: '▍';
+  color: var(--amber);
+  margin-left: 4px;
+  animation: blink 1s infinite;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.record-bed-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--cyan);
+  margin-right: 8px;
+}
+
+.records-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+  font-style: italic;
+}
+
+/* Right: Event stream */
+.event-stream {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.event-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--cyan);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  animation: eventSlide 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes eventSlide {
+  from { opacity: 0; transform: translateX(20px) scale(0.96); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.event-card.kws { border-left-color: var(--cyan); }
+.event-card.state { border-left-color: var(--purple); }
+.event-card.asr { border-left-color: var(--green); }
+.event-card.blocked { border-left-color: var(--red); opacity: 0.85; }
+
+.event-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.event-type {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.event-card.kws .event-type { color: var(--cyan); }
+.event-card.state .event-type { color: var(--purple); }
+.event-card.asr .event-type { color: var(--green); }
+.event-card.blocked .event-type { color: var(--red); text-decoration: line-through; }
+
+.event-meta {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.event-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding-left: 4px;
+}
+
+.event-body .k { color: var(--text-dim); }
+.event-body .v { color: var(--text); word-break: break-all; }
+
+.event-block-reason {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: var(--red-bg);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--red);
+  font-family: var(--mono);
+}
+
+.stream-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: -apple-system, sans-serif;
+  text-align: center;
+  padding: 60px 20px;
+  font-style: italic;
+}
+
+.stream-empty::before {
+  content: '⏸';
+  display: block;
+  font-size: 36px;
+  margin-bottom: 12px;
+  opacity: 0.4;
+  font-style: normal;
+}
+
+/* ============ Comparison table ============ */
+.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 720px) {
+  .compare { grid-template-columns: 1fr; }
+}
+
+.compare-col {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.compare-col.a { border-top: 3px solid var(--cyan); }
+.compare-col.b { border-top: 3px solid var(--purple); }
+
+.compare-head {
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.compare-head .badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-bottom: 10px;
+  display: inline-block;
+}
+
+.compare-col.a .compare-head .badge { background: var(--cyan-bg); color: var(--cyan); }
+.compare-col.b .compare-head .badge { background: var(--purple-bg); color: var(--purple); }
+
+.compare-head h3 {
+  font-size: 19px;
+  margin-bottom: 6px;
+}
+
+.compare-head p {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.compare-body {
+  padding: 20px 22px;
+}
+
+.compare-body h4 {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.compare-body h4:not(:first-child) { margin-top: 18px; }
+
+.compare-body ul li {
+  padding: 4px 0 4px 22px;
+  font-size: 14px;
+  position: relative;
+  color: var(--text-muted);
+}
+
+.compare-body ul li::before {
+  position: absolute;
+  left: 0;
+  top: 4px;
+}
+
+.compare-body ul.pros li::before { content: '✓'; color: var(--green); font-weight: 700; }
+.compare-body ul.cons li::before { content: '−'; color: var(--amber); font-weight: 700; }
+
+/* ============ State machine rules ============ */
+.rules {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 720px) {
+  .rules { grid-template-columns: 1fr; }
+}
+
+.rule-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.rule-card h4 {
+  font-size: 15px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rule-num {
+  display: inline-flex;
+  width: 24px; height: 24px;
+  align-items: center;
+  justify-content: center;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rule-card p {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+.rule-try {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.rule-try-btn {
+  margin-left: auto;
+  padding: 5px 12px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.rule-try-btn:hover { background: var(--amber); color: var(--bg); }
+
+.rule-result {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  display: none;
+  animation: slideIn 0.3s;
+}
+.rule-result.show { display: block; }
+.rule-result.allow { border-left: 3px solid var(--green); color: var(--green); }
+.rule-result.block { border-left: 3px solid var(--red); color: var(--red); }
+.rule-result .desc { color: var(--text-muted); margin-top: 4px; font-family: -apple-system, sans-serif; font-size: 12px; }
+
+/* ============ Communication ============ */
+.comm-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.comm-tab {
+  padding: 10px 18px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text-muted);
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.comm-tab:hover { color: var(--text); }
+.comm-tab.active { background: var(--cyan-bg); border-color: var(--cyan); color: var(--cyan); }
+
+.comm-panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+  display: none;
+}
+.comm-panel.active { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+
+@media (max-width: 720px) {
+  .comm-panel.active { grid-template-columns: 1fr; }
+}
+
+.comm-info h3 { font-size: 20px; margin-bottom: 10px; }
+.comm-info p { color: var(--text-muted); margin-bottom: 14px; font-size: 14px; }
+.comm-info .when {
+  padding: 12px 14px;
+  background: var(--bg-3);
+  border-left: 3px solid var(--cyan);
+  border-radius: 0 8px 8px 0;
+  font-size: 13.5px;
+}
+.comm-info .when strong { color: var(--cyan); display: block; margin-bottom: 4px; font-size: 12px; }
+
+.comm-diagram {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 200px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0;
+}
+
+.diag-node {
+  padding: 6px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.diag-node.client { color: var(--cyan); border-color: var(--cyan-bg); }
+.diag-node.server { color: var(--purple); border-color: var(--purple-bg); }
+.diag-node.queue { color: var(--amber); border-color: var(--amber-bg); }
+
+.diag-arrow {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+  position: relative;
+}
+
+.diag-arrow::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  top: -3px;
+  border-left: 8px solid var(--text-muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+.diag-arrow.bidi::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: -3px;
+  border-right: 8px solid var(--text-muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+.diag-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* ============ Decision Q&A ============ */
+.decision {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 36px;
+  text-align: center;
+}
+
+.decision-step { display: none; }
+.decision-step.active { display: block; animation: fadeIn 0.3s; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.decision-q {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.01em;
+}
+
+.decision-hint {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 28px;
+  max-width: 480px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.decision-options {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.decision-btn {
+  padding: 16px 28px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 160px;
+  transition: all 0.15s;
+}
+.decision-btn:hover { border-color: var(--cyan); color: var(--cyan); transform: translateY(-2px); }
+
+.decision-result {
+  display: inline-block;
+  padding: 24px 32px;
+  background: linear-gradient(135deg, var(--cyan-bg), var(--purple-bg));
+  border: 1px solid var(--cyan);
+  border-radius: 14px;
+  margin-top: 20px;
+  text-align: left;
+  max-width: 560px;
+}
+
+.decision-result .badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--cyan);
+  background: var(--cyan-bg);
+  padding: 4px 10px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-bottom: 12px;
+}
+
+.decision-result h3 { font-size: 19px; margin-bottom: 10px; }
+.decision-result p { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin-bottom: 8px; }
+
+.decision-restart {
+  display: block;
+  margin: 20px auto 0;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.decision-restart:hover { color: var(--text); border-color: var(--text-muted); }
+
+/* ============ Footer ============ */
+footer {
+  padding: 48px 0 64px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+footer p { margin-bottom: 6px; }
+footer a { color: var(--cyan); }
+
+/* ============ Mobile ============ */
+@media (max-width: 640px) {
+  .hero h1 { font-size: 38px; }
+  .section-head h2 { font-size: 24px; }
+  .section { padding: 56px 0; }
+  .nav-links { gap: 0; }
+  .nav-links a { padding: 6px 8px; font-size: 13px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============ Top Nav ============ -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-brand"><span class="dot"></span>实时 KWS</div>
+    <ul class="nav-links">
+      <li><a href="#concepts">概念</a></li>
+      <li><a href="#event">事件</a></li>
+      <li><a href="#simulator">模拟器</a></li>
+      <li><a href="#scenarios">场景对比</a></li>
+      <li><a href="#rules">状态机</a></li>
+      <li><a href="#comm">通信</a></li>
+      <li><a href="#decision">选择</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ============ Hero ============ -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-tag">DESIGN DOC · INTERACTIVE</div>
+    <h1>实时 KWS<br>事件交互场景</h1>
+    <p class="lead">
+      在音频流中识别关键词，把状态切换交给业务端。<br>
+      这份文档不只是给你看的——下面的模拟器，能让你直接"听"到医生说话。
+    </p>
+    <div class="hero-actions">
+      <a href="#simulator" class="btn btn-primary">▶ 打开查房模拟器</a>
+      <a href="#concepts" class="btn btn-ghost">从概念开始 →</a>
+    </div>
+    <div class="hero-wave" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 01 Concepts ============ -->
+<section class="section" id="concepts">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">01</div>
+      <h2>三个角色，各管一段</h2>
+    </div>
+    <p class="section-sub">KWS 不做完整转写，只挑出会改变业务状态的关键词。状态机来仲裁，业务端只消费"已确认"的状态。</p>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon cyan">🎙</div>
+        <h3>KWS 引擎</h3>
+        <p>在音频流里挑关键词：床号、开始记录、暂停记录、下一床。命中就发事件，不解释、不存储、不归属。</p>
+        <div class="card-demo">
+          <div class="mini-wave">
+            <span></span><span></span><span class="hot"></span><span class="hot"></span><span class="hot"></span>
+            <span></span><span></span><span></span><span></span><span></span>
+            <span></span><span class="hot"></span><span class="hot"></span><span></span><span></span>
+          </div>
+          <div class="mini-event">
+            <span class="tag">kws.detected</span>
+            <span style="color: var(--text-muted);">"12床" · score 0.86</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon purple">⚙</div>
+        <h3>状态机</h3>
+        <p>原始 KWS 事件不直接生效。先过阈值、看队列、去重、二次确认，再决定是否真的切换 current_bed 或录音状态。</p>
+        <div class="card-demo">
+          <div class="gate-flow">
+            <div class="gate-block in">kws.detected</div>
+            <div class="arrow">→</div>
+            <div class="gate-block" style="color: var(--amber);">仲裁</div>
+            <div class="arrow">→</div>
+            <div class="gate-block out">state.changed</div>
+          </div>
+          <div style="margin-top: 8px; color: var(--text-dim); font-size: 11px;">分数低、床号不在队列、2 秒重复 → 拦截</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-icon green">📋</div>
+        <h3>业务端</h3>
+        <p>只消费 state 类事件。current_bed 改了就切 UI，asr.final 来了就归属到对应床号。不直接相信 KWS 原始命中。</p>
+        <div class="card-demo">
+          <div style="display: flex; gap: 8px; align-items: center; padding: 6px 0;">
+            <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">当前床位</span>
+            <span style="font-family: var(--mono); font-weight: 700; color: var(--cyan); font-size: 14px;">12床</span>
+            <span style="margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--red);">
+              <span class="rec-dot recording" style="width: 8px; height: 8px;"></span>录音中
+            </span>
+          </div>
+          <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; background: var(--bg-3); border-radius: 4px; border-left: 2px solid var(--cyan);">今天体温正常，继续观察。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 02 Event Format ============ -->
+<section class="section" id="event">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">02</div>
+      <h2>事件长这样</h2>
+    </div>
+    <p class="section-sub">点击 JSON 里的字段名，看它的含义。所有事件都共享 <code style="color: var(--cyan); font-family: var(--mono);">type / session_id / seq / ts_ms / source</code> 这几个基础字段。</p>
+
+    <div class="json-inspect">
+      <pre class="json-block" id="jsonBlock"><span class="punct">{</span>
+  <span class="key field" data-field="type">"type"</span><span class="punct">:</span> <span class="str">"kws.detected"</span><span class="punct">,</span>
+  <span class="key field" data-field="session_id">"session_id"</span><span class="punct">:</span> <span class="str">"round-20260508-001"</span><span class="punct">,</span>
+  <span class="key field" data-field="seq">"seq"</span><span class="punct">:</span> <span class="num">18</span><span class="punct">,</span>
+  <span class="key field" data-field="ts_ms">"ts_ms"</span><span class="punct">:</span> <span class="num">1840</span><span class="punct">,</span>
+  <span class="key field" data-field="source">"source"</span><span class="punct">:</span> <span class="str">"kws"</span><span class="punct">,</span>
+  <span class="key field" data-field="category">"category"</span><span class="punct">:</span> <span class="str">"bed"</span><span class="punct">,</span>
+  <span class="key field" data-field="keyword">"keyword"</span><span class="punct">:</span> <span class="str">"十二床"</span><span class="punct">,</span>
+  <span class="key field" data-field="normalized">"normalized"</span><span class="punct">:</span> <span class="str">"12床"</span><span class="punct">,</span>
+  <span class="key field" data-field="score">"score"</span><span class="punct">:</span> <span class="num">0.86</span><span class="punct">,</span>
+  <span class="key field" data-field="start_ms">"start_ms"</span><span class="punct">:</span> <span class="num">1520</span><span class="punct">,</span>
+  <span class="key field" data-field="end_ms">"end_ms"</span><span class="punct">:</span> <span class="num">1840</span>
+<span class="punct">}</span></pre>
+
+      <div class="field-info" id="fieldInfo">
+        <div class="field-info-default">点击左边任意字段，看它代表什么</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 03 Simulator ============ -->
+<section class="section" id="simulator">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">03</div>
+      <h2>查房模拟器</h2>
+    </div>
+    <p class="section-sub">点左边"医生说什么"，看中间业务 UI 怎么变、右边事件怎么飞出来。顶部切换场景 A / B，会发现同一句话产生的事件流完全不同。</p>
+
+    <div class="sim">
+      <div class="sim-tabs">
+        <button class="sim-tab active" data-scenario="A">
+          <span class="badge">A</span>
+          只用 KWS 事件
+        </button>
+        <button class="sim-tab" data-scenario="B">
+          <span class="badge">B</span>
+          KWS + ASR 完整事件流
+        </button>
+        <div class="sim-tab-info">
+          <span class="rec-dot" id="simModeIndicator"></span>
+          <span id="simModeText">未开始</span>
+        </div>
+      </div>
+
+      <div class="sim-grid">
+        <!-- LEFT: speak controls -->
+        <div class="sim-col">
+          <div class="sim-col-head">🎤 医生说什么</div>
+          <div class="sim-col-body">
+            <div class="speak-section">
+              <h4>床号</h4>
+              <button class="speak-btn" data-speak="bed:12床">
+                <span class="mic-icon">🎤</span>说"12床"
+              </button>
+              <button class="speak-btn" data-speak="bed:15床">
+                <span class="mic-icon">🎤</span>说"15床"
+              </button>
+              <button class="speak-btn" data-speak="cmd:next_bed">
+                <span class="mic-icon">🎤</span>说"下一床"
+              </button>
+
+              <h4>录音指令</h4>
+              <button class="speak-btn" data-speak="cmd:start_recording">
+                <span class="mic-icon">🎤</span>说"开始记录"
+              </button>
+              <button class="speak-btn" data-speak="cmd:pause_recording">
+                <span class="mic-icon">🎤</span>说"暂停记录"
+              </button>
+              <button class="speak-btn" data-speak="cmd:end_recording">
+                <span class="mic-icon">🎤</span>说"结束记录"
+              </button>
+
+              <h4>带正文（场景 B）</h4>
+              <button class="speak-btn b-only" data-speak="long:12床:今天体温正常，继续观察。" disabled>
+                <span class="mic-icon">🎤</span>"12床，今天体温…"
+              </button>
+              <button class="speak-btn b-only" data-speak="long:15床:昨晚咳嗽加重，需复查。" disabled>
+                <span class="mic-icon">🎤</span>"15床，昨晚咳嗽…"
+              </button>
+
+              <h4>剧本</h4>
+              <button class="scenario-script" data-script="quick">
+                ▶ 快速查房（4 步）
+              </button>
+
+              <button class="reset-btn" id="resetBtn">↺ 重置会话</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- MIDDLE: business UI -->
+        <div class="sim-col">
+          <div class="sim-col-head">📋 业务端 UI</div>
+          <div class="sim-col-body">
+            <div class="biz-status-bar">
+              <div class="status-pill bed" id="currentBedPill">
+                <div class="label">当前床位</div>
+                <div class="value" id="currentBedValue">—</div>
+              </div>
+              <div class="status-pill">
+                <div class="label">录音状态</div>
+                <div class="rec-indicator">
+                  <span class="rec-dot" id="recDot"></span>
+                  <span class="value" id="recValue" style="font-size: 14px;">未开始</span>
+                </div>
+              </div>
+            </div>
+
+            <div style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 10px;">查房队列</div>
+            <div class="beds-grid" id="bedsGrid"></div>
+
+            <div class="records-section">
+              <div class="label">查房记录</div>
+              <div id="recordsList">
+                <div class="records-empty">还没有记录。说点什么？</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: event stream -->
+        <div class="sim-col">
+          <div class="sim-col-head">⚡ 事件流（开发者视角）</div>
+          <div class="sim-col-body event-stream" id="eventStream">
+            <div class="stream-empty">事件还没飞起来</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 04 Scenarios Comparison ============ -->
+<section class="section" id="scenarios">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">04</div>
+      <h2>两种方案，怎么选</h2>
+    </div>
+    <p class="section-sub">已经在模拟器里试过两种场景了，这是它们各自的边界、收益和代价。</p>
+
+    <div class="compare">
+      <div class="compare-col a">
+        <div class="compare-head">
+          <span class="badge">SCENARIO A</span>
+          <h3>只输出 KWS 事件</h3>
+          <p>业务端只需实时知道床号或控制指令，不需要正文。</p>
+        </div>
+        <div class="compare-body">
+          <h4>典型用例</h4>
+          <ul style="color: var(--text-muted); padding-left: 18px; list-style: disc;">
+            <li>说"12床"→ 前端切到 12床病人页</li>
+            <li>说"下一床"→ 按队列切到下一位</li>
+            <li>说"开始记录 / 暂停记录"→ 控制录音状态</li>
+            <li>正文由其他系统处理，KWS 只打状态点</li>
+          </ul>
+
+          <h4>优点</h4>
+          <ul class="pros">
+            <li>改动最小，业务边界清楚</li>
+            <li>不要求业务端处理转写文本</li>
+            <li>适合先验证识别可靠性</li>
+            <li>KWS 失败不影响主转写链路</li>
+          </ul>
+
+          <h4>限制</h4>
+          <ul class="cons">
+            <li>无法直接生成查房正文</li>
+            <li>只解决"切状态"，不解决"说了什么"</li>
+            <li>正文归属仍需 ASR 配合</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="compare-col b">
+        <div class="compare-head">
+          <span class="badge">SCENARIO B</span>
+          <h3>KWS + ASR 完整事件流</h3>
+          <p>业务端需要实时正文，并希望系统自动把内容归属到当前床号。</p>
+        </div>
+        <div class="compare-body">
+          <h4>典型用例</h4>
+          <ul style="color: var(--text-muted); padding-left: 18px; list-style: disc;">
+            <li>"12床，今天体温正常"→ 实时显示到 12床</li>
+            <li>"15床，昨晚咳嗽加重"→ 自动切换并追加</li>
+            <li>边查房边校对、修正文本</li>
+          </ul>
+
+          <h4>优点</h4>
+          <ul class="pros">
+            <li>支持实时查房记录生成</li>
+            <li>前端可以边听边显示边改</li>
+            <li>床号切换和正文归属都可追溯</li>
+            <li>适合完整 AI 助理产品形态</li>
+          </ul>
+
+          <h4>限制</h4>
+          <ul class="cons">
+            <li>业务端需处理 partial / final / 状态切换</li>
+            <li>ASR 延迟和错误依然存在</li>
+            <li>需处理 KWS 与 ASR 的时间边界</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 05 State Machine Rules ============ -->
+<section class="section" id="rules">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">05</div>
+      <h2>状态机规则</h2>
+    </div>
+    <p class="section-sub">无论场景 A 还是 B，都建议走状态机统一仲裁。每条规则下面有"试一下"按钮，看状态机如何拦截非预期的 KWS 命中。</p>
+
+    <div class="rules" id="rulesList">
+      <!-- filled by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ============ 06 Communication ============ -->
+<section class="section" id="comm">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">06</div>
+      <h2>怎么把事件送到业务端</h2>
+    </div>
+    <p class="section-sub">实时音频上传 + 事件下行，首选 WebSocket。其他方式适合不同的解耦程度。</p>
+
+    <div class="comm-tabs">
+      <button class="comm-tab active" data-comm="ws">WebSocket（首选）</button>
+      <button class="comm-tab" data-comm="sse">SSE</button>
+      <button class="comm-tab" data-comm="mq">消息队列</button>
+      <button class="comm-tab" data-comm="poll">REST 轮询</button>
+    </div>
+
+    <div class="comm-panel active" data-panel="ws">
+      <div class="comm-info">
+        <h3>WebSocket</h3>
+        <p>同一条全双工连接里：客户端上推音频帧，服务端下推 kws.detected / state.changed / asr.partial / asr.final。延迟最低，最适合实时场景。</p>
+        <div class="when"><strong>什么时候用</strong>前端实时上传音频并接收事件，业务直接由前端驱动。</div>
+      </div>
+      <div class="comm-diagram">
+        <div class="diag-row">
+          <div class="diag-node client">前端</div>
+          <div class="diag-arrow bidi" style="position: relative;"><span class="diag-label">音频帧 / 事件</span></div>
+          <div class="diag-node server">语音服务</div>
+        </div>
+        <div style="font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 18px;">单条 WS 双向流</div>
+      </div>
+    </div>
+
+    <div class="comm-panel" data-panel="sse">
+      <div class="comm-info">
+        <h3>Server-Sent Events</h3>
+        <p>服务端单向下推事件流。音频从别的通道（HTTP 上传 / RTP 流 / 第三方系统）进入，业务系统只接收结果。简单可靠，浏览器原生支持。</p>
+        <div class="when"><strong>什么时候用</strong>音频不通过同一连接上传，业务只关心结果事件。</div>
+      </div>
+      <div class="comm-diagram">
+        <div class="diag-row" style="margin-bottom: 18px;">
+          <div class="diag-node client">音频源</div>
+          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-dim);">音频帧</span></div>
+          <div class="diag-node server">语音服务</div>
+        </div>
+        <div class="diag-row">
+          <div class="diag-node server">语音服务</div>
+          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-dim);">SSE 事件</span></div>
+          <div class="diag-node client">业务端</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="comm-panel" data-panel="mq">
+      <div class="comm-info">
+        <h3>消息队列</h3>
+        <p>语音服务发事件到 MQ（Kafka / NATS / RabbitMQ），业务系统作为消费者订阅。彻底解耦，可多消费者，可重放。代价是延迟和复杂度。</p>
+        <div class="when"><strong>什么时候用</strong>后端服务之间解耦，多个下游同时消费事件，需要审计和重放。</div>
+      </div>
+      <div class="comm-diagram">
+        <div class="diag-row">
+          <div class="diag-node server">语音服务</div>
+          <div class="diag-arrow"></div>
+          <div class="diag-node queue">MQ</div>
+          <div class="diag-arrow"></div>
+          <div class="diag-node client">业务 A</div>
+        </div>
+        <div class="diag-row" style="margin-top: 14px; padding-left: 60%;">
+          <div class="diag-arrow" style="flex: none; width: 30px;"></div>
+          <div class="diag-node client">业务 B</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="comm-panel" data-panel="poll">
+      <div class="comm-info">
+        <h3>REST 轮询</h3>
+        <p>业务端定期 GET <code style="font-family: var(--mono); color: var(--amber);">/events?since=seq</code>。延迟由轮询间隔决定，对实时不友好，浪费请求量。</p>
+        <div class="when" style="border-color: var(--amber);"><strong style="color: var(--amber);">不推荐用于实时场景</strong>仅当你只需事后查询历史结果时考虑。</div>
+      </div>
+      <div class="comm-diagram">
+        <div class="diag-row">
+          <div class="diag-node client">业务端</div>
+          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--amber);">每 N 秒轮询</span></div>
+          <div class="diag-node server">语音服务</div>
+        </div>
+        <div style="font-size: 12px; color: var(--amber); text-align: center; margin-top: 18px;">⚠ 延迟高，请求浪费</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 07 Decision ============ -->
+<section class="section" id="decision">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-num">07</div>
+      <h2>该选哪个？</h2>
+    </div>
+    <p class="section-sub">回答两个问题，给你一个推荐方案。</p>
+
+    <div class="decision">
+      <!-- Step 1 -->
+      <div class="decision-step active" data-step="1">
+        <div class="decision-q">业务端需要实时拿到医生说的正文吗？</div>
+        <div class="decision-hint">"正文"指的是医生这一句话原原本本的转写内容，不只是"切到 12床"这种状态。</div>
+        <div class="decision-options">
+          <button class="decision-btn" data-answer="1:no">不需要，只要切状态就行</button>
+          <button class="decision-btn" data-answer="1:yes">需要，要实时显示正文</button>
+        </div>
+      </div>
+
+      <!-- Step 2 (after no) -->
+      <div class="decision-step" data-step="2-no">
+        <div class="decision-q">已有的 ASR 主链路允许被影响吗？</div>
+        <div class="decision-hint">如果新 KWS 模块挂了，会不会影响原本的会议转写？</div>
+        <div class="decision-options">
+          <button class="decision-btn" data-answer="2-no:safe">不能影响主链路</button>
+          <button class="decision-btn" data-answer="2-no:ok">可以一起改</button>
+        </div>
+      </div>
+
+      <!-- Step 2 (after yes) -->
+      <div class="decision-step" data-step="2-yes">
+        <div class="decision-q">能接受业务端处理 partial / final 吗？</div>
+        <div class="decision-hint">需要前端区分临时转写和最终转写、按床号归属、支持人工修正。</div>
+        <div class="decision-options">
+          <button class="decision-btn" data-answer="2-yes:yes">可以，前端有能力</button>
+          <button class="decision-btn" data-answer="2-yes:no">不行，前端能力有限</button>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="decision-step" data-step="result-a">
+        <div class="decision-result">
+          <div class="badge">推荐方案</div>
+          <h3>场景 A：只输出 KWS 事件</h3>
+          <p>第一版用最小改动验证实时床号识别是否有业务价值。事件 = kws.detected + state.changed，业务端简单消费。</p>
+          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">通信选 <strong style="color: var(--cyan);">WebSocket</strong>，前端直接上音频、收事件。</p>
+        </div>
+        <button class="decision-restart">↺ 重新选择</button>
+      </div>
+
+      <div class="decision-step" data-step="result-a-cautious">
+        <div class="decision-result">
+          <div class="badge">推荐方案</div>
+          <h3>场景 A + 旁路部署</h3>
+          <p>主转写链路保持不变。KWS 作为旁路服务，通过<strong style="color: var(--cyan);">消息队列</strong>发事件给业务端。失败时退化为 KWS 不可用，但不影响转写。</p>
+          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">先跑一段时间，确认稳定后再考虑升级到场景 B。</p>
+        </div>
+        <button class="decision-restart">↺ 重新选择</button>
+      </div>
+
+      <div class="decision-step" data-step="result-b">
+        <div class="decision-result">
+          <div class="badge">推荐方案</div>
+          <h3>场景 B：KWS + ASR 完整事件流</h3>
+          <p>KWS 切 current_bed，ASR 出正文，状态机把正文归属到当前床号。前端实时展示、人工校对。</p>
+          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">通信选 <strong style="color: var(--purple);">WebSocket</strong>，并设计好 partial / final 的 UI 处理。</p>
+        </div>
+        <button class="decision-restart">↺ 重新选择</button>
+      </div>
+
+      <div class="decision-step" data-step="result-b-fallback">
+        <div class="decision-result" style="border-color: var(--amber); background: linear-gradient(135deg, var(--amber-bg), var(--cyan-bg));">
+          <div class="badge" style="color: var(--amber); background: var(--amber-bg);">建议先做场景 A</div>
+          <h3>暂不上场景 B</h3>
+          <p>前端目前不具备处理 partial / final 的能力，强行上场景 B 容易做出不稳定的体验。</p>
+          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">先用场景 A 把"切床号"做扎实，等前端工程到位再升级。</p>
+        </div>
+        <button class="decision-restart">↺ 重新选择</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>声纹识别会议系统 · 实时 KWS 事件交互场景</p>
+    <p style="margin-top: 8px;">原始 Markdown 文档：<a href="./realtime-kws-event-scenarios.md">realtime-kws-event-scenarios.md</a></p>
+  </div>
+</footer>
+
+<script>
+/* ============================================================
+ * State + Event Bus
+ * ============================================================ */
+const BED_QUEUE = ['10床', '11床', '12床', '13床', '14床', '15床'];
+const SESSION_ID = 'round-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-001';
+
+const state = {
+  scenario: 'A',
+  currentBed: null,
+  recording: 'stopped',     // 'recording' | 'paused' | 'stopped'
+  records: [],              // [{bed, text, partial, id}]
+  events: [],
+  seq: 0,
+  ts: 0,
+  busy: false,
+  lastBedAt: {},            // for de-dup rule
+};
+
+const FIELD_DOCS = {
+  type: { title: 'type', desc: '事件类型。kws.detected 表示原始关键词命中，state.* 表示状态机决策结果，asr.* 表示语音转写片段。', example: '"kws.detected"' },
+  session_id: { title: 'session_id', desc: '一次实时查房会话的 ID。同一次查房的所有事件共享同一个 session_id，便于服务端拼接、客户端归类。', example: '"round-20260508-001"' },
+  seq: { title: 'seq', desc: '会话内递增序号。前端用它去重和排序——网络抖动可能让事件乱序到达。', example: '18' },
+  ts_ms: { title: 'ts_ms', desc: '相对本次音频开始的时间，毫秒。用于把事件对齐到音频时间轴。', example: '1840' },
+  source: { title: 'source', desc: '事件来源。可能是 kws、asr、state_machine。前端可据此决定是否在 UI 上区分。', example: '"kws"' },
+  category: { title: 'category', desc: 'KWS 事件特有。bed 表示床号命中，command 表示指令命中，marker 表示用户自定义标记。', example: '"bed"' },
+  keyword: { title: 'keyword', desc: '原始命中的关键词，可能是口语化的"十二床"。', example: '"十二床"' },
+  normalized: { title: 'normalized', desc: '归一化后的业务值。"十二床" → "12床"，"下一床" → "next_bed"。业务端只关心这个值。', example: '"12床"' },
+  score: { title: 'score', desc: 'KWS 置信度，0–1。业务端可据此做阈值过滤，状态机也会用它做仲裁。', example: '0.86' },
+  start_ms: { title: 'start_ms', desc: '关键词在音频中的起始时间，毫秒。用于 UI 高亮、回听定位。', example: '1520' },
+  end_ms: { title: 'end_ms', desc: '关键词在音频中的结束时间，毫秒。', example: '1840' },
+};
+
+/* ============================================================
+ * Field inspector
+ * ============================================================ */
+const fieldInfoEl = document.getElementById('fieldInfo');
+document.querySelectorAll('#jsonBlock .field').forEach(el => {
+  el.addEventListener('click', () => {
+    document.querySelectorAll('#jsonBlock .field').forEach(f => f.classList.remove('active'));
+    el.classList.add('active');
+    const k = el.dataset.field;
+    const doc = FIELD_DOCS[k];
+    if (!doc) return;
+    fieldInfoEl.innerHTML = `
+      <h4>${doc.title}</h4>
+      <p>${doc.desc}</p>
+      <div class="example">${doc.example}</div>
+    `;
+  });
+});
+
+/* ============================================================
+ * Simulator: render
+ * ============================================================ */
+const els = {
+  tabs: document.querySelectorAll('.sim-tab'),
+  modeIndicator: document.getElementById('simModeIndicator'),
+  modeText: document.getElementById('simModeText'),
+  currentBedPill: document.getElementById('currentBedPill'),
+  currentBedValue: document.getElementById('currentBedValue'),
+  recDot: document.getElementById('recDot'),
+  recValue: document.getElementById('recValue'),
+  bedsGrid: document.getElementById('bedsGrid'),
+  recordsList: document.getElementById('recordsList'),
+  eventStream: document.getElementById('eventStream'),
+  bOnlyBtns: document.querySelectorAll('.speak-btn.b-only'),
+};
+
+function renderBeds() {
+  els.bedsGrid.innerHTML = BED_QUEUE.map(b => {
+    const cls = b === state.currentBed ? 'active' : 'queued';
+    return `<div class="bed-card ${cls}">${b}</div>`;
+  }).join('');
+}
+
+function renderStatus() {
+  if (state.currentBed) {
+    els.currentBedPill.classList.add('active');
+    els.currentBedValue.textContent = state.currentBed;
+  } else {
+    els.currentBedPill.classList.remove('active');
+    els.currentBedValue.textContent = '—';
+  }
+
+  els.recDot.className = 'rec-dot';
+  if (state.recording === 'recording') {
+    els.recDot.classList.add('recording');
+    els.recValue.textContent = '录音中';
+  } else if (state.recording === 'paused') {
+    els.recDot.classList.add('paused');
+    els.recValue.textContent = '已暂停';
+  } else {
+    els.recValue.textContent = '未开始';
+  }
+}
+
+function renderRecords() {
+  if (state.records.length === 0) {
+    els.recordsList.innerHTML = '<div class="records-empty">还没有记录。说点什么？</div>';
+    return;
+  }
+  els.recordsList.innerHTML = state.records.map(r => {
+    const cls = r.partial ? 'record-item partial' : 'record-item';
+    return `<div class="${cls}" data-id="${r.id}">
+      <span class="record-bed-tag">${r.bed || '未归属'}</span>${escapeHTML(r.text)}
+    </div>`;
+  }).join('');
+  // scroll to bottom
+  els.recordsList.scrollTop = els.recordsList.scrollHeight;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+/* ============================================================
+ * Event emission
+ * ============================================================ */
+function pushEvent(evt, opts = {}) {
+  state.events.unshift(evt);
+  // Limit in DOM to avoid runaway growth
+  if (state.events.length > 50) state.events.length = 50;
+
+  const empty = els.eventStream.querySelector('.stream-empty');
+  if (empty) empty.remove();
+
+  const card = document.createElement('div');
+  const typeKind = evt.type.startsWith('kws.') ? 'kws'
+                : evt.type.startsWith('state.') ? 'state'
+                : evt.type.startsWith('asr.') ? 'asr' : 'kws';
+  card.className = 'event-card ' + typeKind + (opts.blocked ? ' blocked' : '');
+
+  const fields = Object.entries(evt)
+    .filter(([k]) => !['type', 'session_id'].includes(k))
+    .map(([k, v]) => `<span class="k">${k}</span><span class="v">${typeof v === 'string' ? '"' + escapeHTML(v) + '"' : v}</span>`)
+    .join('');
+
+  card.innerHTML = `
+    <div class="event-head">
+      <span class="event-type">${evt.type}</span>
+      <span class="event-meta">seq ${evt.seq} · ${evt.ts_ms}ms</span>
+    </div>
+    <div class="event-body">${fields}</div>
+    ${opts.blockReason ? `<div class="event-block-reason">⛔ ${opts.blockReason}</div>` : ''}
+  `;
+  els.eventStream.insertBefore(card, els.eventStream.firstChild);
+
+  // Update mode indicator
+  els.modeIndicator.className = 'rec-dot recording';
+  els.modeText.textContent = '事件 #' + evt.seq;
+  clearTimeout(pushEvent._t);
+  pushEvent._t = setTimeout(() => {
+    els.modeIndicator.className = 'rec-dot';
+    els.modeText.textContent = '空闲';
+  }, 800);
+}
+
+function nextSeq() { state.seq += 1; return state.seq; }
+function nextTs(adv = 100) { state.ts += adv; return state.ts; }
+
+function buildKwsEvent(category, keyword, normalized, score) {
+  return {
+    type: 'kws.detected',
+    session_id: SESSION_ID,
+    seq: nextSeq(),
+    ts_ms: nextTs(200),
+    source: 'kws',
+    category,
+    keyword,
+    normalized,
+    score: +score.toFixed(2),
+  };
+}
+
+function buildStateEvent(type, payload) {
+  return {
+    type,
+    session_id: SESSION_ID,
+    seq: nextSeq(),
+    ts_ms: nextTs(80),
+    source: 'state_machine',
+    ...payload,
+  };
+}
+
+function buildAsrEvent(kind, bed, text) {
+  return {
+    type: 'asr.' + kind,
+    session_id: SESSION_ID,
+    seq: nextSeq(),
+    ts_ms: nextTs(150),
+    source: 'asr',
+    bed,
+    text,
+  };
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ============================================================
+ * Speak handlers (state machine logic lives here)
+ * ============================================================ */
+async function speakBed(bed, opts = {}) {
+  if (state.busy) return;
+  state.busy = true;
+  setBtnsDisabled(true);
+
+  const score = opts.score ?? (0.78 + Math.random() * 0.15);
+  const kw = bed.replace('床', '');
+  const kwSpoken = ({'10':'十','11':'十一','12':'十二','13':'十三','14':'十四','15':'十五'}[kw] || kw) + '床';
+  const evt = buildKwsEvent('bed', kwSpoken, bed, score);
+  pushEvent(evt);
+  await sleep(350);
+
+  // State-machine arbitration
+  if (score < 0.6) {
+    const block = buildStateEvent('state.bed_change_blocked', { reason: 'score_below_threshold', score: evt.score });
+    pushEvent(block, { blocked: true, blockReason: 'score 低于阈值，未切换' });
+    state.busy = false; setBtnsDisabled(false);
+    return;
+  }
+  if (!BED_QUEUE.includes(bed)) {
+    const block = buildStateEvent('state.bed_change_blocked', { reason: 'bed_not_in_queue', bed });
+    pushEvent(block, { blocked: true, blockReason: bed + ' 不在当前查房队列' });
+    state.busy = false; setBtnsDisabled(false);
+    return;
+  }
+  const last = state.lastBedAt[bed] || 0;
+  if (Date.now() - last < 2000 && state.currentBed === bed) {
+    const block = buildStateEvent('state.bed_change_blocked', { reason: 'duplicate_within_2s', bed });
+    pushEvent(block, { blocked: true, blockReason: '2 秒内重复命中同一床号' });
+    state.busy = false; setBtnsDisabled(false);
+    return;
+  }
+
+  state.currentBed = bed;
+  state.lastBedAt[bed] = Date.now();
+  pushEvent(buildStateEvent('state.current_bed_changed', {
+    current_bed: bed, reason: 'kws.detected', confidence: evt.score,
+  }));
+  renderBeds(); renderStatus();
+
+  state.busy = false; setBtnsDisabled(false);
+}
+
+async function speakCommand(cmd) {
+  if (state.busy) return;
+  state.busy = true;
+  setBtnsDisabled(true);
+
+  const labels = {
+    next_bed: { kw: '下一床', label: '下一床' },
+    start_recording: { kw: '开始记录', label: '开始记录' },
+    pause_recording: { kw: '暂停记录', label: '暂停记录' },
+    end_recording: { kw: '结束记录', label: '结束记录' },
+  };
+  const meta = labels[cmd];
+  const score = 0.78 + Math.random() * 0.15;
+  pushEvent(buildKwsEvent('command', meta.kw, cmd, score));
+  await sleep(350);
+
+  if (cmd === 'next_bed') {
+    if (!state.currentBed) {
+      pushEvent(buildStateEvent('state.command_blocked', { reason: 'no_current_bed', command: cmd }), { blocked: true, blockReason: '当前没有 current_bed，无法判断"下一床"' });
+    } else {
+      const idx = BED_QUEUE.indexOf(state.currentBed);
+      const next = BED_QUEUE[idx + 1];
+      if (!next) {
+        pushEvent(buildStateEvent('state.command_blocked', { reason: 'queue_end', command: cmd }), { blocked: true, blockReason: '已经是队列最后一床' });
+      } else {
+        state.currentBed = next;
+        pushEvent(buildStateEvent('state.current_bed_changed', {
+          current_bed: next, reason: 'next_bed', confidence: score.toFixed(2),
+        }));
+      }
+    }
+  } else if (cmd === 'start_recording') {
+    state.recording = 'recording';
+    pushEvent(buildStateEvent('state.recording_changed', { recording: 'recording' }));
+  } else if (cmd === 'pause_recording') {
+    if (state.recording !== 'recording') {
+      pushEvent(buildStateEvent('state.command_blocked', { reason: 'not_recording', command: cmd }), { blocked: true, blockReason: '当前不在录音中，无需暂停' });
+    } else {
+      state.recording = 'paused';
+      pushEvent(buildStateEvent('state.recording_changed', { recording: 'paused' }));
+    }
+  } else if (cmd === 'end_recording') {
+    state.recording = 'stopped';
+    pushEvent(buildStateEvent('state.recording_changed', { recording: 'stopped', requires_confirm: true }));
+  }
+
+  renderBeds(); renderStatus();
+  state.busy = false; setBtnsDisabled(false);
+}
+
+async function speakLong(bed, text) {
+  if (state.busy) return;
+  if (state.scenario !== 'B') return;
+  state.busy = true;
+  setBtnsDisabled(true);
+
+  // 1) KWS bed hit
+  const score = 0.82 + Math.random() * 0.1;
+  const kwSpoken = ({'10':'十','11':'十一','12':'十二','13':'十三','14':'十四','15':'十五'}[bed.replace('床','')] || '') + '床';
+  pushEvent(buildKwsEvent('bed', kwSpoken, bed, score));
+  await sleep(300);
+
+  // 2) state.current_bed_changed
+  state.currentBed = bed;
+  pushEvent(buildStateEvent('state.current_bed_changed', {
+    current_bed: bed, reason: 'kws.detected', confidence: +score.toFixed(2),
+  }));
+  renderBeds(); renderStatus();
+  await sleep(250);
+
+  // 3) ASR partial events (progressive transcription)
+  const recId = 'rec-' + Date.now();
+  const recordEntry = { id: recId, bed, text: '', partial: true };
+  state.records.push(recordEntry);
+
+  const segments = makeProgressiveSegments(text);
+  for (const seg of segments) {
+    pushEvent(buildAsrEvent('partial', bed, seg));
+    recordEntry.text = seg;
+    renderRecords();
+    await sleep(420);
+  }
+
+  // 4) ASR final
+  pushEvent(buildAsrEvent('final', bed, text));
+  recordEntry.text = text;
+  recordEntry.partial = false;
+  renderRecords();
+
+  state.busy = false; setBtnsDisabled(false);
+}
+
+function makeProgressiveSegments(text) {
+  // Generate 3-4 progressively-longer prefixes that look natural
+  const len = text.length;
+  if (len < 6) return [text];
+  return [
+    text.slice(0, Math.ceil(len * 0.3)),
+    text.slice(0, Math.ceil(len * 0.6)),
+    text.slice(0, Math.ceil(len * 0.85)),
+  ];
+}
+
+function setBtnsDisabled(disabled) {
+  document.querySelectorAll('.speak-btn, .scenario-script, .reset-btn').forEach(b => {
+    if (disabled) {
+      if (!b.classList.contains('b-only') || state.scenario === 'B') b.disabled = true;
+    } else {
+      if (b.classList.contains('b-only')) {
+        b.disabled = state.scenario !== 'B';
+      } else {
+        b.disabled = false;
+      }
+    }
+  });
+}
+
+/* ============================================================
+ * Scripts
+ * ============================================================ */
+const SCRIPTS = {
+  quick: {
+    A: [
+      { kind: 'cmd', val: 'start_recording', delay: 600 },
+      { kind: 'bed', val: '12床', delay: 800 },
+      { kind: 'cmd', val: 'next_bed', delay: 800 },
+      { kind: 'cmd', val: 'pause_recording', delay: 800 },
+    ],
+    B: [
+      { kind: 'cmd', val: 'start_recording', delay: 600 },
+      { kind: 'long', val: ['12床', '今天体温正常，继续观察。'], delay: 800 },
+      { kind: 'long', val: ['15床', '昨晚咳嗽加重，需复查。'], delay: 1000 },
+      { kind: 'cmd', val: 'end_recording', delay: 800 },
+    ],
+  },
+};
+
+async function runScript(name) {
+  const seq = SCRIPTS[name][state.scenario];
+  for (const step of seq) {
+    if (step.kind === 'bed') await speakBed(step.val);
+    else if (step.kind === 'cmd') await speakCommand(step.val);
+    else if (step.kind === 'long') await speakLong(step.val[0], step.val[1]);
+    await sleep(step.delay);
+  }
+}
+
+/* ============================================================
+ * Wire up controls
+ * ============================================================ */
+els.tabs.forEach(t => t.addEventListener('click', () => {
+  els.tabs.forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  state.scenario = t.dataset.scenario;
+  els.bOnlyBtns.forEach(b => b.disabled = state.scenario !== 'B');
+}));
+
+document.querySelectorAll('.speak-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const v = btn.dataset.speak;
+    if (v.startsWith('bed:')) speakBed(v.slice(4));
+    else if (v.startsWith('cmd:')) speakCommand(v.slice(4));
+    else if (v.startsWith('long:')) {
+      const parts = v.slice(5).split(':');
+      speakLong(parts[0], parts.slice(1).join(':'));
+    }
+  });
+});
+
+document.querySelectorAll('.scenario-script').forEach(btn => {
+  btn.addEventListener('click', () => runScript(btn.dataset.script));
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  state.currentBed = null;
+  state.recording = 'stopped';
+  state.records = [];
+  state.events = [];
+  state.seq = 0;
+  state.ts = 0;
+  state.lastBedAt = {};
+  els.eventStream.innerHTML = '<div class="stream-empty">事件还没飞起来</div>';
+  renderBeds();
+  renderStatus();
+  renderRecords();
+});
+
+/* Initial render */
+renderBeds();
+renderStatus();
+renderRecords();
+
+/* ============================================================
+ * State machine rules (with try buttons)
+ * ============================================================ */
+const RULES = [
+  {
+    n: 1, title: '分数低于阈值',
+    desc: 'KWS 给的 score 低于业务阈值时，状态机不切换状态。',
+    tryLabel: '说"12床"但 score = 0.42',
+    run: (resultEl) => simulate({ kind: 'bed', val: '12床', score: 0.42 }, 'score 低于阈值（0.6）', 'block', resultEl),
+  },
+  {
+    n: 2, title: '床号不在当前队列',
+    desc: '命中了一个不在本次查房病区的床号，不自动切换。',
+    tryLabel: '说"99床"',
+    run: (resultEl) => simulate({ kind: 'bed', val: '99床', score: 0.85 }, '99床 不在当前队列', 'block', resultEl),
+  },
+  {
+    n: 3, title: '2 秒内重复命中',
+    desc: '同一床号 2 秒内多次命中只算一次，避免抖动。',
+    tryLabel: '连续两次说"12床"',
+    run: async (resultEl) => {
+      delete state.lastBedAt['12床'];
+      if (state.currentBed === '12床') { state.currentBed = null; renderBeds(); renderStatus(); }
+      await simulate({ kind: 'bed', val: '12床', score: 0.85 }, '第一次 → 切换', 'allow', resultEl, false);
+      await sleep(500);
+      await simulate({ kind: 'bed', val: '12床', score: 0.85 }, '第二次 500ms 内 → 拦截', 'block', resultEl, true);
+    },
+  },
+  {
+    n: 4, title: '"下一床"依赖上下文',
+    desc: '没有 current_bed 时，"下一床"指令无意义，直接拦截。',
+    tryLabel: '没有 current_bed 时说"下一床"',
+    run: (resultEl) => {
+      const had = state.currentBed;
+      state.currentBed = null;
+      renderBeds(); renderStatus();
+      return simulate({ kind: 'cmd', val: 'next_bed' }, '没有 current_bed', 'block', resultEl, false, () => {
+        if (had) { state.currentBed = had; renderBeds(); renderStatus(); }
+      });
+    },
+  },
+  {
+    n: 5, title: '破坏性命令二次确认',
+    desc: '"结束记录"等破坏性命令建议加 requires_confirm 字段，不静默执行。',
+    tryLabel: '说"结束记录"',
+    run: (resultEl) => simulate({ kind: 'cmd', val: 'end_recording' }, 'state.recording_changed 带 requires_confirm', 'allow', resultEl),
+  },
+  {
+    n: 6, title: 'KWS 与 ASR 冲突',
+    desc: 'KWS 命中"12床"但 ASR 文本里没有床号，标记为待确认，不静默覆盖。',
+    tryLabel: '查看冲突场景说明',
+    run: (resultEl) => {
+      showRuleResult(resultEl, 'block', '需要打 conflict 标记，等待人工确认', '业务端可以用 UI 提醒护士确认是否真的切换。');
+    },
+  },
+];
+
+const rulesContainer = document.getElementById('rulesList');
+rulesContainer.innerHTML = RULES.map((r, i) => `
+  <div class="rule-card" data-idx="${i}">
+    <h4><span class="rule-num">${r.n}</span>${r.title}</h4>
+    <p>${r.desc}</p>
+    <div class="rule-try">
+      <span>${r.tryLabel}</span>
+      <button class="rule-try-btn">▶ 试一下</button>
+    </div>
+    <div class="rule-result"></div>
+  </div>
+`).join('');
+
+document.querySelectorAll('.rule-card').forEach((card, idx) => {
+  const btn = card.querySelector('.rule-try-btn');
+  const resultEl = card.querySelector('.rule-result');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    resultEl.classList.remove('show');
+    resultEl.innerHTML = '';
+    await RULES[idx].run(resultEl);
+    btn.disabled = false;
+  });
+});
+
+async function simulate(action, label, kind, resultEl, append, after) {
+  const target = resultEl || findRuleResultByAction(action);
+  if (action.kind === 'bed') {
+    await speakBed(action.val, { score: action.score });
+  } else if (action.kind === 'cmd') {
+    await speakCommand(action.val);
+  }
+  showRuleResult(target, kind, label, '查看右侧事件流可以看到详细 JSON。', append);
+  if (after) after();
+}
+
+function findRuleResultByAction() { return null; /* not used */ }
+
+function showRuleResult(el, kind, label, desc, append = false) {
+  if (!el) return;
+  const html = `<div><strong>${kind === 'allow' ? '✓ 通过' : '⛔ 拦截'}</strong> · ${label}<div class="desc">${desc}</div></div>`;
+  if (append) el.insertAdjacentHTML('beforeend', html);
+  else el.innerHTML = html;
+  el.className = 'rule-result show ' + kind;
+}
+
+/* ============================================================
+ * Communication tabs
+ * ============================================================ */
+document.querySelectorAll('.comm-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.comm-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.comm-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelector(`.comm-panel[data-panel="${tab.dataset.comm}"]`).classList.add('active');
+  });
+});
+
+/* ============================================================
+ * Decision Q&A
+ * ============================================================ */
+const DECISION_FLOW = {
+  '1:no': '2-no',
+  '1:yes': '2-yes',
+  '2-no:safe': 'result-a-cautious',
+  '2-no:ok': 'result-a',
+  '2-yes:yes': 'result-b',
+  '2-yes:no': 'result-b-fallback',
+};
+
+document.querySelectorAll('.decision-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const next = DECISION_FLOW[btn.dataset.answer];
+    document.querySelectorAll('.decision-step').forEach(s => s.classList.remove('active'));
+    document.querySelector(`.decision-step[data-step="${next}"]`).classList.add('active');
+  });
+});
+
+document.querySelectorAll('.decision-restart').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.decision-step').forEach(s => s.classList.remove('active'));
+    document.querySelector('.decision-step[data-step="1"]').classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
