@@ -7,7 +7,7 @@
 或: python server.py
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
@@ -121,6 +121,59 @@ def _normalize_recording_file_ids(file_ids: list[str]) -> list[str]:
         raise HTTPException(status_code=400, detail="fileIds 不能为空")
     normalized = [_normalize_recording_file_id(file_id) for file_id in file_ids]
     return list(dict.fromkeys(normalized))
+
+
+def _build_meeting_markdown(transcript: list[dict], audio_filename: str) -> str:
+    md_lines = [
+        "# 会议记录\n",
+        f"- **日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+        f"- **音频文件**: {audio_filename}\n",
+        "---\n\n## 会议内容\n"
+    ]
+
+    current_speaker = None
+    for item in transcript:
+        speaker = item["speaker"]
+        time_str = item["time"]
+        text = item["text"]
+
+        if speaker != current_speaker:
+            md_lines.append(f"\n**[{time_str}] {speaker}**:\n")
+            current_speaker = speaker
+        md_lines.append(f"> {text}\n")
+
+    return "".join(md_lines)
+
+
+async def _transcribe_meeting_audio(
+    audio_path: str,
+    audio_filename: str,
+    threshold: float | None,
+    allowed_speakers: list[str] | None,
+):
+    if threshold is None:
+        threshold = CONFIG["speaker_threshold"]
+    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers)
+
+    from .services.meeting import process_meeting
+
+    transcript = await asyncio.to_thread(
+        process_meeting,
+        service,
+        audio_path,
+        threshold,
+        allowed_speakers,
+        matching_scope,
+    )
+    markdown = _build_meeting_markdown(transcript, audio_filename)
+
+    return {
+        "status": "success",
+        "segments": len(transcript),
+        "transcript": transcript,
+        "markdown": markdown
+    }
 
 
 # ========== 生命周期 ==========
@@ -308,58 +361,18 @@ async def transcribe_meeting(
     - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
     - `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
     """
-    if threshold is None:
-        threshold = CONFIG["speaker_threshold"]
-    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers)
-
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
         shutil.copyfileobj(file.file, tmp)
         audio_path = tmp.name
 
     try:
-        # 使用 services/meeting.py 中的处理逻辑 (包含聚类功能)
-        from .services.meeting import process_meeting, export_markdown
-
-        # 处理会议录音
-        transcript = await asyncio.to_thread(
-            process_meeting,
-            service,
+        return await _transcribe_meeting_audio(
             audio_path,
+            file.filename,
             threshold,
             allowed_speakers,
-            matching_scope,
         )
-        
-        # 生成 Markdown
-        # 模拟 export_markdown 的逻辑，但返回字符串
-        md_lines = [
-            "# 会议记录\n",
-            f"- **日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
-            f"- **音频文件**: {file.filename}\n",
-            "---\n\n## 会议内容\n"
-        ]
-        
-        current_speaker = None
-        for item in transcript:
-            speaker = item["speaker"]
-            time_str = item["time"]
-            text = item["text"]
-            
-            if speaker != current_speaker:
-                md_lines.append(f"\n**[{time_str}] {speaker}**:\n")
-                current_speaker = speaker
-            md_lines.append(f"> {text}\n")
-        
-        markdown = "".join(md_lines)
-        
-        return {
-            "status": "success",
-            "segments": len(transcript),
-            "transcript": transcript,
-            "markdown": markdown
-        }
         
     finally:
         if os.path.exists(audio_path):
@@ -399,19 +412,38 @@ async def transcribe_meeting_stream(
 
     返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
     """
+    content = await file.read()
+    suffix = os.path.splitext(file.filename or "")[1] or ".wav"
+    return await _stream_meeting_transcription(content, suffix, threshold, allowed_speakers)
+
+
+async def _stream_meeting_transcription(
+    content: bytes | None,
+    suffix: str,
+    threshold: float | None,
+    allowed_speakers: list[str] | None,
+    *,
+    source_path: str | None = None,
+):
+    """SSE 流式转录。`content` 为上传音频字节；或传 `source_path` 直接复用磁盘上的录音。"""
     import io
+
+    if (content is None) == (source_path is None):
+        raise ValueError("must supply exactly one of content or source_path")
 
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
     matching_scope = service.build_matching_scope(allowed_speakers)
 
-    # 读取上传音频到内存，避免 Docker overlay 临时文件 IO
-    content = await file.read()
-    suffix = os.path.splitext(file.filename or "")[1] or ".wav"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(content)
-        temp_upload_audio_path = tmp.name
+    if source_path is not None:
+        audio_path = source_path
+        owns_temp_file = False
+    else:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(content)
+            audio_path = tmp.name
+        owns_temp_file = True
 
     async def generate():
         try:
@@ -424,11 +456,13 @@ async def transcribe_meeting_stream(
                 return result, time.perf_counter() - started_at
 
             def _load_audio_from_upload():
+                if content is None:
+                    return librosa.load(audio_path, sr=16000)
                 try:
                     return librosa.load(io.BytesIO(content), sr=16000)
                 except Exception as exc:
                     print(f"⚠️ 内存解码失败，回退到临时文件: {exc}")
-                    return librosa.load(temp_upload_audio_path, sr=16000)
+                    return librosa.load(audio_path, sr=16000)
 
             speech_full, sr = await asyncio.to_thread(_load_audio_from_upload)
             audio_duration = len(speech_full) / sr
@@ -978,8 +1012,8 @@ async def transcribe_meeting_stream(
             traceback.print_exc()
             yield f"data: {json_module.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
         finally:
-            if temp_upload_audio_path and os.path.exists(temp_upload_audio_path):
-                os.unlink(temp_upload_audio_path)
+            if owns_temp_file and audio_path and os.path.exists(audio_path):
+                os.unlink(audio_path)
 
     return StreamingResponse(
         generate(),
@@ -1005,6 +1039,73 @@ async def delete_meeting_recordings(request: DeleteRecordingsRequest):
         "status": "partial" if result["failed"] else "success",
         **result,
     }
+
+
+@app.post(
+    "/v1/meeting/recordings/{file_id}/transcribe",
+    summary="根据 fileId 识别实时录音内容",
+    response_description="完整会议转写结果与 Markdown",
+)
+async def transcribe_meeting_recording(
+    file_id: str,
+    threshold: float = Query(
+        default=None,
+        description="可选的声纹匹配阈值；不传时使用服务端默认值。",
+    ),
+    allowed_speakers: list[str] | None = Query(
+        default=None,
+        description="可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
+    ),
+):
+    """
+    根据实时录音返回的 fileId 识别录音内容，不需要客户端重新上传音频。
+
+    返回结构与 `/v1/meeting/transcribe` 保持一致。
+    """
+    normalized = _normalize_recording_file_id(file_id)
+    try:
+        recording = recording_store.resolve(normalized)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="录音文件不存在")
+
+    return await _transcribe_meeting_audio(
+        recording.path,
+        recording.filename,
+        threshold,
+        allowed_speakers,
+    )
+
+
+@app.post(
+    "/v1/meeting/recordings/{file_id}/transcribe/stream",
+    summary="按 fileId 流式识别实时录音",
+    response_description="SSE 流，与 /v1/meeting/transcribe/stream 同结构",
+)
+async def transcribe_meeting_recording_stream(
+    file_id: str,
+    threshold: float = Query(
+        default=None,
+        description="可选的声纹匹配阈值；不传时使用服务端默认值。",
+    ),
+    allowed_speakers: list[str] | None = Query(
+        default=None,
+        description="可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
+    ),
+):
+    """
+    根据实时录音返回的 fileId 以 SSE 流式方式识别录音内容，事件结构与
+    `/v1/meeting/transcribe/stream` 完全一致：`status / info / segment / done / error`。
+    """
+    normalized = _normalize_recording_file_id(file_id)
+    try:
+        recording = recording_store.resolve(normalized)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="录音文件不存在")
+
+    suffix = os.path.splitext(recording.filename)[1] or ".wav"
+    return await _stream_meeting_transcription(
+        None, suffix, threshold, allowed_speakers, source_path=recording.path
+    )
 
 
 @app.get("/v1/meeting/recordings/{file_id}")

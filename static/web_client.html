@@ -307,6 +307,135 @@
             transform: translateY(-1px);
         }
 
+        /* 实时录音保存后的卡片 */
+        .recording-card {
+            background: linear-gradient(135deg, rgba(46, 213, 115, 0.08) 0%, rgba(102, 126, 234, 0.08) 100%);
+            border: 1px solid rgba(102, 126, 234, 0.25);
+            border-radius: 18px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .recording-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .recording-card-title {
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            background: linear-gradient(135deg, #6ee7b7, #a5b4fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .recording-card-id-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: #cbd5f5;
+        }
+
+        .recording-card-id-label {
+            color: #8892b0;
+            letter-spacing: 0.4px;
+        }
+
+        .recording-card-id {
+            font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+            background: rgba(255, 255, 255, 0.06);
+            padding: 4px 10px;
+            border-radius: 8px;
+            color: #e2e8f0;
+            user-select: all;
+            word-break: break-all;
+        }
+
+        .recording-card-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .recording-card-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            font-size: 13px;
+            border-radius: 999px;
+            font-weight: 500;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-decoration: none;
+        }
+
+        .recording-card-btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+        }
+
+        .recording-card-btn-primary:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 18px rgba(102, 126, 234, 0.35);
+        }
+
+        .recording-card-btn-secondary {
+            background: rgba(102, 126, 234, 0.14);
+            color: #c7d2fe;
+            border-color: rgba(102, 126, 234, 0.3);
+        }
+
+        .recording-card-btn-secondary:hover:not(:disabled) {
+            background: rgba(102, 126, 234, 0.26);
+            color: #fff;
+            transform: translateY(-1px);
+        }
+
+        .recording-card-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .recording-card-copy {
+            background: rgba(255, 255, 255, 0.08);
+            color: #cbd5f5;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            padding: 4px 12px;
+            font-size: 11px;
+            border-radius: 999px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .recording-card-copy:hover {
+            background: rgba(255, 255, 255, 0.16);
+            color: #fff;
+        }
+
+        .recording-card-copy.copied {
+            background: rgba(46, 213, 115, 0.25);
+            color: #6ee7b7;
+            border-color: rgba(46, 213, 115, 0.4);
+        }
+
         .participant-multiselect {
             position: relative;
         }
@@ -736,7 +865,7 @@
                 <button class="btn-summary" id="btnLiveSummary" onclick="requestSummary('live')" disabled>📋 会议总结</button>
             </div>
 
-            <div id="liveRecordingFile" style="display: none; margin-bottom: 16px;"></div>
+            <div id="liveRecordingFile" class="recording-card" style="display: none;"></div>
 
             <div class="participant-panel">
                 <div class="participant-panel-header">
@@ -1377,17 +1506,83 @@
                 return;
             }
 
-            const label = document.createElement('span');
-            label.textContent = `录音文件 ID: ${fileId} `;
+            const header = document.createElement('div');
+            header.className = 'recording-card-header';
 
-            const link = document.createElement('a');
-            link.href = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}`;
-            link.download = `${fileId}.wav`;
-            link.textContent = '下载录音';
+            const title = document.createElement('div');
+            title.className = 'recording-card-title';
+            title.innerHTML = '<span>🎵</span><span>录音文件已保存</span>';
+            header.appendChild(title);
 
-            box.appendChild(label);
-            box.appendChild(link);
-            box.style.display = 'block';
+            const idRow = document.createElement('div');
+            idRow.className = 'recording-card-id-row';
+
+            const idLabel = document.createElement('span');
+            idLabel.className = 'recording-card-id-label';
+            idLabel.textContent = 'ID';
+
+            const idValue = document.createElement('span');
+            idValue.className = 'recording-card-id';
+            idValue.textContent = fileId;
+
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'recording-card-copy';
+            copyBtn.textContent = '复制';
+            copyBtn.onclick = () => copyRecordingId(fileId, copyBtn);
+
+            idRow.appendChild(idLabel);
+            idRow.appendChild(idValue);
+            idRow.appendChild(copyBtn);
+            header.appendChild(idRow);
+
+            const actions = document.createElement('div');
+            actions.className = 'recording-card-actions';
+
+            const downloadLink = document.createElement('a');
+            downloadLink.className = 'recording-card-btn recording-card-btn-secondary';
+            downloadLink.href = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}`;
+            downloadLink.download = `${fileId}.wav`;
+            downloadLink.innerHTML = '<span>⬇</span><span>下载录音</span>';
+
+            const transcribeBtn = document.createElement('button');
+            transcribeBtn.type = 'button';
+            transcribeBtn.className = 'recording-card-btn recording-card-btn-primary';
+            transcribeBtn.innerHTML = '<span>🎯</span><span>一键转录</span>';
+            transcribeBtn.onclick = () => transcribeLiveRecording(fileId);
+
+            actions.appendChild(downloadLink);
+            actions.appendChild(transcribeBtn);
+
+            box.appendChild(header);
+            box.appendChild(actions);
+            box.style.display = 'flex';
+        }
+
+        async function copyRecordingId(fileId, btn) {
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(fileId);
+                } else {
+                    const tmp = document.createElement('textarea');
+                    tmp.value = fileId;
+                    tmp.style.position = 'fixed';
+                    tmp.style.opacity = '0';
+                    document.body.appendChild(tmp);
+                    tmp.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tmp);
+                }
+                const original = btn.textContent;
+                btn.textContent = '已复制';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.textContent = original;
+                    btn.classList.remove('copied');
+                }, 1500);
+            } catch (e) {
+                alert('复制失败: ' + e.message);
+            }
         }
 
         function finishRecordingUi(statusTextValue) {
@@ -1583,17 +1778,9 @@
             const file = input.files[0];
             if (!file) return;
 
-            const uploadStatus = document.getElementById('uploadStatus');
-            const meetingResult = document.getElementById('meetingResult');
-            const transcriptDiv = document.getElementById('meetingTranscript');
-
-            uploadStatus.style.display = 'block';
-            meetingResult.style.display = 'block';
-            transcriptDiv.innerHTML = '';
-            meetingTranscriptItems = [];
-            meetingMarkdown = '';
-
             try {
+                resetMeetingResultUi();
+
                 await ensureVoiceprintsSynced();
 
                 const formData = new FormData();
@@ -1607,112 +1794,172 @@
                     body: formData
                 });
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop(); // 保留不完整的部分
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-
-                                if (data.type === 'status') {
-                                    uploadStatus.innerHTML = `
-                                        <div class="loading">
-                                            <div class="spinner"></div>
-                                            <span>${data.message}</span>
-                                        </div>
-                                    `;
-                                } else if (data.type === 'info') {
-                                    // 显示总片段数
-                                    uploadStatus.innerHTML = `
-                                        <div class="loading">
-                                            <div class="spinner"></div>
-                                            <span>正在处理，共 ${data.total_segments} 个片段（${data.method}）...</span>
-                                        </div>
-                                    `;
-                                } else if (data.type === 'segment') {
-                                    // 显示新片段
-                                    const div = document.createElement('div');
-                                    div.className = 'transcript-item';
-                                    div.innerHTML = `
-                                        <div class="meta">
-                                            <span class="time">[${data.time}]</span>
-                                            <span class="speaker">${data.speaker}</span>
-                                            <span class="confidence">(置信度: ${data.confidence})</span>
-                                        </div>
-                                        <div class="text">${data.text}</div>
-                                    `;
-                                    transcriptDiv.appendChild(div);
-                                    transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-
-                                    // 保存数据用于生成 Markdown
-                                    meetingTranscriptItems.push(data);
-
-                                    // 更新进度
-                                    uploadStatus.innerHTML = `
-                                        <div class="loading">
-                                            <div class="spinner"></div>
-                                            <span>已处理 ${data.index + 1} 个片段...</span>
-                                        </div>
-                                    `;
-                                } else if (data.type === 'speaker_correction') {
-                                    // ⚡️ 处理说话人修正 (Diarization)
-                                    console.log("收到说话人修正:", data.updates);
-
-                                    for (const update of data.updates) {
-                                        const idx = update.index;
-                                        const newSpeaker = update.speaker;
-
-                                        // 1. 更新内部数据
-                                        if (meetingTranscriptItems[idx]) {
-                                            meetingTranscriptItems[idx].speaker = newSpeaker;
-                                        }
-
-                                        // 2. 更新 DOM
-                                        const items = transcriptDiv.querySelectorAll('.transcript-item');
-                                        if (items[idx]) {
-                                            const speakerSpan = items[idx].querySelector('.speaker');
-                                            if (speakerSpan) {
-                                                speakerSpan.textContent = newSpeaker;
-                                                speakerSpan.style.color = '#ff9f43'; // 使用不同颜色高亮
-                                                // 添加动画效果
-                                                speakerSpan.style.transition = 'all 0.5s';
-                                                speakerSpan.style.transform = 'scale(1.1)';
-                                                setTimeout(() => {
-                                                    speakerSpan.style.transform = 'scale(1)';
-                                                }, 500);
-                                            }
-                                        }
-                                    }
-
-                                } else if (data.type === 'done') {
-                                    // 处理完成
-                                    uploadStatus.style.display = 'none';
-                                    generateMeetingMarkdown(file.name);
-                                    // 启用总结按钮
-                                    document.getElementById('btnUploadSummary').disabled = false;
-                                }
-                            } catch (e) {
-                                console.error('解析错误:', e);
-                            }
-                        }
-                    }
-                }
-
+                await consumeMeetingSseStream(response, file.name);
             } catch (error) {
                 alert('请求失败: ' + error.message);
-                uploadStatus.style.display = 'none';
+                document.getElementById('uploadStatus').style.display = 'none';
             } finally {
                 input.value = '';
+            }
+        }
+
+        function resetMeetingResultUi() {
+            const uploadStatus = document.getElementById('uploadStatus');
+            const meetingResult = document.getElementById('meetingResult');
+            const transcriptDiv = document.getElementById('meetingTranscript');
+
+            uploadStatus.style.display = 'block';
+            uploadStatus.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <span>正在准备...</span>
+                </div>
+            `;
+            meetingResult.style.display = 'block';
+            transcriptDiv.innerHTML = '';
+            meetingTranscriptItems = [];
+            meetingMarkdown = '';
+            document.getElementById('btnUploadSummary').disabled = true;
+            const summarySection = document.getElementById('uploadSummarySection');
+            if (summarySection) summarySection.style.display = 'none';
+        }
+
+        async function consumeMeetingSseStream(response, sourceLabel) {
+            const uploadStatus = document.getElementById('uploadStatus');
+            const transcriptDiv = document.getElementById('meetingTranscript');
+
+            if (!response.ok || !response.body) {
+                let detail = '';
+                try {
+                    const errData = await response.json();
+                    detail = errData.detail || '';
+                } catch (_) { /* ignore */ }
+                throw new Error(detail || `HTTP ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    let data;
+                    try {
+                        data = JSON.parse(line.slice(6));
+                    } catch (e) {
+                        console.error('SSE 解析错误:', e);
+                        continue;
+                    }
+
+                    if (data.type === 'status') {
+                        uploadStatus.innerHTML = `
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <span>${data.message}</span>
+                            </div>
+                        `;
+                    } else if (data.type === 'info') {
+                        uploadStatus.innerHTML = `
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <span>正在处理，共 ${data.total_segments} 个片段（${data.method}）...</span>
+                            </div>
+                        `;
+                    } else if (data.type === 'segment') {
+                        const div = document.createElement('div');
+                        div.className = 'transcript-item';
+                        div.innerHTML = `
+                            <div class="meta">
+                                <span class="time">[${data.time}]</span>
+                                <span class="speaker">${data.speaker}</span>
+                                <span class="confidence">(置信度: ${data.confidence})</span>
+                            </div>
+                            <div class="text">${data.text}</div>
+                        `;
+                        transcriptDiv.appendChild(div);
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+
+                        meetingTranscriptItems.push(data);
+
+                        uploadStatus.innerHTML = `
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <span>已处理 ${typeof data.index === 'number' ? data.index + 1 : meetingTranscriptItems.length} 个片段...</span>
+                            </div>
+                        `;
+                    } else if (data.type === 'speaker_correction') {
+                        for (const update of data.updates) {
+                            const idx = update.index;
+                            const newSpeaker = update.speaker;
+
+                            if (meetingTranscriptItems[idx]) {
+                                meetingTranscriptItems[idx].speaker = newSpeaker;
+                            }
+
+                            const items = transcriptDiv.querySelectorAll('.transcript-item');
+                            if (items[idx]) {
+                                const speakerSpan = items[idx].querySelector('.speaker');
+                                if (speakerSpan) {
+                                    speakerSpan.textContent = newSpeaker;
+                                    speakerSpan.style.color = '#ff9f43';
+                                    speakerSpan.style.transition = 'all 0.5s';
+                                    speakerSpan.style.transform = 'scale(1.1)';
+                                    setTimeout(() => {
+                                        speakerSpan.style.transform = 'scale(1)';
+                                    }, 500);
+                                }
+                            }
+                        }
+                    } else if (data.type === 'done') {
+                        uploadStatus.style.display = 'none';
+                        generateMeetingMarkdown(sourceLabel);
+                        document.getElementById('btnUploadSummary').disabled = false;
+                    } else if (data.type === 'error') {
+                        throw new Error(data.message || '转录失败');
+                    }
+                }
+            }
+        }
+
+        async function transcribeLiveRecording(fileId) {
+            if (!fileId) return;
+            switchTab('upload');
+
+            try {
+                resetMeetingResultUi();
+                const shortId = fileId.slice(0, 8);
+                document.getElementById('uploadStatus').innerHTML = `
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <span>正在转录录音 ${shortId}...</span>
+                    </div>
+                `;
+
+                await ensureVoiceprintsSynced();
+
+                const params = new URLSearchParams();
+                getSelectedParticipants('live').forEach(name => {
+                    params.append('allowed_speakers', name);
+                });
+                const qs = params.toString();
+                const url = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}/transcribe/stream${qs ? '?' + qs : ''}`;
+
+                const response = await fetch(url, { method: 'POST' });
+                if (response.status === 404) {
+                    throw new Error('录音文件不存在或已被清理');
+                }
+                await consumeMeetingSseStream(response, `录音 ${fileId}.wav`);
+            } catch (error) {
+                alert('请求失败: ' + error.message);
+                document.getElementById('uploadStatus').style.display = 'none';
             }
         }
 

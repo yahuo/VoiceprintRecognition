@@ -260,6 +260,49 @@ curl -L -o 742d5634-bf12-4384-8099-d85c01858436.wav \
   http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436
 ```
 
+### `POST /v1/meeting/recordings/{fileId}/transcribe`
+
+- 用途: 根据实时录音返回的 `fileId` 直接识别录音内容，不需要客户端重新上传音频。
+- 返回结构: 与 `POST /v1/meeting/transcribe` 一致，包含 `status`、`segments`、`transcript`、`markdown`。
+- `fileId` 不存在返回 `404`
+- `fileId` 非法返回 `400`
+
+查询参数:
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
+| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
+
+示例:
+
+```bash
+curl -X POST \
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speakers=张三"
+```
+
+### `POST /v1/meeting/recordings/{fileId}/transcribe/stream`
+
+- 用途: 根据实时录音返回的 `fileId` 流式识别录音内容，前端“一键转录”使用该接口。
+- 响应: `text/event-stream`
+- 事件结构: 与 `POST /v1/meeting/transcribe/stream` 一致，按阶段返回 `status / info / segment / done / error`。
+- `fileId` 不存在返回 `404`
+- `fileId` 非法返回 `400`
+
+查询参数:
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
+| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
+
+示例:
+
+```bash
+curl -N -X POST \
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speakers=张三"
+```
+
 ### `POST /v1/meeting/recordings/delete`
 
 - 用途: 由业务系统按业务事件主动清理录音文件，例如病人出院后清理相关查房录音。
@@ -303,6 +346,10 @@ curl -X POST http://localhost:8000/v1/meeting/transcribe \
   -F "allowed_speakers=张三"
 curl -L -o recording.wav \
   http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436
+curl -X POST \
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speakers=张三"
+curl -N -X POST \
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speakers=张三"
 curl -X POST http://localhost:8000/v1/meeting/recordings/delete \
   -H "Content-Type: application/json" \
   -d '{"fileIds":["742d5634-bf12-4384-8099-d85c01858436"],"reason":"patient_discharged","requestId":"req-1"}'

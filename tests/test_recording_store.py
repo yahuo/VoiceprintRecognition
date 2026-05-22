@@ -6,6 +6,7 @@ import wave
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 from app import server
 from app.services.recording_store import (
@@ -102,6 +103,85 @@ class RecordingApiTest(unittest.TestCase):
             asyncio.run(server.download_meeting_recording(missing_id))
         with self.assertRaises(HTTPException) as invalid:
             asyncio.run(server.download_meeting_recording("not-a-file-id"))
+
+        self.assertEqual(missing.exception.status_code, 404)
+        self.assertEqual(invalid.exception.status_code, 400)
+
+    def test_transcribe_recording_by_file_id(self):
+        file_id = server.recording_store.save_pcm_wav(b"\x00\x00" * 10)
+        transcript = [
+            {
+                "time": "00:00",
+                "speaker": "未知",
+                "confidence": 0.0,
+                "text": "测试内容",
+            }
+        ]
+
+        with patch("app.services.meeting.process_meeting", return_value=transcript) as process_meeting:
+            payload = asyncio.run(
+                server.transcribe_meeting_recording(
+                    file_id,
+                    threshold=0.42,
+                    allowed_speakers=None,
+                )
+            )
+
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["segments"], 1)
+        self.assertEqual(payload["transcript"], transcript)
+        self.assertIn("测试内容", payload["markdown"])
+        self.assertIn(f"{file_id}.wav", payload["markdown"])
+        args = process_meeting.call_args.args
+        self.assertIs(args[0], server.service)
+        self.assertEqual(args[1], os.path.join(self.tmpdir.name, f"{file_id}.wav"))
+        self.assertEqual(args[2], 0.42)
+
+    def test_transcribe_recording_missing_and_invalid_file_id(self):
+        missing_id = "00000000-0000-0000-0000-000000000000"
+
+        with self.assertRaises(HTTPException) as missing:
+            asyncio.run(server.transcribe_meeting_recording(missing_id))
+        with self.assertRaises(HTTPException) as invalid:
+            asyncio.run(server.transcribe_meeting_recording("bad-file-id"))
+
+        self.assertEqual(missing.exception.status_code, 404)
+        self.assertEqual(invalid.exception.status_code, 400)
+
+    def test_transcribe_recording_stream_by_file_id(self):
+        file_id = server.recording_store.save_pcm_wav(b"\x00\x00" * 10)
+
+        async def fake_stream(content, suffix, threshold, allowed_speakers, *, source_path=None):
+            async def events():
+                yield b"data: {\"type\":\"done\"}\n\n"
+
+            return StreamingResponse(events(), media_type="text/event-stream")
+
+        with patch("app.server._stream_meeting_transcription", side_effect=fake_stream) as stream:
+            response = asyncio.run(
+                server.transcribe_meeting_recording_stream(
+                    file_id,
+                    threshold=0.42,
+                    allowed_speakers=["张三"],
+                )
+            )
+
+        self.assertEqual(response.media_type, "text/event-stream")
+        args = stream.call_args.args
+        kwargs = stream.call_args.kwargs
+        self.assertIsNone(args[0])
+        self.assertEqual(args[1], ".wav")
+        self.assertEqual(args[2], 0.42)
+        self.assertEqual(args[3], ["张三"])
+        self.assertEqual(kwargs["source_path"], os.path.join(self.tmpdir.name, f"{file_id}.wav"))
+
+    def test_transcribe_recording_stream_missing_and_invalid_file_id(self):
+        missing_id = "00000000-0000-0000-0000-000000000000"
+
+        with self.assertRaises(HTTPException) as missing:
+            asyncio.run(server.transcribe_meeting_recording_stream(missing_id))
+        with self.assertRaises(HTTPException) as invalid:
+            asyncio.run(server.transcribe_meeting_recording_stream("bad-file-id"))
 
         self.assertEqual(missing.exception.status_code, 404)
         self.assertEqual(invalid.exception.status_code, 400)
