@@ -103,6 +103,11 @@ def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[
     return normalized
 
 
+def _live_voiceprint_enabled(allowed_speakers: list[str] | None) -> bool:
+    """实时链路只有显式选择参会人时才跑声纹。"""
+    return bool(allowed_speakers)
+
+
 class DeleteRecordingsRequest(BaseModel):
     fileIds: list[str] = Field(default_factory=list)
     reason: str | None = None
@@ -1145,9 +1150,10 @@ async def websocket_live(websocket: WebSocket):
         })
         await websocket.close(code=1008)
         return
-    matching_scope = service.build_matching_scope(allowed_speakers)
+    should_match_speaker = _live_voiceprint_enabled(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
 
-    print("WebSocket 连接建立")
+    print(f"WebSocket 连接建立，实时声纹识别: {'开启' if should_match_speaker else '关闭'}")
     
     audio_buffer = bytearray()
     recording_writer = recording_store.begin_pcm_wav()
@@ -1199,10 +1205,14 @@ async def websocket_live(websocket: WebSocket):
                     f"duration={segment_duration:.2f}s, queue_size={queue_size}"
                 )
 
-                text, emb = await asyncio.gather(
-                    asyncio.to_thread(service.transcribe_segment, audio_chunk),
-                    asyncio.to_thread(service.extract_embedding, audio_chunk),
-                )
+                if should_match_speaker:
+                    text, emb = await asyncio.gather(
+                        asyncio.to_thread(service.transcribe_segment, audio_chunk),
+                        asyncio.to_thread(service.extract_embedding, audio_chunk),
+                    )
+                else:
+                    text = await asyncio.to_thread(service.transcribe_segment, audio_chunk)
+                    emb = None
 
                 if text:
                     speaker = "未知"

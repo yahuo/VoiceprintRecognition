@@ -1183,7 +1183,8 @@
 
             const selectedNames = registeredSpeakers.filter(name => state.selected.has(name));
             if (selectedNames.length === 0) {
-                tags.appendChild(createParticipantEmpty('未选择，将从全库匹配'));
+                const emptyText = scope === 'live' ? '未选择，仅实时转写' : '未选择，将从全库匹配';
+                tags.appendChild(createParticipantEmpty(emptyText));
             } else {
                 selectedNames.forEach(name => {
                     const tag = document.createElement('span');
