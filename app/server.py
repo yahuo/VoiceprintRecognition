@@ -76,7 +76,7 @@ def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[
     """
     规范化本次会议允许匹配的注册人名单。
 
-    返回 None 表示不限制，走全库匹配。
+    返回 None 表示未选择参会人；是否全库匹配由调用方决定。
     """
     if not raw_allowed_speakers:
         return None
@@ -103,8 +103,8 @@ def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[
     return normalized
 
 
-def _live_voiceprint_enabled(allowed_speakers: list[str] | None) -> bool:
-    """实时链路只有显式选择参会人时才跑声纹。"""
+def _selected_speaker_matching_enabled(allowed_speakers: list[str] | None) -> bool:
+    """只有显式选择参会人时才跑注册声纹匹配。"""
     return bool(allowed_speakers)
 
 
@@ -159,7 +159,8 @@ async def _transcribe_meeting_audio(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers)
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
 
     from .services.meeting import process_meeting
 
@@ -170,6 +171,7 @@ async def _transcribe_meeting_audio(
         threshold,
         allowed_speakers,
         matching_scope,
+        should_match_speaker,
     )
     markdown = _build_meeting_markdown(transcript, audio_filename)
 
@@ -364,7 +366,7 @@ async def transcribe_meeting(
 
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
-    - `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
+    - `allowed_speakers`: 可选的参会人白名单。未传时不匹配注册声纹；传入后只在指定注册人范围内识别说话人
     """
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -413,7 +415,7 @@ async def transcribe_meeting_stream(
 
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值
-    - `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
+    - `allowed_speakers`: 可选的参会人白名单。未传时不匹配注册声纹；传入后只在指定注册人范围内识别说话人
 
     返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
     """
@@ -439,7 +441,8 @@ async def _stream_meeting_transcription(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers)
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
+    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
 
     if source_path is not None:
         audio_path = source_path
@@ -486,11 +489,10 @@ async def _stream_meeting_transcription(
                     )
                 )
 
-            # 单线程推理函数：ASR + 声纹提取在同一线程顺序执行
             # CUDA/MPS 设备共享，双线程 asyncio.gather 只增加调度开销无真正并行
             def _infer_segment(audio):
                 text = service.transcribe_segment(audio)
-                emb = service.extract_embedding(audio)
+                emb = service.extract_embedding(audio) if should_match_speaker else None
                 return text, emb
 
             # ========== 尝试使用 pyannote diarization ==========
@@ -660,6 +662,8 @@ async def _stream_meeting_transcription(
                         start_ms: int,
                         end_ms: int,
                     ):
+                        if not should_match_speaker:
+                            return ("未知", 0.0)
                         start_sample = int(start_ms / 1000 * sr)
                         end_sample = int(end_ms / 1000 * sr)
                         speech = speech_full[start_sample:end_sample]
@@ -678,6 +682,8 @@ async def _stream_meeting_transcription(
                         start_ms: int,
                         end_ms: int,
                     ):
+                        if not should_match_speaker:
+                            return ("未知", 0.0)
                         start_sample = int(start_ms / 1000 * sr)
                         end_sample = int(end_ms / 1000 * sr)
                         speech = speech_full[start_sample:end_sample]
@@ -759,12 +765,13 @@ async def _stream_meeting_transcription(
                             reverse=True,
                         )[:top_k]
                         candidate_embeddings = []
-                        for start_ms, end_ms in candidate_segments:
-                            start_sample = int(start_ms / 1000 * sr)
-                            end_sample = int(end_ms / 1000 * sr)
-                            speech = speech_full[start_sample:end_sample]
-                            emb = await asyncio.to_thread(service.extract_embedding, speech)
-                            candidate_embeddings.append((emb, end_ms - start_ms))
+                        if should_match_speaker:
+                            for start_ms, end_ms in candidate_segments:
+                                start_sample = int(start_ms / 1000 * sr)
+                                end_sample = int(end_ms / 1000 * sr)
+                                speech = speech_full[start_sample:end_sample]
+                                emb = await asyncio.to_thread(service.extract_embedding, speech)
+                                candidate_embeddings.append((emb, end_ms - start_ms))
 
                         speaker = "未知"
                         confidence = 0.0
@@ -1150,7 +1157,7 @@ async def websocket_live(websocket: WebSocket):
         })
         await websocket.close(code=1008)
         return
-    should_match_speaker = _live_voiceprint_enabled(allowed_speakers)
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
     matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
 
     print(f"WebSocket 连接建立，实时声纹识别: {'开启' if should_match_speaker else '关闭'}")

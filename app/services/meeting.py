@@ -31,6 +31,7 @@ def process_meeting(
     threshold: float = None,
     allowed_speakers: Collection[str] | None = None,
     matching_scope=None,
+    match_registered_speakers: bool = True,
 ) -> list:
     """
     处理会议音频
@@ -43,14 +44,15 @@ def process_meeting(
         service: ModelService 实例
         audio_path: 音频文件路径
         threshold: 声纹匹配阈值
-        allowed_speakers: 本次会议允许匹配的注册人名单；None 表示全库匹配
+        allowed_speakers: 本次会议允许匹配的注册人名单
+        match_registered_speakers: 是否匹配注册声纹；False 时不会提取声纹或查询声纹库
     
     Returns:
         transcript 列表
     """
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
-    if matching_scope is None:
+    if match_registered_speakers and matching_scope is None:
         matching_scope = service.build_matching_scope(allowed_speakers)
     
     if not os.path.exists(audio_path):
@@ -71,12 +73,12 @@ def process_meeting(
         # 使用 pyannote 分段结果
         return _process_with_diarization(
             service, audio_path, speech_full, sr, 
-            diarization_segments, threshold, allowed_speakers, matching_scope
+            diarization_segments, threshold, allowed_speakers, matching_scope, match_registered_speakers
         )
     else:
         # 回退到 VAD 分段
         return _process_with_vad(
-            service, audio_path, speech_full, sr, threshold, allowed_speakers, matching_scope
+            service, audio_path, speech_full, sr, threshold, allowed_speakers, matching_scope, match_registered_speakers
         )
 
 
@@ -84,7 +86,8 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                                speech_full: np.ndarray, sr: int,
                                segments: list, threshold: float,
                                allowed_speakers: Collection[str] | None = None,
-                               matching_scope=None) -> list:
+                               matching_scope=None,
+                               match_registered_speakers: bool = True) -> list:
     """
     使用 pyannote diarization 结果处理会议
     
@@ -100,35 +103,37 @@ def _process_with_diarization(service: ModelService, audio_path: str,
     speaker_mapping = {}  # "SPEAKER_00" -> "张三" 或 "陌生人1"
     segment_verified_mapping = {}
     stranger_counter = 0
-    top_k = max(1, CONFIG["offline_registered_match_top_k"])
-    speaker_candidate_segments = {}
-    for start_ms, end_ms, pyannote_speaker in segments:
-        speaker_candidate_segments.setdefault(pyannote_speaker, []).append((start_ms, end_ms))
-
     speaker_registered_mapping = {}
-    for pyannote_speaker, segments_for_speaker in speaker_candidate_segments.items():
-        candidate_segments = sorted(
-            segments_for_speaker,
-            key=lambda item: item[1] - item[0],
-            reverse=True,
-        )[:top_k]
-        candidate_embeddings = []
-        for start_ms, end_ms in candidate_segments:
-            start_sample = int(start_ms / 1000 * sr)
-            end_sample = int(end_ms / 1000 * sr)
-            speech = speech_full[start_sample:end_sample]
-            if len(speech) < 0.2 * sr:
-                continue
-            emb = service.extract_embedding(speech)
-            candidate_embeddings.append((emb, end_ms - start_ms))
-        speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
-            candidate_embeddings,
-            threshold=threshold,
-            match_scope=matching_scope,
-            allowed_speakers=allowed_speakers,
-        )
+    if match_registered_speakers:
+        top_k = max(1, CONFIG["offline_registered_match_top_k"])
+        speaker_candidate_segments = {}
+        for start_ms, end_ms, pyannote_speaker in segments:
+            speaker_candidate_segments.setdefault(pyannote_speaker, []).append((start_ms, end_ms))
+
+        for pyannote_speaker, segments_for_speaker in speaker_candidate_segments.items():
+            candidate_segments = sorted(
+                segments_for_speaker,
+                key=lambda item: item[1] - item[0],
+                reverse=True,
+            )[:top_k]
+            candidate_embeddings = []
+            for start_ms, end_ms in candidate_segments:
+                start_sample = int(start_ms / 1000 * sr)
+                end_sample = int(end_ms / 1000 * sr)
+                speech = speech_full[start_sample:end_sample]
+                if len(speech) < 0.2 * sr:
+                    continue
+                emb = service.extract_embedding(speech)
+                candidate_embeddings.append((emb, end_ms - start_ms))
+            speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
+                candidate_embeddings,
+                threshold=threshold,
+                match_scope=matching_scope,
+                allowed_speakers=allowed_speakers,
+            )
     
-    print("Step 2: 逐段识别文本与匹配声纹（并行推理）...")
+    step2_action = "逐段识别文本与匹配声纹" if match_registered_speakers else "逐段识别文本"
+    print(f"Step 2: {step2_action}（并行推理）...")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
@@ -143,7 +148,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 continue
 
             # 直接传 numpy 数组给模型，避免临时文件 IO
-            need_embedding = pyannote_speaker not in speaker_mapping
+            need_embedding = match_registered_speakers and pyannote_speaker not in speaker_mapping
             future_text = pool.submit(service.transcribe_segment, speech)
             if need_embedding:
                 future_emb = pool.submit(service.extract_embedding, speech)
@@ -158,9 +163,12 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 speaker, confidence = segment_verified_mapping[seg_key]
             else:
                 try:
-                    emb = future_emb.result()
                     local_name = "未知"
                     local_score = 0.0
+                    if need_embedding:
+                        emb = future_emb.result()
+                    else:
+                        emb = None
                     if emb is not None:
                         local_name, local_score = service.match_registered_speaker_guarded(
                             emb,
@@ -215,7 +223,8 @@ def _process_with_vad(service: ModelService, audio_path: str,
                       speech_full: np.ndarray, sr: int,
                       threshold: float,
                       allowed_speakers: Collection[str] | None = None,
-                      matching_scope=None) -> list:
+                      matching_scope=None,
+                      match_registered_speakers: bool = True) -> list:
     """
     使用 VAD 分段 + 后聚类方案处理会议 (fallback)
     """
@@ -233,7 +242,8 @@ def _process_with_vad(service: ModelService, audio_path: str,
     transcript = []
     total_segments = len(segments)
     
-    print("Step 2: 逐段识别文本与说话人（并行推理）...")
+    step2_action = "逐段识别文本与说话人" if match_registered_speakers else "逐段识别文本"
+    print(f"Step 2: {step2_action}（并行推理）...")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         for i, seg in enumerate(segments):
@@ -250,10 +260,11 @@ def _process_with_vad(service: ModelService, audio_path: str,
 
             # 直接传 numpy 数组给模型，避免临时文件 IO
             future_text = pool.submit(service.transcribe_segment, speech)
-            future_emb = pool.submit(service.extract_embedding, speech)
+            if match_registered_speakers:
+                future_emb = pool.submit(service.extract_embedding, speech)
 
             text = future_text.result()
-            emb = future_emb.result()
+            emb = future_emb.result() if match_registered_speakers else None
             if not text:
                 continue
 
