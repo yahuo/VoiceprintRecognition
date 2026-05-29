@@ -123,7 +123,7 @@ class RecordingApiTest(unittest.TestCase):
                 server.transcribe_meeting_recording(
                     file_id,
                     threshold=0.42,
-                    allowed_speakers=None,
+                    allowed_speaker_ids=None,
                 )
             )
 
@@ -151,7 +151,7 @@ class RecordingApiTest(unittest.TestCase):
     def test_transcribe_recording_stream_by_file_id(self):
         file_id = server.recording_store.save_pcm_wav(b"\x00\x00" * 10)
 
-        async def fake_stream(content, suffix, threshold, allowed_speakers, *, source_path=None):
+        async def fake_stream(content, suffix, threshold, allowed_speaker_ids, *, source_path=None):
             async def events():
                 yield b"data: {\"type\":\"done\"}\n\n"
 
@@ -162,7 +162,7 @@ class RecordingApiTest(unittest.TestCase):
                 server.transcribe_meeting_recording_stream(
                     file_id,
                     threshold=0.42,
-                    allowed_speakers=["张三"],
+                    allowed_speaker_ids=["spk-a"],
                 )
             )
 
@@ -172,7 +172,7 @@ class RecordingApiTest(unittest.TestCase):
         self.assertIsNone(args[0])
         self.assertEqual(args[1], ".wav")
         self.assertEqual(args[2], 0.42)
-        self.assertEqual(args[3], ["张三"])
+        self.assertEqual(args[3], ["spk-a"])
         self.assertEqual(kwargs["source_path"], os.path.join(self.tmpdir.name, f"{file_id}.wav"))
 
     def test_transcribe_recording_stream_missing_and_invalid_file_id(self):
@@ -370,7 +370,7 @@ class FakeWebSocket:
 class FakeService:
     registered_embeddings = {}
 
-    def build_matching_scope(self, allowed_speakers):
+    def build_matching_scope(self, allowed_speaker_ids):
         return None
 
 

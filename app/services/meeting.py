@@ -29,7 +29,7 @@ def process_meeting(
     service: ModelService,
     audio_path: str,
     threshold: float = None,
-    allowed_speakers: Collection[str] | None = None,
+    allowed_speaker_ids: Collection[str] | None = None,
     matching_scope=None,
     match_registered_speakers: bool = True,
 ) -> list:
@@ -44,7 +44,7 @@ def process_meeting(
         service: ModelService 实例
         audio_path: 音频文件路径
         threshold: 声纹匹配阈值
-        allowed_speakers: 本次会议允许匹配的注册人名单
+        allowed_speaker_ids: 本次会议允许匹配的注册声纹 id
         match_registered_speakers: 是否匹配注册声纹；False 时不会提取声纹或查询声纹库
     
     Returns:
@@ -53,7 +53,7 @@ def process_meeting(
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     if match_registered_speakers and matching_scope is None:
-        matching_scope = service.build_matching_scope(allowed_speakers)
+        matching_scope = service.build_matching_scope(allowed_speaker_ids)
     
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"音频文件不存在: {audio_path}")
@@ -73,19 +73,19 @@ def process_meeting(
         # 使用 pyannote 分段结果
         return _process_with_diarization(
             service, audio_path, speech_full, sr, 
-            diarization_segments, threshold, allowed_speakers, matching_scope, match_registered_speakers
+            diarization_segments, threshold, allowed_speaker_ids, matching_scope, match_registered_speakers
         )
     else:
         # 回退到 VAD 分段
         return _process_with_vad(
-            service, audio_path, speech_full, sr, threshold, allowed_speakers, matching_scope, match_registered_speakers
+            service, audio_path, speech_full, sr, threshold, allowed_speaker_ids, matching_scope, match_registered_speakers
         )
 
 
 def _process_with_diarization(service: ModelService, audio_path: str,
                                speech_full: np.ndarray, sr: int,
                                segments: list, threshold: float,
-                               allowed_speakers: Collection[str] | None = None,
+                               allowed_speaker_ids: Collection[str] | None = None,
                                matching_scope=None,
                                match_registered_speakers: bool = True) -> list:
     """
@@ -129,7 +129,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
                 candidate_embeddings,
                 threshold=threshold,
                 match_scope=matching_scope,
-                allowed_speakers=allowed_speakers,
+                allowed_speaker_ids=allowed_speaker_ids,
             )
     
     step2_action = "逐段识别文本与匹配声纹" if match_registered_speakers else "逐段识别文本"
@@ -160,49 +160,54 @@ def _process_with_diarization(service: ModelService, audio_path: str,
             # 确定说话人
             seg_key = (start_ms, end_ms, pyannote_speaker)
             if seg_key in segment_verified_mapping:
-                speaker, confidence = segment_verified_mapping[seg_key]
+                speaker_id, speaker, confidence = segment_verified_mapping[seg_key]
             else:
                 try:
-                    local_name = "未知"
+                    local_id = None
                     local_score = 0.0
                     if need_embedding:
                         emb = future_emb.result()
                     else:
                         emb = None
                     if emb is not None:
-                        local_name, local_score = service.match_registered_speaker_guarded(
+                        local_id, local_score = service.match_registered_speaker_guarded(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
                             match_scope=matching_scope,
-                            allowed_speakers=allowed_speakers,
+                            allowed_speaker_ids=allowed_speaker_ids,
                         )
 
-                    if local_name != "未知":
-                        speaker = local_name
+                    if local_id is not None:
+                        speaker_id = local_id
+                        speaker = service.get_speaker_name(local_id)
                         confidence = local_score
                     else:
-                        matched_name, score = speaker_registered_mapping.get(pyannote_speaker, ("未知", 0.0))
-                        if matched_name != "未知":
+                        matched_id, score = speaker_registered_mapping.get(pyannote_speaker, (None, 0.0))
+                        if matched_id is not None:
+                            speaker_id = None
                             speaker = "未知"
                             confidence = 0.0
                         else:
                             if pyannote_speaker not in speaker_mapping:
                                 stranger_counter += 1
                                 speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                            speaker_id = None
                             speaker = speaker_mapping[pyannote_speaker]
                             confidence = 1.0
                 except Exception:
                     if pyannote_speaker not in speaker_mapping:
                         stranger_counter += 1
                         speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
+                    speaker_id = None
                     speaker = speaker_mapping[pyannote_speaker]
                     confidence = 1.0
 
-                segment_verified_mapping[seg_key] = (speaker, confidence)
+                segment_verified_mapping[seg_key] = (speaker_id, speaker, confidence)
 
             segment_info = {
                 "time": format_time(start_ms),
+                "speakerId": speaker_id,
                 "speaker": speaker,
                 "confidence": round(confidence, 2),
                 "text": text,
@@ -222,7 +227,7 @@ def _process_with_diarization(service: ModelService, audio_path: str,
 def _process_with_vad(service: ModelService, audio_path: str,
                       speech_full: np.ndarray, sr: int,
                       threshold: float,
-                      allowed_speakers: Collection[str] | None = None,
+                      allowed_speaker_ids: Collection[str] | None = None,
                       matching_scope=None,
                       match_registered_speakers: bool = True) -> list:
     """
@@ -268,21 +273,24 @@ def _process_with_vad(service: ModelService, audio_path: str,
             if not text:
                 continue
 
+            speaker_id = None
             speaker = "未知"
             score = 0.0
 
             # 第一阶段：尝试匹配已注册声纹
             if emb is not None:
-                speaker, score = service.match_registered_speaker_guarded(
+                speaker_id, score = service.match_registered_speaker_guarded(
                     emb,
                     threshold=threshold,
                     duration_ms=end_ms - start_ms,
                     match_scope=matching_scope,
-                    allowed_speakers=allowed_speakers,
+                    allowed_speaker_ids=allowed_speaker_ids,
                 )
+                speaker = service.get_speaker_name(speaker_id)
 
             segment_info = {
                 "time": format_time(start_ms),
+                "speakerId": speaker_id,
                 "speaker": speaker,
                 "confidence": round(score, 2),
                 "text": text,
@@ -322,6 +330,7 @@ def _process_with_vad(service: ModelService, audio_path: str,
                     next_stranger_id += 1
                 
                 transcript[idx]["speaker"] = cluster_map[label]
+                transcript[idx]["speakerId"] = None
                 transcript[idx]["confidence"] = 1.0  # 聚类结果置信度设为1
                 
             print(f"✅ 成功分离出 {len(cluster_map)} 位陌生人")

@@ -14,6 +14,8 @@ import sys
 import json
 import time
 import tempfile
+import secrets
+import shutil
 from dataclasses import dataclass
 import numpy as np
 import librosa
@@ -90,6 +92,10 @@ CONFIG = {
 
 VOICEPRINT_DB_DIR = os.path.join(PROJECT_ROOT, "voiceprint_db")
 VOICEPRINT_INDEX_FILE = os.path.join(VOICEPRINT_DB_DIR, "index.json")
+VOICEPRINT_FILES_DIR = os.path.join(VOICEPRINT_DB_DIR, "files")
+
+UNKNOWN_SPEAKER_ID = None
+UNKNOWN_SPEAKER_NAME = "未知"
 
 
 @dataclass(frozen=True)
@@ -111,32 +117,141 @@ def ensure_db_dir():
     """确保声纹数据库目录存在"""
     if not os.path.exists(VOICEPRINT_DB_DIR):
         os.makedirs(VOICEPRINT_DB_DIR)
+    if not os.path.exists(VOICEPRINT_FILES_DIR):
+        os.makedirs(VOICEPRINT_FILES_DIR)
 
 
-def load_voiceprint_index() -> Dict[str, str]:
-    """加载声纹索引（name -> embedding_file）"""
+def _is_new_voiceprint_index(index: dict) -> bool:
+    return all(
+        isinstance(speaker_id, str)
+        and isinstance(entry, dict)
+        and entry.get("id") == speaker_id
+        and isinstance(entry.get("name"), str)
+        and isinstance(entry.get("file"), str)
+        for speaker_id, entry in index.items()
+    )
+
+
+def _is_legacy_voiceprint_index(index: dict) -> bool:
+    return all(
+        isinstance(name, str) and isinstance(embedding_file, str)
+        for name, embedding_file in index.items()
+    )
+
+
+def _migrate_legacy_voiceprint_index(index: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+    """将旧的 name -> file 索引一次性迁移成 id -> {id, name, file}。"""
+    ensure_db_dir()
+    migrated = {}
+    legacy_files = []
+
+    for name, embedding_file in index.items():
+        if not os.path.exists(embedding_file):
+            raise FileNotFoundError(f"旧声纹文件不存在: {embedding_file}")
+
+        speaker_id = generate_voiceprint_id()
+        while speaker_id in migrated:
+            speaker_id = generate_voiceprint_id()
+
+        target_file = _new_voiceprint_file_path()
+        shutil.copy2(embedding_file, target_file)
+        migrated[speaker_id] = {
+            "id": speaker_id,
+            "name": name,
+            "file": target_file,
+        }
+        legacy_files.append(embedding_file)
+
+    save_voiceprint_index(migrated)
+
+    migrated_files = {os.path.abspath(entry["file"]) for entry in migrated.values()}
+    for embedding_file in set(legacy_files):
+        if os.path.abspath(embedding_file) not in migrated_files and os.path.exists(embedding_file):
+            os.remove(embedding_file)
+
+    print(f"已迁移旧声纹索引: {len(migrated)} 个声纹")
+    return migrated
+
+
+def load_voiceprint_index() -> Dict[str, Dict[str, str]]:
+    """加载声纹索引（id -> {id, name, file}），必要时迁移旧格式。"""
     if os.path.exists(VOICEPRINT_INDEX_FILE):
         with open(VOICEPRINT_INDEX_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            index = json.load(f)
+        if not isinstance(index, dict):
+            raise ValueError("声纹索引格式错误: 顶层必须是对象")
+        if _is_new_voiceprint_index(index):
+            return index
+        if _is_legacy_voiceprint_index(index):
+            return _migrate_legacy_voiceprint_index(index)
+        raise ValueError("声纹索引格式错误: 既不是新格式也不是旧格式")
     return {}
 
 
-def save_voiceprint_index(index: Dict[str, str]):
+def save_voiceprint_index(index: Dict[str, Dict[str, str]]):
     """保存声纹索引"""
     ensure_db_dir()
     with open(VOICEPRINT_INDEX_FILE, "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, indent=2)
 
 
+def generate_voiceprint_id() -> str:
+    """生成 24 位 ObjectId 风格的随机 id。"""
+    return secrets.token_hex(12)
+
+
+def _new_voiceprint_file_path() -> str:
+    ensure_db_dir()
+    while True:
+        filename = f"{secrets.token_hex(16)}.npy"
+        path = os.path.join(VOICEPRINT_FILES_DIR, filename)
+        if not os.path.exists(path):
+            return path
+
+
+def save_voiceprint_embedding(speaker_id: str, name: str, embedding: np.ndarray) -> Dict[str, str]:
+    """保存或覆盖一个声纹条目。"""
+    index = load_voiceprint_index()
+    existing = index.get(speaker_id) or {}
+    embedding_file = existing.get("file") or _new_voiceprint_file_path()
+    os.makedirs(os.path.dirname(embedding_file), exist_ok=True)
+    np.save(embedding_file, embedding)
+
+    entry = {
+        "id": speaker_id,
+        "name": name,
+        "file": embedding_file,
+    }
+    index[speaker_id] = entry
+    save_voiceprint_index(index)
+    return entry
+
+
+def delete_voiceprint_by_id(speaker_id: str) -> Dict[str, str] | None:
+    """按 id 删除单个声纹，返回被删除的条目。"""
+    index = load_voiceprint_index()
+    entry = index.get(speaker_id)
+    if entry is None:
+        return None
+
+    embedding_file = entry.get("file")
+    if embedding_file and os.path.exists(embedding_file):
+        os.remove(embedding_file)
+
+    del index[speaker_id]
+    save_voiceprint_index(index)
+    return entry
+
 def load_voiceprint_embeddings() -> Dict[str, np.ndarray]:
     """加载所有已注册的声纹嵌入"""
     index = load_voiceprint_index()
     embeddings = {}
     
-    for name, embedding_file in index.items():
-        if os.path.exists(embedding_file):
+    for speaker_id, entry in index.items():
+        embedding_file = entry.get("file")
+        if embedding_file and os.path.exists(embedding_file):
             emb = np.load(embedding_file).flatten()
-            embeddings[name] = emb
+            embeddings[speaker_id] = emb
     
     return embeddings
 
@@ -153,8 +268,8 @@ def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
 
 
 def match_speaker(embedding: np.ndarray, 
-                  registered: Dict[str, np.ndarray], 
-                  threshold: float = None) -> Tuple[str, float]:
+                  registered: Dict[str, np.ndarray],
+                  threshold: float = None) -> Tuple[str | None, float]:
     """
     匹配说话人
     
@@ -164,27 +279,27 @@ def match_speaker(embedding: np.ndarray,
         threshold: 匹配阈值，默认使用 CONFIG["speaker_threshold"]
     
     Returns:
-        (speaker_name, score) 元组
+        (speaker_id, score) 元组
     """
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     
     if not registered:
-        return ("未知", 0.0)
+        return (UNKNOWN_SPEAKER_ID, 0.0)
     
-    best_name = "未知"
+    best_id = UNKNOWN_SPEAKER_ID
     best_score = 0.0
     
-    for name, reg_emb in registered.items():
+    for speaker_id, reg_emb in registered.items():
         score = cosine_similarity(embedding, reg_emb)
         if score > best_score:
             best_score = score
-            best_name = name
+            best_id = speaker_id
     
     if best_score >= threshold:
-        return (best_name, best_score)
+        return (best_id, best_score)
     else:
-        return ("未知", best_score)
+        return (UNKNOWN_SPEAKER_ID, best_score)
 
 
 def cluster_embeddings(embeddings: List[np.ndarray], 
@@ -349,6 +464,10 @@ class ModelService:
         self.spk_model = None
         self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
+        self.registered_speakers = {}
+        self._emb_names = []
+        self._emb_name_to_idx = {}
+        self._emb_matrix = None
         self.is_loaded = False
 
     
@@ -531,14 +650,15 @@ class ModelService:
 
     def reload_voiceprints(self):
         """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
+        self.registered_speakers = load_voiceprint_index()
         self.registered_embeddings = load_voiceprint_embeddings()
         # 构建预归一化矩阵 (N, D) 用于向量化匹配
         if self.registered_embeddings:
             self._emb_names = list(self.registered_embeddings.keys())
             self._emb_name_to_idx = {
-                name: idx for idx, name in enumerate(self._emb_names)
+                speaker_id: idx for idx, speaker_id in enumerate(self._emb_names)
             }
-            matrix = np.array([self.registered_embeddings[n] for n in self._emb_names])
+            matrix = np.array([self.registered_embeddings[speaker_id] for speaker_id in self._emb_names])
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             norms[norms == 0] = 1.0  # 防止除零
             self._emb_matrix = matrix / norms
@@ -547,6 +667,19 @@ class ModelService:
             self._emb_name_to_idx = {}
             self._emb_matrix = None
         print(f"已加载 {len(self.registered_embeddings)} 个注册声纹")
+
+    def get_speaker_name(self, speaker_id: str | None) -> str:
+        """将注册声纹 id 映射成展示名。"""
+        if speaker_id is None:
+            return UNKNOWN_SPEAKER_NAME
+        entry = self.registered_speakers.get(speaker_id) or {}
+        return entry.get("name") or speaker_id
+
+    def format_speaker(self, speaker_id: str | None, fallback_name: str = UNKNOWN_SPEAKER_NAME) -> dict:
+        """生成对外返回的说话人字段。"""
+        if speaker_id is None:
+            return {"speakerId": None, "speaker": fallback_name}
+        return {"speakerId": speaker_id, "speaker": self.get_speaker_name(speaker_id)}
 
     def _normalize_audio_array(self, audio_input):
         """将内存音频统一成 float32 numpy 数组，路径输入保持原样。"""
@@ -592,23 +725,23 @@ class ModelService:
 
     def build_matching_scope(
         self,
-        allowed_speakers: Collection[str] | None = None,
+        allowed_speaker_ids: Collection[str] | None = None,
     ) -> MatchingScope | None:
         """
-        为一次请求预构建候选说话人矩阵，避免每个片段重复筛选。
+        为一次请求预构建候选声纹矩阵，避免每个片段重复筛选。
         """
         if self._emb_matrix is None or len(self._emb_names) == 0:
             return None
 
-        if allowed_speakers is None:
+        if allowed_speaker_ids is None:
             return MatchingScope(
                 names=tuple(self._emb_names),
                 matrix=self._emb_matrix,
                 is_restricted=False,
             )
 
-        allowed_set = {name for name in allowed_speakers if name in self._emb_name_to_idx}
-        candidate_names = tuple(name for name in self._emb_names if name in allowed_set)
+        allowed_set = {speaker_id for speaker_id in allowed_speaker_ids if speaker_id in self._emb_name_to_idx}
+        candidate_names = tuple(speaker_id for speaker_id in self._emb_names if speaker_id in allowed_set)
         if not candidate_names:
             return MatchingScope(
                 names=tuple(),
@@ -627,12 +760,12 @@ class ModelService:
         self,
         embedding: np.ndarray,
         match_scope: MatchingScope | None = None,
-        allowed_speakers: Collection[str] | None = None,
+        allowed_speaker_ids: Collection[str] | None = None,
     ) -> Tuple[List[str], Optional[np.ndarray]]:
         """
-        根据可选白名单准备候选说话人与相似度分数。
+        根据可选白名单准备候选声纹 id 与相似度分数。
 
-        allowed_speakers:
+        allowed_speaker_ids:
         - None: 使用全部已注册声纹
         - 空集合: 显式表示无可匹配候选
         """
@@ -645,7 +778,7 @@ class ModelService:
             return [], None
         q = q / q_norm
 
-        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speaker_ids)
         if resolved_scope is None:
             return [], None
 
@@ -657,20 +790,20 @@ class ModelService:
         scores = candidate_matrix @ q
         return candidate_names, scores
 
-    def _best_overall_registered_match(self, embedding: np.ndarray) -> Tuple[str, float]:
-        """返回全库最相似注册人的名称与分数。"""
+    def _best_overall_registered_match(self, embedding: np.ndarray) -> Tuple[str | None, float]:
+        """返回全库最相似注册声纹 id 与分数。"""
         if self._emb_matrix is None or len(self._emb_names) == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         q = embedding.flatten()
         q_norm = np.linalg.norm(q)
         if q_norm == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         q = q / q_norm
         scores = self._emb_matrix @ q
         if scores.size == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         best_idx = int(np.argmax(scores))
         return (self._emb_names[best_idx], float(scores[best_idx]))
@@ -687,8 +820,8 @@ class ModelService:
         if match_scope is None or not match_scope.is_restricted or match_scope.size == 0:
             return False
 
-        global_name, global_score = self._best_overall_registered_match(embedding)
-        if global_name == "未知" or global_name in match_scope.names:
+        global_id, global_score = self._best_overall_registered_match(embedding)
+        if global_id is None or global_id in match_scope.names:
             return False
 
         outside_floor = max(threshold, CONFIG["offline_registered_match_score_floor"])
@@ -700,18 +833,18 @@ class ModelService:
         embedding: np.ndarray,
         threshold: float = None,
         match_scope: MatchingScope | None = None,
-        allowed_speakers: Collection[str] | None = None,
-    ) -> Tuple[str, float]:
+        allowed_speaker_ids: Collection[str] | None = None,
+    ) -> Tuple[str | None, float]:
         """
         向量化声纹匹配：单次矩阵乘法替代 Python 循环
 
         Args:
             embedding: 待匹配的声纹向量
             threshold: 匹配阈值，默认使用 CONFIG["speaker_threshold"]
-            allowed_speakers: 可选候选说话人白名单
+            allowed_speaker_ids: 可选候选声纹 id 白名单
 
         Returns:
-            (speaker_name, score) 元组，与 match_speaker() 返回格式一致
+            (speaker_id, score) 元组，与 match_speaker() 返回格式一致
         """
         if threshold is None:
             threshold = CONFIG["speaker_threshold"]
@@ -719,17 +852,17 @@ class ModelService:
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
             match_scope=match_scope,
-            allowed_speakers=allowed_speakers,
+            allowed_speaker_ids=allowed_speaker_ids,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
 
         if best_score >= threshold:
             return (candidate_names[best_idx], best_score)
-        return ("未知", best_score)
+        return (UNKNOWN_SPEAKER_ID, best_score)
 
     def match_registered_speaker_guarded(
         self,
@@ -737,8 +870,8 @@ class ModelService:
         threshold: float = None,
         duration_ms: int | None = None,
         match_scope: MatchingScope | None = None,
-        allowed_speakers: Collection[str] | None = None,
-    ) -> Tuple[str, float]:
+        allowed_speaker_ids: Collection[str] | None = None,
+    ) -> Tuple[str | None, float]:
         """
         离线/上传链路更严格的注册人匹配。
 
@@ -750,17 +883,17 @@ class ModelService:
         if threshold is None:
             threshold = CONFIG["speaker_threshold"]
 
-        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speaker_ids)
         if resolved_scope is not None and resolved_scope.is_restricted:
             if resolved_scope.size == 1:
                 selected_name = resolved_scope.names[0]
                 candidate_names, scores = self._prepare_matching_candidates(embedding)
                 if scores is None or len(candidate_names) == 0 or len(scores) == 0:
-                    return ("未知", 0.0)
+                    return (UNKNOWN_SPEAKER_ID, 0.0)
                 try:
                     selected_idx = candidate_names.index(selected_name)
                 except ValueError:
-                    return ("未知", 0.0)
+                    return (UNKNOWN_SPEAKER_ID, 0.0)
                 best_idx = int(np.argmax(scores))
                 best_name = candidate_names[best_idx]
                 best_score = float(scores[best_idx])
@@ -768,17 +901,17 @@ class ModelService:
                 effective_threshold = max(threshold, CONFIG["offline_scoped_single_match_score_floor"])
                 min_duration_ms = CONFIG["offline_scoped_single_match_min_duration_ms"]
                 if duration_ms is not None and duration_ms < min_duration_ms:
-                    return ("未知", selected_score)
+                    return (UNKNOWN_SPEAKER_ID, selected_score)
                 if selected_score < effective_threshold:
-                    return ("未知", selected_score)
+                    return (UNKNOWN_SPEAKER_ID, selected_score)
                 if (
                     best_name != selected_name
                     and best_score >= max(threshold, CONFIG["offline_registered_match_score_floor"])
                     and (best_score - selected_score) >= CONFIG["offline_scoped_outside_margin"]
                 ):
-                    return ("未知", selected_score)
+                    return (UNKNOWN_SPEAKER_ID, selected_score)
                 if best_name != selected_name:
-                    return ("未知", selected_score)
+                    return (UNKNOWN_SPEAKER_ID, selected_score)
                 return (selected_name, selected_score)
             effective_threshold = max(threshold, CONFIG["offline_scoped_match_score_floor"])
             min_duration_ms = CONFIG["offline_scoped_match_min_duration_ms"]
@@ -791,22 +924,22 @@ class ModelService:
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
             match_scope=resolved_scope,
-            allowed_speakers=allowed_speakers,
+            allowed_speaker_ids=allowed_speaker_ids,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
         second_best_score = float(np.partition(scores, -2)[-2]) if len(scores) > 1 else -1.0
 
         if duration_ms is not None and duration_ms < min_duration_ms:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if best_score < effective_threshold:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if self._scoped_match_conflicts_with_outside_winner(
             embedding,
@@ -815,7 +948,7 @@ class ModelService:
             threshold,
             resolved_scope,
         ):
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         return (candidate_names[best_idx], best_score)
 
@@ -825,8 +958,8 @@ class ModelService:
         threshold: float = None,
         duration_ms: int | None = None,
         match_scope: MatchingScope | None = None,
-        allowed_speakers: Collection[str] | None = None,
-    ) -> Tuple[str, float]:
+        allowed_speaker_ids: Collection[str] | None = None,
+    ) -> Tuple[str | None, float]:
         """
         对短句使用更保守的 exact-window 注册人匹配。
 
@@ -839,23 +972,23 @@ class ModelService:
             threshold = CONFIG["speaker_threshold"]
 
         if self._emb_matrix is None or len(self._emb_names) == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         guarded_min_duration_ms = CONFIG["offline_registered_match_min_duration_ms"]
         ultrashort_min_duration_ms = CONFIG["offline_ultrashort_match_min_duration_ms"]
         ultrashort_max_duration_ms = CONFIG["offline_ultrashort_match_max_duration_ms"]
         short_min_duration_ms = CONFIG["offline_short_match_min_duration_ms"]
         if duration_ms is None or duration_ms < ultrashort_min_duration_ms or duration_ms >= guarded_min_duration_ms:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
-        resolved_scope = match_scope or self.build_matching_scope(allowed_speakers)
+        resolved_scope = match_scope or self.build_matching_scope(allowed_speaker_ids)
         candidate_names, scores = self._prepare_matching_candidates(
             embedding,
             match_scope=resolved_scope,
-            allowed_speakers=allowed_speakers,
+            allowed_speaker_ids=allowed_speaker_ids,
         )
         if scores is None or len(candidate_names) == 0 or len(scores) == 0:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         best_idx = int(np.argmax(scores))
         best_score = float(scores[best_idx])
@@ -866,7 +999,7 @@ class ModelService:
                 # 单参会人模式语义更接近“验证这个人是否在说话”。
                 # 短句 exact-window 容易把陌生人短句直接吸进唯一候选人，
                 # 因此直接关闭这条快路径，交给更稳的 cluster/guarded 逻辑。
-                return ("未知", best_score)
+                return (UNKNOWN_SPEAKER_ID, best_score)
             effective_threshold = max(threshold, CONFIG["offline_scoped_match_score_floor"])
             min_margin = CONFIG["offline_scoped_match_min_margin"]
         elif duration_ms <= ultrashort_max_duration_ms:
@@ -876,13 +1009,13 @@ class ModelService:
             effective_threshold = max(threshold, CONFIG["offline_short_match_score_floor"])
             min_margin = CONFIG["offline_short_match_min_margin"]
         else:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if best_score < effective_threshold:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if len(scores) > 1 and (best_score - second_best_score) < min_margin:
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         if self._scoped_match_conflicts_with_outside_winner(
             embedding,
@@ -891,7 +1024,7 @@ class ModelService:
             threshold,
             resolved_scope,
         ):
-            return ("未知", best_score)
+            return (UNKNOWN_SPEAKER_ID, best_score)
 
         return (candidate_names[best_idx], best_score)
 
@@ -900,8 +1033,8 @@ class ModelService:
         candidates: List[Tuple[np.ndarray | None, int]],
         threshold: float = None,
         match_scope: MatchingScope | None = None,
-        allowed_speakers: Collection[str] | None = None,
-    ) -> Tuple[str, float]:
+        allowed_speaker_ids: Collection[str] | None = None,
+    ) -> Tuple[str | None, float]:
         """
         对同一 pyannote speaker 的多个代表片段做保守判定。
 
@@ -919,7 +1052,7 @@ class ModelService:
 
         valid_candidates = [(emb, duration_ms) for emb, duration_ms in candidates[:top_k] if emb is not None]
         if not valid_candidates:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         decisions: List[Tuple[str, float, int]] = []
         for emb, duration_ms in valid_candidates:
@@ -928,13 +1061,13 @@ class ModelService:
                 threshold=threshold,
                 duration_ms=duration_ms,
                 match_scope=match_scope,
-                allowed_speakers=allowed_speakers,
+                allowed_speaker_ids=allowed_speaker_ids,
             )
-            if name != "未知":
+            if name is not None:
                 decisions.append((name, score, duration_ms))
 
         if not decisions:
-            return ("未知", 0.0)
+            return (UNKNOWN_SPEAKER_ID, 0.0)
 
         if len(valid_candidates) == 1:
             name, score, _ = decisions[0]
@@ -966,21 +1099,21 @@ class ModelService:
         recognized_count = len(decisions)
 
         if best_votes < min_support:
-            return ("未知", best_stats["best_score"])
+            return (UNKNOWN_SPEAKER_ID, best_stats["best_score"])
 
         if recognized_count > 1 and (best_votes / recognized_count) < min_share:
-            return ("未知", best_stats["best_score"])
+            return (UNKNOWN_SPEAKER_ID, best_stats["best_score"])
 
         if len(ranked) > 1:
             second_name, second_stats = ranked[1]
             if second_stats["votes"] == best_votes:
-                return ("未知", max(best_stats["best_score"], second_stats["best_score"]))
+                return (UNKNOWN_SPEAKER_ID, max(best_stats["best_score"], second_stats["best_score"]))
             if (
                 second_stats["votes"] > 0
                 and best_votes == 1
                 and second_name != best_name
             ):
-                return ("未知", best_stats["best_score"])
+                return (UNKNOWN_SPEAKER_ID, best_stats["best_score"])
 
         return (best_name, best_stats["best_score"])
     
@@ -1280,35 +1413,35 @@ class SpeakerTracker:
     """说话人状态追踪器，用于实现说话人继承逻辑"""
     
     def __init__(self, timeout: float = None):
-        self.last_speaker = "未知"
+        self.last_speaker = UNKNOWN_SPEAKER_ID
         self.last_speech_time = 0
         self.timeout = timeout or CONFIG["inheritance_timeout"]
     
-    def update(self, speaker: str, score: float, registered_embeddings: Dict[str, np.ndarray]) -> Tuple[str, float]:
+    def update(self, speaker: str | None, score: float, registered_embeddings: Dict[str, np.ndarray]) -> Tuple[str | None, float]:
         """
         更新说话人状态，必要时执行继承逻辑
         
         Args:
-            speaker: 当前识别的说话人
+            speaker: 当前识别的声纹 id
             score: 当前的置信度
             registered_embeddings: 已注册的声纹字典
         
         Returns:
-            (final_speaker, final_score) 元组
+            (final_speaker_id, final_score) 元组
         """
         current_time = time.time()
         
-        # 说话人继承策略：只有识别为"未知"时才考虑继承
-        if speaker == "未知" and \
+        # 说话人继承策略：只有识别为未知时才考虑继承
+        if speaker is None and \
            (current_time - self.last_speech_time < self.timeout) and \
-           self.last_speaker != "未知":
+           self.last_speaker is not None:
             
             speaker = self.last_speaker
             score = 0.99  # 标记为继承
             print(f"🔄 继承说话人: {self.last_speaker} (因间隔短且本句识别为未知)")
         
         # 更新状态
-        if speaker != "未知":
+        if speaker is not None:
             self.last_speaker = speaker
             self.last_speech_time = current_time
         
@@ -1316,7 +1449,7 @@ class SpeakerTracker:
     
     def reset(self):
         """重置状态"""
-        self.last_speaker = "未知"
+        self.last_speaker = UNKNOWN_SPEAKER_ID
         self.last_speech_time = 0
 
 

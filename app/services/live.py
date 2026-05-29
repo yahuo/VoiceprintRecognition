@@ -77,14 +77,16 @@ class AudioProcessor:
                 return
 
             emb = future_emb.result()
+            speaker_id = None
             speaker = "未知"
             score = 0.0
 
             if emb is not None:
-                speaker, score = self.service.match_speaker_fast(emb)
+                speaker_id, score = self.service.match_speaker_fast(emb)
 
                 # 使用 SpeakerTracker 处理继承逻辑
-                speaker, score = self.tracker.update(speaker, score, self.service.registered_embeddings)
+                speaker_id, score = self.tracker.update(speaker_id, score, self.service.registered_embeddings)
+                speaker = self.service.get_speaker_name(speaker_id)
 
             # 过滤低置信度结果
             if score < CONFIG["min_confidence"]:

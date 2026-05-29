@@ -224,6 +224,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 12px;
             padding: 15px 20px;
             background: rgba(255, 255, 255, 0.05);
             border-radius: 10px;
@@ -233,6 +234,21 @@
         .speaker-item .name {
             font-size: 16px;
             font-weight: 500;
+        }
+
+        .speaker-item .speaker-meta {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .speaker-id {
+            font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+            font-size: 11px;
+            color: #8892b0;
+            word-break: break-all;
         }
 
         .speaker-item .btn-delete {
@@ -503,6 +519,19 @@
             flex-shrink: 0;
         }
 
+        .participant-tag-text {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 5px;
+            min-width: 0;
+        }
+
+        .participant-tag-id {
+            font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+            font-size: 10px;
+            color: #8892b0;
+        }
+
         .participant-tag-remove {
             width: 18px;
             height: 18px;
@@ -674,6 +703,17 @@
 
         .participant-option-label {
             flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .participant-option-id {
+            font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+            font-size: 11px;
+            color: #8892b0;
+            word-break: break-all;
         }
 
         .participant-option-avatar {
@@ -1061,12 +1101,41 @@
 
         function getWsUrl(selectedParticipants = []) {
             const url = new URL(getApiUrl().replace('http', 'ws') + '/ws/meeting/live');
-            selectedParticipants.forEach(name => url.searchParams.append('allowed_speakers', name));
+            selectedParticipants.forEach(id => url.searchParams.append('allowed_speaker_ids', id));
             return url.toString();
         }
 
         function getSelectedParticipants(scope) {
             return Array.from(participantState[scope].selected);
+        }
+
+        function normalizeVoiceprintSpeaker(item) {
+            if (item && typeof item === 'object') {
+                const id = item.id == null ? '' : String(item.id);
+                const name = String(item.name || id).trim();
+                return id ? { id, name: name || id } : null;
+            }
+            const legacyName = item == null ? '' : String(item);
+            return legacyName ? { id: legacyName, name: legacyName } : null;
+        }
+
+        function normalizeVoiceprintSpeakers(items) {
+            const seen = new Set();
+            const speakers = [];
+            (items || []).forEach(item => {
+                const speaker = normalizeVoiceprintSpeaker(item);
+                if (!speaker || seen.has(speaker.id)) {
+                    return;
+                }
+                seen.add(speaker.id);
+                speakers.push(speaker);
+            });
+            return speakers;
+        }
+
+        function formatVoiceprintId(id) {
+            const value = String(id);
+            return value.length > 24 ? `${value.slice(0, 12)}...${value.slice(-8)}` : value;
         }
 
         function invalidateVoiceprintCache() {
@@ -1095,10 +1164,10 @@
         }
 
         function normalizeParticipantSelection(scope) {
-            const validSpeakers = new Set(registeredSpeakers);
+            const validSpeakers = new Set(registeredSpeakers.map(speaker => speaker.id));
             const state = participantState[scope];
             state.selected = new Set(
-                Array.from(state.selected).filter(name => validSpeakers.has(name))
+                Array.from(state.selected).filter(id => validSpeakers.has(id))
             );
         }
 
@@ -1133,19 +1202,19 @@
             renderParticipantSelector(scope);
         }
 
-        function toggleParticipantSelection(scope, name) {
+        function toggleParticipantSelection(scope, id) {
             const state = participantState[scope];
-            if (state.selected.has(name)) {
-                state.selected.delete(name);
+            if (state.selected.has(id)) {
+                state.selected.delete(id);
             } else {
-                state.selected.add(name);
+                state.selected.add(id);
             }
             renderParticipantSelector(scope);
             document.getElementById(`${scope}ParticipantSearch`).focus();
         }
 
-        function removeParticipantTag(scope, name) {
-            participantState[scope].selected.delete(name);
+        function removeParticipantTag(scope, id) {
+            participantState[scope].selected.delete(id);
             renderParticipantSelector(scope);
         }
 
@@ -1181,21 +1250,29 @@
                 return;
             }
 
-            const selectedNames = registeredSpeakers.filter(name => state.selected.has(name));
-            if (selectedNames.length === 0) {
+            const selectedSpeakers = registeredSpeakers.filter(speaker => state.selected.has(speaker.id));
+            if (selectedSpeakers.length === 0) {
                 const emptyText = scope === 'live' ? '未选择，仅实时转写' : '未选择，仅转写';
                 tags.appendChild(createParticipantEmpty(emptyText));
             } else {
-                selectedNames.forEach(name => {
+                selectedSpeakers.forEach(speaker => {
                     const tag = document.createElement('span');
                     tag.className = 'participant-tag';
 
                     const avatar = document.createElement('span');
                     avatar.className = 'participant-tag-avatar';
-                    avatar.textContent = name.charAt(0).toUpperCase();
+                    avatar.textContent = speaker.name.charAt(0).toUpperCase();
 
                     const text = document.createElement('span');
-                    text.textContent = name;
+                    text.className = 'participant-tag-text';
+                    const nameText = document.createElement('span');
+                    nameText.textContent = speaker.name;
+                    const idText = document.createElement('span');
+                    idText.className = 'participant-tag-id';
+                    idText.textContent = `#${formatVoiceprintId(speaker.id)}`;
+                    idText.title = speaker.id;
+                    text.appendChild(nameText);
+                    text.appendChild(idText);
 
                     const removeBtn = document.createElement('button');
                     removeBtn.type = 'button';
@@ -1203,7 +1280,7 @@
                     removeBtn.innerHTML = '&times;';
                     removeBtn.onclick = (event) => {
                         event.stopPropagation();
-                        removeParticipantTag(scope, name);
+                        removeParticipantTag(scope, speaker.id);
                     };
 
                     tag.appendChild(avatar);
@@ -1214,20 +1291,23 @@
             }
 
             const keyword = state.query.trim().toLowerCase();
-            const filteredNames = registeredSpeakers.filter(name => name.toLowerCase().includes(keyword));
-            if (filteredNames.length === 0) {
+            const filteredSpeakers = registeredSpeakers.filter(speaker => (
+                speaker.name.toLowerCase().includes(keyword)
+                || speaker.id.toLowerCase().includes(keyword)
+            ));
+            if (filteredSpeakers.length === 0) {
                 options.appendChild(createParticipantEmpty('没有匹配的参会人'));
                 return;
             }
 
-            filteredNames.forEach(name => {
-                const isSelected = state.selected.has(name);
+            filteredSpeakers.forEach(speaker => {
+                const isSelected = state.selected.has(speaker.id);
                 const option = document.createElement('button');
                 option.type = 'button';
                 option.className = 'participant-option' + (isSelected ? ' selected' : '');
                 option.onclick = (event) => {
                     event.stopPropagation();
-                    toggleParticipantSelection(scope, name);
+                    toggleParticipantSelection(scope, speaker.id);
                 };
 
                 // 自定义复选框
@@ -1241,12 +1321,19 @@
                 // 头像圆圈
                 const avatar = document.createElement('span');
                 avatar.className = 'participant-option-avatar';
-                avatar.textContent = name.charAt(0).toUpperCase();
+                avatar.textContent = speaker.name.charAt(0).toUpperCase();
 
-                // 姓名标签
+                // 姓名和声纹 id
                 const label = document.createElement('span');
                 label.className = 'participant-option-label';
-                label.textContent = name;
+                const nameLine = document.createElement('span');
+                nameLine.textContent = speaker.name;
+                const idLine = document.createElement('span');
+                idLine.className = 'participant-option-id';
+                idLine.textContent = speaker.id;
+                idLine.title = speaker.id;
+                label.appendChild(nameLine);
+                label.appendChild(idLine);
 
                 option.appendChild(checkbox);
                 option.appendChild(avatar);
@@ -1263,7 +1350,7 @@
         }
 
         function setParticipantSelection(scope, checked) {
-            participantState[scope].selected = checked ? new Set(registeredSpeakers) : new Set();
+            participantState[scope].selected = checked ? new Set(registeredSpeakers.map(speaker => speaker.id)) : new Set();
             renderParticipantSelector(scope);
         }
 
@@ -1786,8 +1873,8 @@
 
                 const formData = new FormData();
                 formData.append('file', file);
-                getSelectedParticipants('upload').forEach(name => {
-                    formData.append('allowed_speakers', name);
+                getSelectedParticipants('upload').forEach(id => {
+                    formData.append('allowed_speaker_ids', id);
                 });
 
                 const response = await fetch(`${getApiUrl()}/v1/meeting/transcribe/stream`, {
@@ -1947,8 +2034,8 @@
                 await ensureVoiceprintsSynced();
 
                 const params = new URLSearchParams();
-                getSelectedParticipants('live').forEach(name => {
-                    params.append('allowed_speakers', name);
+                getSelectedParticipants('live').forEach(id => {
+                    params.append('allowed_speaker_ids', id);
                 });
                 const qs = params.toString();
                 const url = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}/transcribe/stream${qs ? '?' + qs : ''}`;
@@ -2004,12 +2091,35 @@
             }
 
             if (registeredSpeakers.length > 0) {
-                listDiv.innerHTML = registeredSpeakers.map(name => `
-                    <div class="speaker-item">
-                        <span class="name">👤 ${name}</span>
-                        <button class="btn-delete" onclick="deleteVoiceprint('${name}')">删除</button>
-                    </div>
-                `).join('');
+                listDiv.replaceChildren();
+                registeredSpeakers.forEach(speaker => {
+                    const item = document.createElement('div');
+                    item.className = 'speaker-item';
+
+                    const meta = document.createElement('span');
+                    meta.className = 'speaker-meta';
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'name';
+                    nameSpan.textContent = `👤 ${speaker.name}`;
+
+                    const idSpan = document.createElement('span');
+                    idSpan.className = 'speaker-id';
+                    idSpan.textContent = `ID: ${speaker.id}`;
+                    idSpan.title = speaker.id;
+
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.type = 'button';
+                    deleteBtn.className = 'btn-delete';
+                    deleteBtn.textContent = '删除';
+                    deleteBtn.onclick = () => deleteVoiceprint(speaker.id, speaker.name);
+
+                    meta.appendChild(nameSpan);
+                    meta.appendChild(idSpan);
+                    item.appendChild(meta);
+                    item.appendChild(deleteBtn);
+                    listDiv.appendChild(item);
+                });
             } else if (!getApiUrl()) {
                 listDiv.innerHTML = '<div class="empty-state">请输入服务器地址</div>';
             } else if (voiceprintLoadError) {
@@ -2044,7 +2154,7 @@
                     if (loadToken !== voiceprintLoadToken || voiceprintSourceUrl !== apiUrl) {
                         return registeredSpeakers;
                     }
-                    registeredSpeakers = result.speakers || [];
+                    registeredSpeakers = normalizeVoiceprintSpeakers(result.speakers);
                     renderParticipantSelectors();
                     renderSpeakerList();
                     return registeredSpeakers;
@@ -2106,11 +2216,12 @@
             }
         }
 
-        async function deleteVoiceprint(name) {
+        async function deleteVoiceprint(id, name) {
             if (!confirm(`确定要删除声纹 "${name}" 吗？`)) return;
 
             try {
-                const response = await fetch(`${getApiUrl()}/v1/voiceprint/${encodeURIComponent(name)}`, {
+                const url = `${getApiUrl()}/v1/voiceprint?id=${encodeURIComponent(id)}`;
+                const response = await fetch(url, {
                     method: 'DELETE'
                 });
 

@@ -46,7 +46,7 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 
 - `file`: 会议音频文件
 - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
-- `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
+- `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
 
 请求体:
 
@@ -57,7 +57,7 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 |---|---|---|---|
 | `file` | `string` | 是 | 会议音频文件，支持 WAV、MP3、M4A 等格式。 |
 | `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
+| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
 
 响应:
 
@@ -73,7 +73,7 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 
 - `file`: 会议音频文件
 - `threshold`: 可选的声纹匹配阈值
-- `allowed_speakers`: 可选的参会人白名单。未传时走全库匹配；传入后只在指定注册人范围内识别说话人
+- `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
 
 返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
 
@@ -86,7 +86,7 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 |---|---|---|---|
 | `file` | `string` | 是 | 会议音频文件，支持 WAV、MP3、M4A 等格式。 |
 | `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
+| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
 
 响应:
 
@@ -112,7 +112,9 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 注册声纹
 
 - **name**: 说话人姓名
+- **id**: 可选的外部声纹 id；未传时自动生成 24 位 ObjectId 风格随机 id
 - **file**: 音频文件 (WAV, MP3, M4A 等)
+- 服务启动/读取声纹索引时会自动把旧版 `name -> npy文件` 索引迁移为新版 `id -> {id, name, file}`。
 
 请求体:
 
@@ -122,6 +124,7 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `name` | `string` | 是 |  |
+| `id` | `string` | 否 | 外部声纹 id，任意非空字符串。 |
 | `file` | `string` | 是 |  |
 
 响应:
@@ -142,16 +145,34 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 |---|---|---|
 | `200` | Successful Response | `application/json` |
 
-### `DELETE /v1/voiceprint/{name}`
-- 摘要: Delete Speaker
+### `GET /v1/voiceprint/exists`
+- 摘要: Voiceprint Exists
 
-删除已注册的声纹
+按 id 判断声纹是否已注册
 
 请求参数:
 
 | 名称 | 位置 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
-| `name` | `path` | `string` | 是 |  |
+| `id` | `query` | `string` | 是 | 声纹 id |
+
+响应:
+
+| 状态码 | 说明 | Content-Type |
+|---|---|---|
+| `200` | Successful Response | `application/json` |
+| `422` | Validation Error | `application/json` |
+
+### `DELETE /v1/voiceprint`
+- 摘要: Delete Speaker
+
+按 id 删除已注册的声纹
+
+请求参数:
+
+| 名称 | 位置 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `id` | `query` | `string` | 是 | 声纹 id |
 
 响应:
 
@@ -166,14 +187,15 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 
 - 用途: 实时会议识别与录音保存。客户端发送 PCM 音频 bytes，服务端按片段返回 JSON 识别结果；客户端发送停止控制消息后，服务端保存完整录音并返回 `fileId`。
 - 连接地址: `ws://localhost:8000/ws/meeting/live`
-- Query 参数: `allowed_speakers` 可重复传入，用于限制本次会议的声纹匹配范围。
-- 示例: `ws://localhost:8000/ws/meeting/live?allowed_speakers=张三&allowed_speakers=李四`
+- Query 参数: `allowed_speaker_ids` 可重复传入，用于限制本次会议的声纹匹配范围。
+- 示例: `ws://localhost:8000/ws/meeting/live?allowed_speaker_ids=speaker-a&allowed_speaker_ids=speaker-b`
 
 服务端消息示例:
 
 ```json
 {
   "time": "14:23:01",
+  "speakerId": "speaker-a",
   "speaker": "张三",
   "confidence": 0.82,
   "text": "这里是实时识别出的文本"
@@ -272,13 +294,13 @@ curl -L -o 742d5634-bf12-4384-8099-d85c01858436.wav \
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
+| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
 
 示例:
 
 ```bash
 curl -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speakers=张三"
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speaker_ids=speaker-a"
 ```
 
 ### `POST /v1/meeting/recordings/{fileId}/transcribe/stream`
@@ -294,13 +316,13 @@ curl -X POST \
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speakers` | `array[string] \| null` | 否 | 可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
+| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
 
 示例:
 
 ```bash
 curl -N -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speakers=张三"
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speaker_ids=speaker-a"
 ```
 
 ### `POST /v1/meeting/recordings/delete`
@@ -339,17 +361,20 @@ curl http://localhost:8000/v1/voiceprint/list
 curl -X POST http://localhost:8000/v1/voiceprint/reload
 curl -X POST http://localhost:8000/v1/voiceprint/register \
   -F "name=张三" \
+  -F "id=speaker-a" \
   -F "file=@samples/jinxin.m4a"
+curl "http://localhost:8000/v1/voiceprint/exists?id=speaker-a"
+curl -X DELETE "http://localhost:8000/v1/voiceprint?id=speaker-a"
 curl -X POST http://localhost:8000/v1/meeting/transcribe \
   -F "file=@samples/test_zh.mp3" \
   -F "threshold=0.3" \
-  -F "allowed_speakers=张三"
+  -F "allowed_speaker_ids=speaker-a"
 curl -L -o recording.wav \
   http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436
 curl -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speakers=张三"
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speaker_ids=speaker-a"
 curl -N -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speakers=张三"
+  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speaker_ids=speaker-a"
 curl -X POST http://localhost:8000/v1/meeting/recordings/delete \
   -H "Content-Type: application/json" \
   -d '{"fileIds":["742d5634-bf12-4384-8099-d85c01858436"],"reason":"patient_discharged","requestId":"req-1"}'

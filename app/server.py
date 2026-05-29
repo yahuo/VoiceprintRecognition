@@ -25,11 +25,12 @@ import librosa
 # 导入核心模块
 from .core import (
     CONFIG,
-    VOICEPRINT_DB_DIR,
     ModelService,
     SpeakerTracker,
+    delete_voiceprint_by_id,
+    generate_voiceprint_id,
     load_voiceprint_index,
-    save_voiceprint_index,
+    save_voiceprint_embedding,
     format_time,
     merge_diarization_segments,
 )
@@ -72,40 +73,67 @@ service = ModelService()
 DEVICE = "cpu"  # 默认设备，可通过命令行参数修改
 
 
-def _normalize_allowed_speakers(raw_allowed_speakers: list[str] | None) -> list[str] | None:
+def _normalize_voiceprint_id(raw_id: str | None) -> str:
+    if raw_id is None:
+        return generate_voiceprint_id()
+    if raw_id == "":
+        raise HTTPException(status_code=400, detail="声纹 id 不能为空")
+    return raw_id
+
+
+def _normalize_required_voiceprint_id(raw_id: str | None) -> str:
+    if raw_id is None or raw_id == "":
+        raise HTTPException(status_code=400, detail="声纹 id 不能为空")
+    return raw_id
+
+
+def _normalize_speaker_name(raw_name: str) -> str:
+    cleaned = (raw_name or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="说话人姓名不能为空")
+    return cleaned
+
+
+def _normalize_allowed_speaker_ids(raw_allowed_speaker_ids: list[str] | None) -> list[str] | None:
     """
-    规范化本次会议允许匹配的注册人名单。
+    规范化本次会议允许匹配的注册声纹 id。
 
     返回 None 表示未选择参会人；是否全库匹配由调用方决定。
     """
-    if not raw_allowed_speakers:
+    if not raw_allowed_speaker_ids:
         return None
 
     normalized = []
     seen = set()
-    for name in raw_allowed_speakers:
-        cleaned = (name or "").strip()
-        if not cleaned or cleaned in seen:
+    for speaker_id in raw_allowed_speaker_ids:
+        if speaker_id is None or speaker_id == "" or speaker_id in seen:
             continue
-        normalized.append(cleaned)
-        seen.add(cleaned)
+        normalized.append(speaker_id)
+        seen.add(speaker_id)
 
     if not normalized:
         return None
 
-    missing = [name for name in normalized if name not in service.registered_embeddings]
+    missing = [speaker_id for speaker_id in normalized if speaker_id not in service.registered_embeddings]
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"以下参会人未注册声纹: {', '.join(missing)}",
+            detail=f"以下参会人 id 未注册声纹: {', '.join(missing)}",
         )
 
     return normalized
 
 
-def _selected_speaker_matching_enabled(allowed_speakers: list[str] | None) -> bool:
+def _selected_speaker_matching_enabled(allowed_speaker_ids: list[str] | None) -> bool:
     """只有显式选择参会人时才跑注册声纹匹配。"""
-    return bool(allowed_speakers)
+    return bool(allowed_speaker_ids)
+
+
+def _voiceprint_list_items(index: dict) -> list[dict]:
+    return [
+        {"id": entry["id"], "name": entry["name"]}
+        for entry in index.values()
+    ]
 
 
 class DeleteRecordingsRequest(BaseModel):
@@ -154,13 +182,13 @@ async def _transcribe_meeting_audio(
     audio_path: str,
     audio_filename: str,
     threshold: float | None,
-    allowed_speakers: list[str] | None,
+    allowed_speaker_ids: list[str] | None,
 ):
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
-    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
-    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
+    allowed_speaker_ids = _normalize_allowed_speaker_ids(allowed_speaker_ids)
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speaker_ids)
+    matching_scope = service.build_matching_scope(allowed_speaker_ids) if should_match_speaker else None
 
     from .services.meeting import process_meeting
 
@@ -169,7 +197,7 @@ async def _transcribe_meeting_audio(
         service,
         audio_path,
         threshold,
-        allowed_speakers,
+        allowed_speaker_ids,
         matching_scope,
         should_match_speaker,
     )
@@ -216,11 +244,11 @@ async def root():
 @app.get("/v1/voiceprint/list")
 async def list_speakers():
     """列出已注册的声纹"""
-    index = load_voiceprint_index()
+    speakers = _voiceprint_list_items(load_voiceprint_index())
     return {
         "status": "success",
-        "count": len(index),
-        "speakers": list(index.keys())
+        "count": len(speakers),
+        "speakers": speakers,
     }
 
 
@@ -228,11 +256,12 @@ async def list_speakers():
 async def reload_voiceprints():
     """热重载声纹库（无需重启服务）"""
     service.reload_voiceprints()
+    speakers = _voiceprint_list_items(service.registered_speakers)
     return {
         "status": "success",
         "message": "声纹库已重新加载",
         "count": len(service.registered_embeddings),
-        "speakers": list(service.registered_embeddings.keys())
+        "speakers": speakers,
     }
 
 
@@ -273,13 +302,21 @@ async def summarize_meeting_api(request: Request):
 
 
 @app.post("/v1/voiceprint/register")
-async def register_speaker(name: str = Form(...), file: UploadFile = File(...)):
+async def register_speaker(
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    voiceprint_id: str | None = Form(default=None, alias="id"),
+):
     """
     注册声纹
     
     - **name**: 说话人姓名
+    - **id**: 可选的外部声纹 id；未传时自动生成 24 位 ObjectId 风格随机 id
     - **file**: 音频文件 (WAV, MP3, M4A 等)
     """
+    speaker_id = _normalize_voiceprint_id(voiceprint_id)
+    speaker_name = _normalize_speaker_name(name)
+
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
         shutil.copyfileobj(file.file, tmp)
@@ -292,22 +329,16 @@ async def register_speaker(name: str = Form(...), file: UploadFile = File(...)):
         if embedding is None:
             raise HTTPException(status_code=400, detail="无法提取声纹特征")
         
-        # 保存声纹
-        os.makedirs(VOICEPRINT_DB_DIR, exist_ok=True)
-        embedding_file = os.path.join(VOICEPRINT_DB_DIR, f"{name}.npy")
-        np.save(embedding_file, embedding)
-        
-        # 更新索引
-        index = load_voiceprint_index()
-        index[name] = embedding_file
-        save_voiceprint_index(index)
+        entry = save_voiceprint_embedding(speaker_id, speaker_name, embedding)
         
         # 重新加载声纹库
         service.reload_voiceprints()
         
         return {
             "status": "success",
-            "message": f"声纹 '{name}' 注册成功",
+            "id": entry["id"],
+            "name": entry["name"],
+            "message": f"声纹 '{speaker_name}' 注册成功",
             "embedding_shape": embedding.shape
         }
         
@@ -316,31 +347,35 @@ async def register_speaker(name: str = Form(...), file: UploadFile = File(...)):
             os.remove(audio_path)
 
 
-@app.delete("/v1/voiceprint/{name}")
-async def delete_speaker(name: str):
-    """删除已注册的声纹"""
-    index = load_voiceprint_index()
-    
-    if name not in index:
-        raise HTTPException(status_code=404, detail=f"未找到声纹: {name}")
-    
-    # 删除文件
-    embedding_file = index[name]
-    if os.path.exists(embedding_file):
-        os.remove(embedding_file)
-    
-    # 更新索引
-    del index[name]
-    save_voiceprint_index(index)
+@app.get("/v1/voiceprint/exists")
+async def voiceprint_exists(voiceprint_id: str = Query(..., alias="id")):
+    """按 id 判断声纹是否已注册"""
+    speaker_id = _normalize_required_voiceprint_id(voiceprint_id)
+    entry = load_voiceprint_index().get(speaker_id)
+    return {
+        "registered": entry is not None,
+        "id": speaker_id,
+        "name": entry["name"] if entry is not None else None,
+    }
+
+
+@app.delete("/v1/voiceprint")
+async def delete_speaker(voiceprint_id: str = Query(..., alias="id")):
+    """按 id 删除已注册的声纹"""
+    speaker_id = _normalize_required_voiceprint_id(voiceprint_id)
+    entry = delete_voiceprint_by_id(speaker_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"未找到声纹 id: {speaker_id}")
     
     # 重新加载声纹库
     service.reload_voiceprints()
     
     return {
         "status": "success",
-        "message": f"已删除声纹: {name}"
+        "id": entry["id"],
+        "name": entry["name"],
+        "message": f"已删除声纹: {entry['name']}"
     }
-
 
 @app.post(
     "/v1/meeting/transcribe",
@@ -356,9 +391,9 @@ async def transcribe_meeting(
         default=None,
         description="可选的声纹匹配阈值；不传时使用服务端默认值。",
     ),
-    allowed_speakers: list[str] | None = Form(
+    allowed_speaker_ids: list[str] | None = Form(
         default=None,
-        description="可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
+        description="可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
     ),
 ):
     """
@@ -366,7 +401,7 @@ async def transcribe_meeting(
 
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
-    - `allowed_speakers`: 可选的参会人白名单。未传时不匹配注册声纹；传入后只在指定注册人范围内识别说话人
+    - `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
     """
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -378,7 +413,7 @@ async def transcribe_meeting(
             audio_path,
             file.filename,
             threshold,
-            allowed_speakers,
+            allowed_speaker_ids,
         )
         
     finally:
@@ -405,9 +440,9 @@ async def transcribe_meeting_stream(
         default=None,
         description="可选的声纹匹配阈值；不传时使用服务端默认值。",
     ),
-    allowed_speakers: list[str] | None = Form(
+    allowed_speaker_ids: list[str] | None = Form(
         default=None,
-        description="可选的参会人白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
+        description="可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
     ),
 ):
     """
@@ -415,20 +450,20 @@ async def transcribe_meeting_stream(
 
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值
-    - `allowed_speakers`: 可选的参会人白名单。未传时不匹配注册声纹；传入后只在指定注册人范围内识别说话人
+    - `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
 
     返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
     """
     content = await file.read()
     suffix = os.path.splitext(file.filename or "")[1] or ".wav"
-    return await _stream_meeting_transcription(content, suffix, threshold, allowed_speakers)
+    return await _stream_meeting_transcription(content, suffix, threshold, allowed_speaker_ids)
 
 
 async def _stream_meeting_transcription(
     content: bytes | None,
     suffix: str,
     threshold: float | None,
-    allowed_speakers: list[str] | None,
+    allowed_speaker_ids: list[str] | None,
     *,
     source_path: str | None = None,
 ):
@@ -440,9 +475,9 @@ async def _stream_meeting_transcription(
 
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
-    allowed_speakers = _normalize_allowed_speakers(allowed_speakers)
-    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
+    allowed_speaker_ids = _normalize_allowed_speaker_ids(allowed_speaker_ids)
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speaker_ids)
+    matching_scope = service.build_matching_scope(allowed_speaker_ids) if should_match_speaker else None
 
     if source_path is not None:
         audio_path = source_path
@@ -617,7 +652,11 @@ async def _stream_meeting_transcription(
                         for item in outputs:
                             if not item["text"].strip():
                                 continue
-                            if merged and merged[-1]["speaker"] == item["speaker"]:
+                            if (
+                                merged
+                                and merged[-1].get("speakerId") == item.get("speakerId")
+                                and merged[-1]["speaker"] == item["speaker"]
+                            ):
                                 merged[-1]["text"] += item["text"]
                                 merged[-1]["end_ms"] = item["end_ms"]
                                 merged[-1]["confidence"] = max(merged[-1]["confidence"], item["confidence"])
@@ -632,7 +671,7 @@ async def _stream_meeting_transcription(
                         while idx < len(merged):
                             item = merged[idx]
                             compact_len = _compact_len(item["text"])
-                            if item["speaker"] == "未知" and compact_len <= 1:
+                            if item.get("speakerId") is None and item["speaker"] == "未知" and compact_len <= 1:
                                 if idx + 1 < len(merged):
                                     merged[idx + 1]["text"] = item["text"] + merged[idx + 1]["text"]
                                     merged[idx + 1]["start_ms"] = item["start_ms"]
@@ -648,34 +687,40 @@ async def _stream_meeting_transcription(
 
                         return merged
 
+                    def _speaker_state(speaker_id, confidence: float, fallback_name: str = "未知") -> dict:
+                        return {
+                            **service.format_speaker(speaker_id, fallback_name),
+                            "confidence": confidence,
+                        }
+
                     single_allowed_mode = bool(
                         matching_scope is not None
                         and matching_scope.is_restricted
                         and matching_scope.size == 1
                     )
-                    selected_allowed_speaker = matching_scope.names[0] if single_allowed_mode else None
+                    selected_allowed_speaker_id = matching_scope.names[0] if single_allowed_mode else None
                     single_allowed_stranger = "陌生人1"
                     effective_matching_scope = None if single_allowed_mode else matching_scope
-                    effective_allowed_speakers = None if single_allowed_mode else allowed_speakers
+                    effective_allowed_speaker_ids = None if single_allowed_mode else allowed_speaker_ids
 
                     async def _match_registered_for_window(
                         start_ms: int,
                         end_ms: int,
                     ):
                         if not should_match_speaker:
-                            return ("未知", 0.0)
+                            return (None, 0.0)
                         start_sample = int(start_ms / 1000 * sr)
                         end_sample = int(end_ms / 1000 * sr)
                         speech = speech_full[start_sample:end_sample]
                         emb = await asyncio.to_thread(service.extract_embedding, speech)
                         if emb is None:
-                            return ("未知", 0.0)
+                            return (None, 0.0)
                         return service.match_registered_speaker_guarded(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
                             match_scope=effective_matching_scope,
-                            allowed_speakers=effective_allowed_speakers,
+                            allowed_speaker_ids=effective_allowed_speaker_ids,
                         )
 
                     async def _match_registered_for_short_sentence(
@@ -683,19 +728,19 @@ async def _stream_meeting_transcription(
                         end_ms: int,
                     ):
                         if not should_match_speaker:
-                            return ("未知", 0.0)
+                            return (None, 0.0)
                         start_sample = int(start_ms / 1000 * sr)
                         end_sample = int(end_ms / 1000 * sr)
                         speech = speech_full[start_sample:end_sample]
                         emb = await asyncio.to_thread(service.extract_embedding, speech)
                         if emb is None:
-                            return ("未知", 0.0)
+                            return (None, 0.0)
                         return service.match_registered_speaker_short_window(
                             emb,
                             threshold=threshold,
                             duration_ms=end_ms - start_ms,
                             match_scope=effective_matching_scope,
-                            allowed_speakers=effective_allowed_speakers,
+                            allowed_speaker_ids=effective_allowed_speaker_ids,
                         )
 
                     async def _match_registered_for_sentence(
@@ -705,49 +750,11 @@ async def _stream_meeting_transcription(
                         if (end_ms - start_ms) > CONFIG["offline_sentence_exact_match_max_duration_ms"]:
                             if single_allowed_mode:
                                 return await _match_registered_for_window(start_ms, end_ms)
-                            return ("未知", 0.0)
+                            return (None, 0.0)
                         return await _match_registered_for_short_sentence(
                             start_ms,
                             end_ms,
                         )
-
-                    async def _resolve_single_allowed_inheritance(
-                        seg,
-                        start_ms: int,
-                        end_ms: int,
-                    ):
-                        if seg is None:
-                            return ("未知", 0.0)
-
-                        seg_start, seg_end, pyannote_speaker = seg
-                        mapped_speaker, mapped_confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
-                        if mapped_speaker == "未知":
-                            return ("未知", 0.0)
-
-                        overlap = max(0, min(end_ms, seg_end) - max(start_ms, seg_start))
-                        duration = max(1, end_ms - start_ms)
-                        overlap_ratio = overlap / duration
-                        if (
-                            duration >= CONFIG["offline_scoped_single_inherit_min_duration_ms"]
-                            and overlap > 0
-                            and
-                            mapped_confidence >= CONFIG["offline_scoped_single_inherit_min_confidence"]
-                            and overlap_ratio >= CONFIG["offline_scoped_single_inherit_min_overlap_ratio"]
-                        ):
-                            verify_start_ms = max(start_ms, seg_start)
-                            verify_end_ms = min(end_ms, seg_end)
-                            verified_name, verified_score = await _match_registered_for_window(
-                                verify_start_ms,
-                                verify_end_ms,
-                            )
-                            if verified_name != "未知":
-                                if str(mapped_speaker).startswith("陌生人"):
-                                    return (verified_name, verified_score)
-                                if verified_name == mapped_speaker:
-                                    return (mapped_speaker, max(mapped_confidence, verified_score))
-                        if str(mapped_speaker).startswith("陌生人"):
-                            return (mapped_speaker, mapped_confidence)
-                        return ("未知", 0.0)
 
                     # 每个 pyannote speaker 使用多个代表片段做保守匹配，
                     # 避免单个"最长片段"把整组句子都带偏。
@@ -773,24 +780,24 @@ async def _stream_meeting_transcription(
                                 emb = await asyncio.to_thread(service.extract_embedding, speech)
                                 candidate_embeddings.append((emb, end_ms - start_ms))
 
-                        speaker = "未知"
+                        speaker_id = None
                         confidence = 0.0
                         if candidate_embeddings:
-                            speaker, confidence = service.match_registered_speaker_consensus(
+                            speaker_id, confidence = service.match_registered_speaker_consensus(
                                 candidate_embeddings,
                                 threshold=threshold,
                                 match_scope=effective_matching_scope,
-                                allowed_speakers=effective_allowed_speakers,
+                                allowed_speaker_ids=effective_allowed_speaker_ids,
                             )
                         if single_allowed_mode:
-                            if speaker != selected_allowed_speaker:
-                                speaker = single_allowed_stranger
-                                confidence = 1.0
-                        elif speaker == "未知":
+                            if speaker_id != selected_allowed_speaker_id:
+                                speaker_mapping[pyannote_speaker] = _speaker_state(None, 1.0, single_allowed_stranger)
+                                continue
+                        elif speaker_id is None:
                             stranger_counter += 1
-                            speaker = f"陌生人{stranger_counter}"
-                            confidence = 1.0
-                        speaker_mapping[pyannote_speaker] = (speaker, confidence)
+                            speaker_mapping[pyannote_speaker] = _speaker_state(None, 1.0, f"陌生人{stranger_counter}")
+                            continue
+                        speaker_mapping[pyannote_speaker] = _speaker_state(speaker_id, confidence)
 
                     yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(asr_sentences), 'method': f'align-{service.upload_asr_backend}'})}\n\n"
                     yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在对齐说话人与文本，共 {len(asr_sentences)} 句...'}, ensure_ascii=False)}\n\n"
@@ -814,48 +821,51 @@ async def _stream_meeting_transcription(
                                 if not part_text:
                                     continue
                                 seg = part["seg"]
-                                speaker = "未知"
+                                speaker_state = _speaker_state(None, 0.0)
                                 confidence = 0.0
                                 locally_verified = False
-                                short_name, short_score = await _match_registered_for_short_sentence(
+                                short_id, short_score = await _match_registered_for_short_sentence(
                                     part["start_ms"],
                                     part["end_ms"],
                                 )
-                                if short_name != "未知":
-                                    if not single_allowed_mode or short_name == selected_allowed_speaker:
-                                        speaker = short_name
+                                if short_id is not None:
+                                    if not single_allowed_mode or short_id == selected_allowed_speaker_id:
+                                        speaker_state = _speaker_state(short_id, short_score)
                                         confidence = short_score
                                         locally_verified = True
                                     elif single_allowed_mode:
-                                        speaker = single_allowed_stranger
+                                        speaker_state = _speaker_state(None, 1.0, single_allowed_stranger)
                                         confidence = 1.0
                                         locally_verified = True
                                 elif single_allowed_mode:
-                                    verified_name, verified_score = await _match_registered_for_window(
+                                    verified_id, verified_score = await _match_registered_for_window(
                                         part["start_ms"],
                                         part["end_ms"],
                                     )
-                                    if verified_name == selected_allowed_speaker:
-                                        speaker = verified_name
+                                    if verified_id == selected_allowed_speaker_id:
+                                        speaker_state = _speaker_state(verified_id, verified_score)
                                         confidence = verified_score
                                         locally_verified = True
-                                    elif verified_name != "未知":
-                                        speaker = single_allowed_stranger
+                                    elif verified_id is not None:
+                                        speaker_state = _speaker_state(None, 1.0, single_allowed_stranger)
                                         confidence = 1.0
                                         locally_verified = True
                                     else:
                                         if seg is not None:
                                             _, _, pyannote_speaker = seg
-                                            speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                            speaker_state = speaker_mapping.get(pyannote_speaker, _speaker_state(None, 0.0))
+                                            confidence = speaker_state["confidence"]
                                 elif seg is not None:
                                     _, _, pyannote_speaker = seg
-                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                    speaker_state = speaker_mapping.get(pyannote_speaker, _speaker_state(None, 0.0))
+                                    confidence = speaker_state["confidence"]
 
                                 sentence_outputs.append(
                                     {
                                         "start_ms": part["start_ms"],
                                         "end_ms": part["end_ms"],
-                                        "speaker": speaker,
+                                        "speakerId": speaker_state["speakerId"],
+                                        "speaker": speaker_state["speaker"],
                                         "confidence": round(confidence, 2),
                                         "text": part_text,
                                     }
@@ -867,6 +877,7 @@ async def _stream_meeting_transcription(
                                     "type": "segment",
                                     "index": i if part_idx == 0 else f"{i}-{part_idx}",
                                     "time": format_time(out["start_ms"]),
+                                    "speakerId": out.get("speakerId"),
                                     "speaker": out["speaker"],
                                     "confidence": out["confidence"],
                                     "text": out["text"].strip(),
@@ -875,40 +886,43 @@ async def _stream_meeting_transcription(
                                 await asyncio.sleep(0)
                             continue
 
-                        speaker = "未知"
+                        speaker_state = _speaker_state(None, 0.0)
                         confidence = 0.0
-                        sentence_speaker, sentence_confidence = await _match_registered_for_sentence(
+                        sentence_speaker_id, sentence_confidence = await _match_registered_for_sentence(
                             start_ms,
                             end_ms,
                         )
-                        if sentence_speaker != "未知":
-                            if not single_allowed_mode or sentence_speaker == selected_allowed_speaker:
-                                speaker = sentence_speaker
+                        if sentence_speaker_id is not None:
+                            if not single_allowed_mode or sentence_speaker_id == selected_allowed_speaker_id:
+                                speaker_state = _speaker_state(sentence_speaker_id, sentence_confidence)
                                 confidence = sentence_confidence
                             elif single_allowed_mode:
-                                speaker = single_allowed_stranger
+                                speaker_state = _speaker_state(None, 1.0, single_allowed_stranger)
                                 confidence = 1.0
                             else:
                                 best_seg = _choose_best_speaker(start_ms, end_ms)
                                 if best_seg is not None:
                                     _, _, pyannote_speaker = best_seg
-                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                    speaker_state = speaker_mapping.get(pyannote_speaker, _speaker_state(None, 0.0))
+                                    confidence = speaker_state["confidence"]
                         else:
                             best_seg = _choose_best_speaker(start_ms, end_ms)
                             if best_seg is not None:
                                 if single_allowed_mode:
                                     _, _, pyannote_speaker = best_seg
-                                    speaker, confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
+                                    speaker_state = speaker_mapping.get(pyannote_speaker, _speaker_state(None, 0.0))
+                                    confidence = speaker_state["confidence"]
                                 else:
                                     _, _, pyannote_speaker = best_seg
-                                    mapped_speaker, mapped_confidence = speaker_mapping.get(pyannote_speaker, ("未知", 0.0))
-                                    speaker, confidence = mapped_speaker, mapped_confidence
+                                    speaker_state = speaker_mapping.get(pyannote_speaker, _speaker_state(None, 0.0))
+                                    confidence = speaker_state["confidence"]
 
                         result = {
                             "type": "segment",
                             "index": i,
                             "time": format_time(start_ms),
-                            "speaker": speaker,
+                            "speakerId": speaker_state["speakerId"],
+                            "speaker": speaker_state["speaker"],
                             "confidence": round(confidence, 2),
                             "text": text,
                         }
@@ -937,28 +951,31 @@ async def _stream_meeting_transcription(
                         if not text:
                             continue
 
-                        speaker = "未知"
+                        speaker_id = None
+                        speaker_name = "未知"
                         confidence = 0.0
                         if emb is not None:
-                            speaker, confidence = service.match_registered_speaker_guarded(
+                            speaker_id, confidence = service.match_registered_speaker_guarded(
                                 emb,
                                 threshold=threshold,
                                 duration_ms=end_ms - start_ms,
                                 match_scope=matching_scope,
-                                allowed_speakers=allowed_speakers,
+                                allowed_speaker_ids=allowed_speaker_ids,
                             )
+                            speaker_name = service.get_speaker_name(speaker_id)
 
-                        if speaker == "未知":
+                        if speaker_id is None:
                             if pyannote_speaker not in stranger_mapping:
                                 stranger_counter += 1
                                 stranger_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
-                            speaker = stranger_mapping[pyannote_speaker]
+                            speaker_name = stranger_mapping[pyannote_speaker]
 
                         result = {
                             "type": "segment",
                             "index": i,
                             "time": format_time(start_ms),
-                            "speaker": speaker,
+                            "speakerId": speaker_id,
+                            "speaker": speaker_name,
                             "confidence": round(confidence, 2),
                             "text": text
                         }
@@ -991,22 +1008,25 @@ async def _stream_meeting_transcription(
                     if not text:
                         continue
 
-                    speaker = "未知"
+                    speaker_id = None
+                    speaker_name = "未知"
                     score = 0.0
                     if emb is not None:
-                            speaker, score = service.match_registered_speaker_guarded(
-                                emb,
-                                threshold=threshold,
-                                duration_ms=end_ms - start_ms,
-                                match_scope=matching_scope,
-                                allowed_speakers=allowed_speakers,
-                            )
+                        speaker_id, score = service.match_registered_speaker_guarded(
+                            emb,
+                            threshold=threshold,
+                            duration_ms=end_ms - start_ms,
+                            match_scope=matching_scope,
+                            allowed_speaker_ids=allowed_speaker_ids,
+                        )
+                        speaker_name = service.get_speaker_name(speaker_id)
 
                     result = {
                         "type": "segment",
                         "index": i,
                         "time": format_time(start_ms),
-                        "speaker": speaker,
+                        "speakerId": speaker_id,
+                        "speaker": speaker_name,
                         "confidence": round(score, 2),
                         "text": text
                     }
@@ -1064,9 +1084,9 @@ async def transcribe_meeting_recording(
         default=None,
         description="可选的声纹匹配阈值；不传时使用服务端默认值。",
     ),
-    allowed_speakers: list[str] | None = Query(
+    allowed_speaker_ids: list[str] | None = Query(
         default=None,
-        description="可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
+        description="可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
     ),
 ):
     """
@@ -1084,7 +1104,7 @@ async def transcribe_meeting_recording(
         recording.path,
         recording.filename,
         threshold,
-        allowed_speakers,
+        allowed_speaker_ids,
     )
 
 
@@ -1099,9 +1119,9 @@ async def transcribe_meeting_recording_stream(
         default=None,
         description="可选的声纹匹配阈值；不传时使用服务端默认值。",
     ),
-    allowed_speakers: list[str] | None = Query(
+    allowed_speaker_ids: list[str] | None = Query(
         default=None,
-        description="可选的参会人白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
+        description="可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
     ),
 ):
     """
@@ -1116,7 +1136,7 @@ async def transcribe_meeting_recording_stream(
 
     suffix = os.path.splitext(recording.filename)[1] or ".wav"
     return await _stream_meeting_transcription(
-        None, suffix, threshold, allowed_speakers, source_path=recording.path
+        None, suffix, threshold, allowed_speaker_ids, source_path=recording.path
     )
 
 
@@ -1141,15 +1161,15 @@ async def websocket_live(websocket: WebSocket):
     实时会议 WebSocket 接口。
 
     Swagger/OpenAPI 不展示 WebSocket 参数；当前支持通过 query string
-    重复传 `allowed_speakers` 来限制本次会议的匹配范围，例如：
-    `/ws/meeting/live?allowed_speakers=张三&allowed_speakers=李四`
+    重复传 `allowed_speaker_ids` 来限制本次会议的匹配范围，例如：
+    `/ws/meeting/live?allowed_speaker_ids=speaker-a&allowed_speaker_ids=speaker-b`
 
     客户端发送音频流 (bytes)，服务端返回识别结果 (JSON)。
     """
-    raw_allowed_speakers = websocket.query_params.getlist("allowed_speakers")
+    raw_allowed_speaker_ids = websocket.query_params.getlist("allowed_speaker_ids")
     await websocket.accept()
     try:
-        allowed_speakers = _normalize_allowed_speakers(raw_allowed_speakers)
+        allowed_speaker_ids = _normalize_allowed_speaker_ids(raw_allowed_speaker_ids)
     except HTTPException as exc:
         await websocket.send_json({
             "type": "error",
@@ -1157,8 +1177,8 @@ async def websocket_live(websocket: WebSocket):
         })
         await websocket.close(code=1008)
         return
-    should_match_speaker = _selected_speaker_matching_enabled(allowed_speakers)
-    matching_scope = service.build_matching_scope(allowed_speakers) if should_match_speaker else None
+    should_match_speaker = _selected_speaker_matching_enabled(allowed_speaker_ids)
+    matching_scope = service.build_matching_scope(allowed_speaker_ids) if should_match_speaker else None
 
     print(f"WebSocket 连接建立，实时声纹识别: {'开启' if should_match_speaker else '关闭'}")
     
@@ -1222,24 +1242,27 @@ async def websocket_live(websocket: WebSocket):
                     emb = None
 
                 if text:
-                    speaker = "未知"
+                    speaker_id = None
+                    speaker_name = "未知"
                     score = 0.0
 
                     if emb is not None:
-                        speaker, score = service.match_speaker_fast(
+                        speaker_id, score = service.match_speaker_fast(
                             emb,
                             match_scope=matching_scope,
-                            allowed_speakers=allowed_speakers,
+                            allowed_speaker_ids=allowed_speaker_ids,
                         )
-                        speaker, score = tracker.update(
-                            speaker, score, service.registered_embeddings
+                        speaker_id, score = tracker.update(
+                            speaker_id, score, service.registered_embeddings
                         )
+                        speaker_name = service.get_speaker_name(speaker_id)
 
                     # 过滤置信度极低的结果
-                    if not (speaker != "未知" and score < CONFIG["min_confidence"]):
+                    if not (speaker_id is not None and score < CONFIG["min_confidence"]):
                         await safe_send_json({
                             "time": datetime.now().strftime("%H:%M:%S"),
-                            "speaker": speaker,
+                            "speakerId": speaker_id,
+                            "speaker": speaker_name,
                             "confidence": round(score, 2),
                             "text": text
                         })
@@ -1247,7 +1270,7 @@ async def websocket_live(websocket: WebSocket):
                         print(
                             f"✅ WebSocket 片段处理完成: "
                             f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s, "
-                            f"speaker={speaker}, confidence={score:.2f}"
+                            f"speaker={speaker_name}, confidence={score:.2f}"
                         )
                 else:
                     elapsed = time.perf_counter() - started_at

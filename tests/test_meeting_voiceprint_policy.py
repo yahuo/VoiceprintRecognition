@@ -44,6 +44,7 @@ class MeetingVoiceprintPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(service.extract_embedding_calls, 0)
+        self.assertIsNone(transcript[0]["speakerId"])
         self.assertEqual(transcript[0]["speaker"], "陌生人1")
 
     def test_upload_vad_without_selected_speakers_skips_voiceprint(self):
@@ -62,6 +63,7 @@ class MeetingVoiceprintPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(service.extract_embedding_calls, 0)
+        self.assertIsNone(transcript[0]["speakerId"])
         self.assertEqual(transcript[0]["speaker"], "未知")
 
 

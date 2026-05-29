@@ -5,7 +5,7 @@
 
 使用方法:
     # 注册声纹
-    python -m app.utils.voiceprint register --name "张三" --audio zhangsan.wav
+    python -m app.utils.voiceprint register --name "张三" --id "external-id" --audio zhangsan.wav
     
     # 识别说话人
     python -m app.utils.voiceprint identify --audio unknown.wav
@@ -14,7 +14,7 @@
     python -m app.utils.voiceprint list
     
     # 删除声纹
-    python -m app.utils.voiceprint delete --name "张三"
+    python -m app.utils.voiceprint delete --id "external-id"
 """
 
 import argparse
@@ -25,13 +25,11 @@ from typing import Dict, List, Tuple
 
 # 导入核心模块 (自动配置 Fun-ASR 路径)
 from app.core import (
-    VOICEPRINT_DB_DIR,
-    VOICEPRINT_INDEX_FILE,
+    delete_voiceprint_by_id,
+    generate_voiceprint_id,
     load_voiceprint_index,
-    save_voiceprint_index,
-    load_voiceprint_embeddings,
+    save_voiceprint_embedding,
     cosine_similarity,
-    ensure_db_dir,
 )
 
 from funasr import AutoModel
@@ -67,37 +65,34 @@ def extract_embedding(model, audio_path: str) -> np.ndarray:
     raise ValueError(f"无法从音频提取声纹特征: {audio_path}")
 
 
-def register_voiceprint(model, name: str, audio_path: str):
+def register_voiceprint(model, name: str, audio_path: str, speaker_id: str | None = None):
     """注册声纹"""
+    if speaker_id is None:
+        speaker_id = generate_voiceprint_id()
+    elif speaker_id == "":
+        raise ValueError("声纹 id 不能为空")
     
     print(f"\n注册声纹: {name}")
+    print(f"声纹 ID: {speaker_id}")
     print(f"音频文件: {audio_path}")
     print("-" * 50)
     
     # 提取声纹特征
     embedding = extract_embedding(model, audio_path)
     
-    # 保存声纹
-    ensure_db_dir()
-    embedding_file = os.path.join(VOICEPRINT_DB_DIR, f"{name}.npy")
-    np.save(embedding_file, embedding)
-    
-    # 更新索引
-    index = load_voiceprint_index()
-    index[name] = embedding_file
-    save_voiceprint_index(index)
+    entry = save_voiceprint_embedding(speaker_id, name, embedding)
     
     print(f"✅ 声纹注册成功！")
     print(f"   声纹维度: {embedding.shape}")
-    print(f"   保存位置: {embedding_file}")
+    print(f"   保存位置: {entry['file']}")
 
 
-def identify_speaker(model, audio_path: str, threshold: float = 0.5) -> List[Tuple[str, float]]:
+def identify_speaker(model, audio_path: str, threshold: float = 0.5) -> List[Tuple[str, str, float]]:
     """
     识别音频中的说话人
     
     Returns:
-        按相似度排序的 (name, score) 列表
+        按相似度排序的 (id, name, score) 列表
     """
     
     print(f"\n识别说话人: {audio_path}")
@@ -115,14 +110,15 @@ def identify_speaker(model, audio_path: str, threshold: float = 0.5) -> List[Tup
     
     # 与所有已注册声纹比对
     results = []
-    for name, embedding_file in index.items():
-        if os.path.exists(embedding_file):
+    for speaker_id, entry in index.items():
+        embedding_file = entry.get("file")
+        if embedding_file and os.path.exists(embedding_file):
             registered_embedding = np.load(embedding_file)
             score = cosine_similarity(query_embedding, registered_embedding)
-            results.append((name, score))
+            results.append((speaker_id, entry.get("name", speaker_id), score))
     
     # 按相似度排序
-    results.sort(key=lambda x: x[1], reverse=True)
+    results.sort(key=lambda x: x[2], reverse=True)
     
     return results
 
@@ -139,32 +135,22 @@ def list_voiceprints():
         print("（空）")
         return
     
-    for i, (name, embedding_file) in enumerate(index.items(), 1):
-        exists = "✅" if os.path.exists(embedding_file) else "❌ 文件丢失"
-        print(f"{i}. {name} {exists}")
+    for i, (speaker_id, entry) in enumerate(index.items(), 1):
+        embedding_file = entry.get("file")
+        exists = "✅" if embedding_file and os.path.exists(embedding_file) else "❌ 文件丢失"
+        print(f"{i}. {entry.get('name', speaker_id)} ({speaker_id}) {exists}")
     
     print(f"\n共 {len(index)} 个声纹")
 
 
-def delete_voiceprint(name: str):
+def delete_voiceprint(speaker_id: str):
     """删除声纹"""
-    
-    index = load_voiceprint_index()
-    
-    if name not in index:
-        print(f"❌ 未找到声纹: {name}")
+    entry = delete_voiceprint_by_id(speaker_id)
+    if entry is None:
+        print(f"❌ 未找到声纹 ID: {speaker_id}")
         return
-    
-    # 删除文件
-    embedding_file = index[name]
-    if os.path.exists(embedding_file):
-        os.remove(embedding_file)
-    
-    # 更新索引
-    del index[name]
-    save_voiceprint_index(index)
-    
-    print(f"✅ 已删除声纹: {name}")
+
+    print(f"✅ 已删除声纹: {entry['name']} ({entry['id']})")
 
 
 def main():
@@ -174,6 +160,7 @@ def main():
     # 注册命令
     register_parser = subparsers.add_parser("register", help="注册声纹")
     register_parser.add_argument("--name", "-n", required=True, help="说话人姓名")
+    register_parser.add_argument("--id", default=None, help="外部声纹 ID；不传则自动生成")
     register_parser.add_argument("--audio", "-a", required=True, help="音频文件路径")
     register_parser.add_argument("--device", "-d", default="cpu", help="运行设备")
     
@@ -191,13 +178,13 @@ def main():
     
     # 删除命令
     delete_parser = subparsers.add_parser("delete", help="删除声纹")
-    delete_parser.add_argument("--name", "-n", required=True, help="说话人姓名")
+    delete_parser.add_argument("--id", required=True, help="声纹 ID")
     
     args = parser.parse_args()
     
     if args.command == "register":
         model = create_model(device=args.device)
-        register_voiceprint(model, args.name, args.audio)
+        register_voiceprint(model, args.name, args.audio, args.id)
         
     elif args.command == "identify":
         model = create_model(device=args.device)
@@ -207,15 +194,15 @@ def main():
             print("\n【识别结果】")
             print("=" * 50)
             
-            best_name, best_score = results[0]
+            best_id, best_name, best_score = results[0]
             
-            for i, (name, score) in enumerate(results[:args.top], 1):
+            for i, (speaker_id, name, score) in enumerate(results[:args.top], 1):
                 marker = "👤" if score >= args.threshold else "  "
-                print(f"{marker} {i}. {name}: {score:.4f}")
+                print(f"{marker} {i}. {name} ({speaker_id}): {score:.4f}")
             
             print("-" * 50)
             if best_score >= args.threshold:
-                print(f"✅ 最佳匹配: {best_name} (相似度: {best_score:.4f})")
+                print(f"✅ 最佳匹配: {best_name} ({best_id}) (相似度: {best_score:.4f})")
             else:
                 print(f"❌ 未找到匹配的说话人（最高相似度: {best_score:.4f} < 阈值 {args.threshold}）")
         
@@ -223,7 +210,7 @@ def main():
         list_voiceprints()
         
     elif args.command == "delete":
-        delete_voiceprint(args.name)
+        delete_voiceprint(args.id)
         
     else:
         parser.print_help()
