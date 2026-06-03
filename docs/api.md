@@ -190,6 +190,17 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 - Query 参数: `allowed_speaker_ids` 可重复传入，用于限制本次会议的声纹匹配范围。
 - 示例: `ws://localhost:8000/ws/meeting/live?allowed_speaker_ids=speaker-a&allowed_speaker_ids=speaker-b`
 
+**客户端发送的 PCM 音频格式要求:**
+
+| 参数 | 值 |
+|---|---|
+| 采样率 | 16000 Hz |
+| 位深 | 16-bit (signed) |
+| 声道 | 单声道 (mono) |
+| 字节序 | little-endian |
+
+> 客户端应以原始 PCM bytes（无文件头）持续发送音频数据，不需要封装成 WAV。
+
 服务端消息示例:
 
 ```json
@@ -254,17 +265,26 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 }
 ```
 
-暂停期间客户端不发送 PCM，服务端不录音也不转写。
+暂停期间服务端会丢弃收到的 PCM 数据，不录音也不转写；客户端建议同步停止发送。
 
 **最终 WAV 会直接跳过暂停时间段，不写入静音。**
 
-错误消息示例:
+**录音持久化语义:** 只有客户端主动发送 `stop_recording` 后，服务端才会落盘并返回 `fileId`；连接异常断开时录音会被丢弃，不会生成 `fileId`。
+
+错误消息示例（含场景）:
 
 ```json
-{
-  "type": "error",
-  "message": "以下参会人未注册声纹: 李四"
-}
+// 参会人未注册
+{"type": "error", "message": "以下参会人未注册声纹: 李四"}
+
+// 发送了 stop_recording 但全程未采集到有效音频
+{"type": "error", "message": "录音保存失败: 录音内容为空"}
+
+// 控制消息不是合法 JSON
+{"type": "error", "message": "控制消息必须是合法 JSON"}
+
+// 发送了未知的控制消息 type
+{"type": "error", "message": "未知控制消息"}
 ```
 
 ### `GET /v1/meeting/recordings/{fileId}`
@@ -331,6 +351,7 @@ curl -N -X POST \
 - 语义: 服务端只按 `fileId` 删除，不保存 `patientId`、住院号等业务字段。
 - 幂等: 已删除或不存在的 `fileId` 会进入 `missing`，不会导致整个请求失败。
 - `failed` 非空时，响应 `status` 为 `partial`。
+- `fileIds` 为空数组时返回 `400`。
 
 请求体:
 
