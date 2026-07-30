@@ -1206,7 +1206,9 @@ async def websocket_live(websocket: WebSocket):
         nonlocal audio_buffer, is_speaking, silence_duration
         if len(audio_buffer) >= min_segment_bytes:
             segment_duration = len(audio_buffer) / (16000 * 2)
-            await segment_queue.put(bytes(audio_buffer))
+            await segment_queue.put(
+                (bytes(audio_buffer), segment_duration, time.perf_counter())
+            )
             print(
                 f"📥 WebSocket {reason}片段入队: "
                 f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
@@ -1217,36 +1219,51 @@ async def websocket_live(websocket: WebSocket):
 
     async def process_segment_worker():
         """后台处理已切分片段，避免阻塞 WebSocket 收包循环。"""
+        def infer_live_segment(audio_chunk: bytes):
+            asr_backend = service.resolve_live_asr_backend()
+            asr_started_at = time.perf_counter()
+            text = service.transcribe_live_segment(audio_chunk)
+            asr_elapsed = time.perf_counter() - asr_started_at
+
+            emb = None
+            emb_elapsed = 0.0
+            if should_match_speaker:
+                emb_started_at = time.perf_counter()
+                emb = service.extract_embedding(audio_chunk)
+                emb_elapsed = time.perf_counter() - emb_started_at
+
+            return text, emb, asr_backend, asr_elapsed, emb_elapsed
+
         while True:
-            audio_chunk = await segment_queue.get()
-            if audio_chunk is None:
+            queue_item = await segment_queue.get()
+            if queue_item is None:
                 segment_queue.task_done()
                 break
 
             try:
-                segment_duration = len(audio_chunk) / (16000 * 2)
+                audio_chunk, segment_duration, queued_at = queue_item
                 queue_size = segment_queue.qsize()
                 started_at = time.perf_counter()
+                queue_wait = started_at - queued_at
                 print(
                     f"🎙️ WebSocket 片段开始处理: "
-                    f"duration={segment_duration:.2f}s, queue_size={queue_size}"
+                    f"duration={segment_duration:.2f}s, queue_wait={queue_wait:.3f}s, "
+                    f"queue_size={queue_size}"
                 )
 
-                if should_match_speaker:
-                    text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, audio_chunk),
-                        asyncio.to_thread(service.extract_embedding, audio_chunk),
-                    )
-                else:
-                    text = await asyncio.to_thread(service.transcribe_segment, audio_chunk)
-                    emb = None
+                text, emb, asr_backend, asr_elapsed, emb_elapsed = await asyncio.to_thread(
+                    infer_live_segment,
+                    audio_chunk,
+                )
 
                 if text:
                     speaker_id = None
                     speaker_name = "未知"
                     score = 0.0
+                    match_elapsed = 0.0
 
                     if emb is not None:
+                        match_started_at = time.perf_counter()
                         speaker_id, score = service.match_speaker_fast(
                             emb,
                             match_scope=matching_scope,
@@ -1256,6 +1273,7 @@ async def websocket_live(websocket: WebSocket):
                             speaker_id, score, service.registered_embeddings
                         )
                         speaker_name = service.get_speaker_name(speaker_id)
+                        match_elapsed = time.perf_counter() - match_started_at
 
                     # 过滤置信度极低的结果
                     if not (speaker_id is not None and score < CONFIG["min_confidence"]):
@@ -1270,13 +1288,19 @@ async def websocket_live(websocket: WebSocket):
                         print(
                             f"✅ WebSocket 片段处理完成: "
                             f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s, "
+                            f"queue_wait={queue_wait:.3f}s, asr={asr_elapsed:.3f}s, "
+                            f"asr_backend={asr_backend}, "
+                            f"emb={emb_elapsed:.3f}s, match={match_elapsed:.3f}s, "
                             f"speaker={speaker_name}, confidence={score:.2f}"
                         )
                 else:
                     elapsed = time.perf_counter() - started_at
                     print(
                         f"ℹ️ WebSocket 片段无有效文本: "
-                        f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s"
+                        f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s, "
+                        f"queue_wait={queue_wait:.3f}s, asr={asr_elapsed:.3f}s, "
+                        f"asr_backend={asr_backend}, "
+                        f"emb={emb_elapsed:.3f}s"
                     )
             except Exception as e:
                 print(f"WebSocket 片段处理错误: {e}")

@@ -58,6 +58,7 @@ python3 scripts/download_all_models.py --include-upload-asr
 
 ```bash
 UPLOAD_ASR_BACKEND=paraformer
+LIVE_ASR_BACKEND=paraformer
 MODELS_PATH=./models
 ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
 UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
@@ -69,6 +70,7 @@ SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 其中关键新增项为：
 
 - `UPLOAD_ASR_BACKEND=paraformer`
+- `LIVE_ASR_BACKEND=paraformer`
 - `UPLOAD_ASR_MODEL_PATH=...`
 - `PUNC_MODEL_PATH=...`
 

@@ -43,6 +43,7 @@ except ImportError:
 CONFIG = {
     "asr_language": "zh",           # 强制中文，避免短音频误判为日语
     "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
+    "live_asr_backend": os.environ.get("LIVE_ASR_BACKEND", "paraformer"),  # paraformer / nano
     "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
     "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
@@ -461,6 +462,7 @@ class ModelService:
         self.asr_model = None
         self.upload_asr_model = None
         self.upload_asr_backend = CONFIG["upload_asr_backend"]
+        self.live_asr_backend = CONFIG["live_asr_backend"].lower()
         self.spk_model = None
         self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
@@ -1285,6 +1287,29 @@ class ModelService:
         except Exception as e:
             print(f"ASR 识别失败: {e}")
         return ""
+
+    def resolve_live_asr_backend(self) -> str:
+        """实时链路优先走低延迟 Paraformer；不可用时回退 Nano。"""
+        backend = (CONFIG.get("live_asr_backend") or "paraformer").lower()
+        if backend == "paraformer":
+            if self.upload_asr_backend == "paraformer" and self.upload_asr_model is not None:
+                return "paraformer"
+            return "nano"
+        if backend == "nano":
+            return "nano"
+        return "nano"
+
+    def transcribe_live_segment(self, audio_input) -> str:
+        """实时 WebSocket 短片段 ASR。"""
+        backend = self.resolve_live_asr_backend()
+        if backend == "paraformer":
+            result = self.transcribe_full_audio(
+                audio_input,
+                backend="paraformer",
+                return_timestamps=False,
+            )
+            return result.get("text", "")
+        return self.transcribe_segment(audio_input)
 
     def transcribe_full_audio(self, audio_input, backend: str = None, return_timestamps: bool = False) -> dict:
         """
