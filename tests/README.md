@@ -44,10 +44,10 @@ model path before starting the server:
 
 ```bash
 export UPLOAD_ASR_BACKEND=paraformer
-export LIVE_ASR_BACKEND=paraformer
+export ASR_BACKEND=paraformer
 export UPLOAD_ASR_MODEL_PATH=/absolute/path/to/paraformer-model
 ```
 
 If `UPLOAD_ASR_MODEL_PATH` is omitted, the server will try to download the
 Paraformer model on first startup. Set `UPLOAD_ASR_BACKEND=nano` or
-`LIVE_ASR_BACKEND=nano` to keep the legacy per-segment Nano path.
+`ASR_BACKEND=nano` to keep the legacy per-segment Nano path.

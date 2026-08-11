@@ -58,7 +58,7 @@ python3 scripts/download_all_models.py --include-upload-asr
 
 ```bash
 UPLOAD_ASR_BACKEND=paraformer
-LIVE_ASR_BACKEND=paraformer
+ASR_BACKEND=paraformer
 MODELS_PATH=./models
 ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
 UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
@@ -70,7 +70,7 @@ SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 其中关键新增项为：
 
 - `UPLOAD_ASR_BACKEND=paraformer`
-- `LIVE_ASR_BACKEND=paraformer`
+- `ASR_BACKEND=paraformer`
 - `UPLOAD_ASR_MODEL_PATH=...`
 - `PUNC_MODEL_PATH=...`
 
@@ -104,6 +104,6 @@ docker compose up -d --no-build
 
 1. 执行 `python3 scripts/download_all_models.py --include-upload-asr`
 2. 把更新后的 `models/` 同步到离线服务器
-3. 在 `.env` 中增加 `UPLOAD_ASR_BACKEND`、`UPLOAD_ASR_MODEL_PATH`、`PUNC_MODEL_PATH`
+3. 在 `.env` 中增加 `ASR_BACKEND`、`UPLOAD_ASR_BACKEND`、`UPLOAD_ASR_MODEL_PATH`、`PUNC_MODEL_PATH`
 4. 重启 `docker compose`
 5. 检查启动日志确认 Paraformer / VAD / PUNC 已加载

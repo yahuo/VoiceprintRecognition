@@ -43,7 +43,7 @@ except ImportError:
 CONFIG = {
     "asr_language": "zh",           # 强制中文，避免短音频误判为日语
     "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
-    "live_asr_backend": os.environ.get("LIVE_ASR_BACKEND", "paraformer"),  # paraformer / nano
+    "asr_backend": os.environ.get("ASR_BACKEND", "paraformer"),  # paraformer / nano
     "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
     "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
@@ -462,7 +462,7 @@ class ModelService:
         self.asr_model = None
         self.upload_asr_model = None
         self.upload_asr_backend = CONFIG["upload_asr_backend"]
-        self.live_asr_backend = CONFIG["live_asr_backend"].lower()
+        self.asr_backend = CONFIG["asr_backend"].lower()
         self.spk_model = None
         self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
@@ -1290,7 +1290,7 @@ class ModelService:
 
     def resolve_live_asr_backend(self) -> str:
         """实时链路优先走低延迟 Paraformer；不可用时回退 Nano。"""
-        backend = (CONFIG.get("live_asr_backend") or "paraformer").lower()
+        backend = (CONFIG.get("asr_backend") or "paraformer").lower()
         if backend == "paraformer":
             if self.upload_asr_backend == "paraformer" and self.upload_asr_model is not None:
                 return "paraformer"

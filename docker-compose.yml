@@ -24,7 +24,7 @@ services:
       HOST: "0.0.0.0"
       PORT: "8000"
       UPLOAD_ASR_BACKEND: "${UPLOAD_ASR_BACKEND:-paraformer}"
-      LIVE_ASR_BACKEND: "${LIVE_ASR_BACKEND:-paraformer}"
+      ASR_BACKEND: "${ASR_BACKEND:-paraformer}"
       PYTHONUNBUFFERED: "1"                       # 禁用输出缓冲，加速 SSE/WebSocket
       CUDA_MODULE_LOADING: "LAZY"                 # 按需加载 CUDA kernel，加速启动
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"  # 减少 CUDA 内存碎片
@@ -79,7 +79,7 @@ services:
       HOST: "0.0.0.0"
       PORT: "8000"
       UPLOAD_ASR_BACKEND: "${UPLOAD_ASR_BACKEND:-paraformer}"
-      LIVE_ASR_BACKEND: "${LIVE_ASR_BACKEND:-paraformer}"
+      ASR_BACKEND: "${ASR_BACKEND:-paraformer}"
       PYTHONUNBUFFERED: "1"
       CUDA_MODULE_LOADING: "LAZY"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"

@@ -353,7 +353,7 @@ VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
 MODELS_PATH=./models             # 本地模型目录（挂载到 /app/models，推荐）
 ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
 UPLOAD_ASR_BACKEND=paraformer    # 上传/离线转写默认使用 Paraformer；需要旧行为时改回 nano
-LIVE_ASR_BACKEND=paraformer      # 实时 WebSocket 默认复用 Paraformer 降低延迟；需要旧行为时改回 nano
+ASR_BACKEND=paraformer           # 实时 WebSocket 默认复用 Paraformer 降低延迟；需要旧行为时改回 nano
 UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
 VAD_MODEL_PATH=/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch
 PUNC_MODEL_PATH=/app/models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch
@@ -367,7 +367,13 @@ SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 
 需要安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)。
 
-在 `.env` 文件中配置参数：
+先复制示例配置，再按实际环境修改 `.env`：
+
+```bash
+cp .env.example .env
+```
+
+主要参数如下：
 
 ```bash
 # GPU 设备 ID (默认 0)
@@ -377,7 +383,7 @@ DEVICE=cuda:0
 # 上传/离线转写后端（默认 paraformer）
 UPLOAD_ASR_BACKEND=paraformer
 # 实时 WebSocket 转写后端（默认 paraformer；旧行为为 nano）
-LIVE_ASR_BACKEND=paraformer
+ASR_BACKEND=paraformer
 # 宿主机端口 (默认 18008)
 HOST_PORT=18008
 # 声纹数据库路径 (默认 ./voiceprint_db)
