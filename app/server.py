@@ -43,7 +43,7 @@ from .services.recording_store import (
 
 app = FastAPI(
     title="Voiceprint Meeting System API",
-    description="基于 Fun-ASR-Nano + CAM++ 的智能会议记录系统",
+    description="基于统一 ASR 后端 + CAM++ 的智能会议记录系统",
     version="2.0.0"
 )
 
@@ -493,9 +493,9 @@ async def _stream_meeting_transcription(
             t_start = time.perf_counter()
             yield f"data: {json_module.dumps({'type': 'status', 'phase': 'loading', 'message': '正在解码音频...'}, ensure_ascii=False)}\n\n"
 
-            def _transcribe_full_audio_timed(audio_input, backend):
+            def _transcribe_full_audio_timed(audio_input):
                 started_at = time.perf_counter()
-                result = service.transcribe_full_audio(audio_input, backend, True)
+                result = service.transcribe_full_audio(audio_input, return_timestamps=True)
                 return result, time.perf_counter() - started_at
 
             def _load_audio_from_upload():
@@ -514,13 +514,12 @@ async def _stream_meeting_transcription(
             print(f"⏱️ SSE 音频加载: {t_load - t_start:.2f}s, 时长: {audio_duration:.1f}s")
 
             full_audio_asr_task = None
-            if service.upload_asr_backend == "paraformer":
+            if service.asr_backend == "paraformer":
                 yield f"data: {json_module.dumps({'type': 'status', 'phase': 'transcribing', 'message': '正在并行进行整段识别与说话人分离...'}, ensure_ascii=False)}\n\n"
                 full_audio_asr_task = asyncio.create_task(
                     asyncio.to_thread(
                         _transcribe_full_audio_timed,
                         speech_full,
-                        service.upload_asr_backend,
                     )
                 )
 
@@ -559,11 +558,11 @@ async def _stream_meeting_transcription(
                     asr_result, asr_elapsed = await full_audio_asr_task
                     asr_sentences = asr_result.get("sentences", [])
                     print(
-                        f"⏱️ SSE 整段 ASR({service.upload_asr_backend}): "
+                        f"⏱️ SSE 整段 ASR({service.asr_backend}): "
                         f"{asr_elapsed:.2f}s, 句子数: {len(asr_sentences)}"
                     )
                 else:
-                    print(f"ℹ️ 上传 ASR 后端 {service.upload_asr_backend} 不支持时间轴对齐，直接走逐段识别")
+                    print(f"ℹ️ ASR 后端 {service.asr_backend} 不支持时间轴对齐，直接走逐段识别")
 
                 if asr_sentences:
                     def _choose_best_speaker(start_ms: int, end_ms: int):
@@ -799,7 +798,7 @@ async def _stream_meeting_transcription(
                             continue
                         speaker_mapping[pyannote_speaker] = _speaker_state(speaker_id, confidence)
 
-                    yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(asr_sentences), 'method': f'align-{service.upload_asr_backend}'})}\n\n"
+                    yield f"data: {json_module.dumps({'type': 'info', 'total_segments': len(asr_sentences), 'method': f'align-{service.asr_backend}'})}\n\n"
                     yield f"data: {json_module.dumps({'type': 'status', 'phase': 'processing', 'message': f'正在对齐说话人与文本，共 {len(asr_sentences)} 句...'}, ensure_ascii=False)}\n\n"
 
                     for i, item in enumerate(asr_sentences):

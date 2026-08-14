@@ -3,7 +3,7 @@
 实时会议记录工具 (Live Meeting Transcription)
 实时采集麦克风音频 → 自动切分 → 识别并输出带姓名的记录
 
-基于 Fun-ASR-Nano (LLM) 和 CAM++ (声纹)
+基于统一 ASR 后端和 CAM++ (声纹)
 """
 
 import argparse

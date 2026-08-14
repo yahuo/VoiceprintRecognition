@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 统一下载离线模型到 models/ 目录：
-- ASR: FunAudioLLM/Fun-ASR-Nano-2512 (Hugging Face)
+- ASR: Paraformer（默认）或 Fun-ASR-Nano-2512
 - VAD: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch (ModelScope)
 - SPK: iic/speech_campplus_sv_zh-cn_16k-common (ModelScope)
 
@@ -11,7 +11,7 @@
 
 用法:
     python scripts/download_all_models.py
-    python scripts/download_all_models.py --include-upload-asr
+    python scripts/download_all_models.py --asr-backend nano
     python scripts/download_all_models.py --output-dir /data/voiceprint/models --force
 """
 
@@ -34,13 +34,7 @@ class ModelSpec:
     marker_file: str | None = None
 
 
-MODEL_SPECS = [
-    ModelSpec(
-        name="ASR",
-        source="hf",
-        repo_id="FunAudioLLM/Fun-ASR-Nano-2512",
-        subdir="asr/Fun-ASR-Nano-2512",
-    ),
+SUPPORT_MODEL_SPECS = [
     ModelSpec(
         name="VAD",
         source="modelscope",
@@ -55,15 +49,23 @@ MODEL_SPECS = [
     ),
 ]
 
-UPLOAD_ASR_SPEC = ModelSpec(
-    name="UPLOAD_ASR",
-    source="modelscope",
-    repo_id="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-    subdir="asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-)
+ASR_MODEL_SPECS = {
+    "paraformer": ModelSpec(
+        name="ASR (Paraformer)",
+        source="modelscope",
+        repo_id="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        subdir="asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+    ),
+    "nano": ModelSpec(
+        name="ASR (Fun-ASR-Nano)",
+        source="hf",
+        repo_id="FunAudioLLM/Fun-ASR-Nano-2512",
+        subdir="asr/Fun-ASR-Nano-2512",
+    ),
+}
 
-UPLOAD_PUNC_SPEC = ModelSpec(
-    name="UPLOAD_PUNC",
+PUNC_SPEC = ModelSpec(
+    name="PUNC",
     source="modelscope",
     repo_id="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
     subdir="punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
@@ -83,9 +85,10 @@ def parse_args() -> argparse.Namespace:
         help="强制重新下载（会删除目标模型目录后重下）",
     )
     parser.add_argument(
-        "--include-upload-asr",
-        action="store_true",
-        help="额外下载上传链路用的 Paraformer 模型",
+        "--asr-backend",
+        choices=tuple(ASR_MODEL_SPECS),
+        default="paraformer",
+        help="要下载的唯一 ASR 后端（默认: paraformer）",
     )
     return parser.parse_args()
 
@@ -138,10 +141,10 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     failures: list[str] = []
-    model_specs = list(MODEL_SPECS)
-    if args.include_upload_asr:
-        model_specs.append(UPLOAD_ASR_SPEC)
-        model_specs.append(UPLOAD_PUNC_SPEC)
+    asr_spec = ASR_MODEL_SPECS[args.asr_backend]
+    model_specs = [asr_spec, *SUPPORT_MODEL_SPECS]
+    if args.asr_backend == "paraformer":
+        model_specs.append(PUNC_SPEC)
 
     for spec in model_specs:
         target = output_dir / spec.subdir
@@ -181,13 +184,9 @@ def main() -> int:
 
     print("✅ 全部模型下载完成")
     print("\n可用于 .env 的本地模型路径示例：")
-    print(f"ASR_MODEL_PATH={output_dir / 'asr/Fun-ASR-Nano-2512'}")
-    if args.include_upload_asr:
-        print("UPLOAD_ASR_BACKEND=paraformer")
-        print(
-            "UPLOAD_ASR_MODEL_PATH="
-            f"{output_dir / 'asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch'}"
-        )
+    print(f"ASR_BACKEND={args.asr_backend}")
+    print(f"ASR_MODEL_PATH={output_dir / asr_spec.subdir}")
+    if args.asr_backend == "paraformer":
         print(
             "PUNC_MODEL_PATH="
             f"{output_dir / 'punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch'}"

@@ -18,11 +18,23 @@ class DummyParaformerModel:
 
 
 class TranscribeFullAudioInputTest(unittest.TestCase):
+    def test_live_and_full_transcription_share_paraformer_model(self):
+        service = ModelService()
+        dummy_model = DummyParaformerModel()
+        service.asr_backend = "paraformer"
+        service.asr_model = dummy_model
+
+        audio = np.zeros(1600, dtype=np.float32)
+
+        self.assertEqual(service.transcribe_live_segment(audio), "ok")
+        self.assertIsInstance(dummy_model.last_input, np.ndarray)
+        self.assertIs(service.asr_model, dummy_model)
+
     def test_paraformer_path_input_is_loaded_to_numpy_array(self):
         service = ModelService()
         dummy_model = DummyParaformerModel()
-        service.upload_asr_backend = "paraformer"
-        service.upload_asr_model = dummy_model
+        service.asr_backend = "paraformer"
+        service.asr_model = dummy_model
 
         audio = np.zeros(1600, dtype=np.float32)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -32,7 +44,6 @@ class TranscribeFullAudioInputTest(unittest.TestCase):
         try:
             result = service.transcribe_full_audio(
                 audio_path,
-                backend="paraformer",
                 return_timestamps=True,
             )
         finally:

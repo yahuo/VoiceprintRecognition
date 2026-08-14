@@ -1,109 +1,96 @@
-# 离线模式升级说明
+# ASR 统一配置升级说明
 
-本文档用于把原先的离线模式升级到当前的离线模式。
+本文档用于把实时、上传和离线链路从两套 ASR 配置升级为一套统一配置。
 
-## 旧模式与新模式的区别
+## 变更原则
 
-原先的离线模式主要使用：
+旧版本同时存在以下重复配置：
 
-- `Fun-ASR-Nano-2512`
-- `speech_fsmn_vad_zh-cn-16k-common-pytorch`
-- `speech_campplus_sv_zh-cn_16k-common`
+- `ASR_BACKEND` 与 `UPLOAD_ASR_BACKEND`
+- `ASR_MODEL_PATH` 与 `UPLOAD_ASR_MODEL_PATH`
 
-当前的离线模式默认改为：
+旧代码还会固定加载 Fun-ASR-Nano，再为上传链路额外加载 Paraformer，导致同类型模型存在两套配置和两个实例。
 
-- 上传/离线转写：`Paraformer`
-- 实时链路：`Fun-ASR-Nano-2512`
-- 说话人分离：`Pyannote`
-- 说话人验证：`CAM++`
+当前版本只保留：
 
-因此，相比旧模式，需要额外准备：
+- `ASR_BACKEND`：实时、上传和离线转写统一使用的后端
+- `ASR_MODEL_PATH`：与所选后端对应的唯一 ASR 模型路径
 
-- `Paraformer` 上传/离线 ASR 模型
-- `ct-punc` 标点模型
+默认后端为 `paraformer`。如设置为 `nano`，所有转写链路都会统一切换到 Fun-ASR-Nano，不再混用两种 ASR 模型。
 
-说明：
+## 第一步：下载模型
 
-- `pyannote` 不需要额外下载，仓库已内置 `models/pyannote`
-- 原有的 `VAD`、`SPK`、`Nano` 模型仍然继续使用
-
-## 第一步：下载额外模型
-
-在有网机器的项目根目录执行：
+默认下载 Paraformer 以及运行所需的 VAD、PUNC 和 SPK 模型：
 
 ```bash
-python3 scripts/download_all_models.py --include-upload-asr
+python3 scripts/download_all_models.py
 ```
 
-该脚本会在现有 `models/` 目录中补齐以下模型：
+如果所有链路需要统一使用 Nano：
 
-- `models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
-- `models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch`
+```bash
+python3 scripts/download_all_models.py --asr-backend nano
+```
 
-如果旧模型已存在，脚本会自动跳过，不会重复下载。
+Paraformer 模式下，离线服务器上的 `models/` 至少应包含：
 
-## 第二步：同步模型目录到离线服务器
-
-升级后，离线服务器上的 `models/` 至少应包含：
-
-- `models/asr/Fun-ASR-Nano-2512`
 - `models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
 - `models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch`
 - `models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch`
 - `models/spk/speech_campplus_sv_zh-cn_16k-common`
 
-## 第三步：修改 `.env`
+Nano 模式只需将 ASR 目录替换为 `models/asr/Fun-ASR-Nano-2512`；Nano 不依赖 Paraformer 模型目录。
 
-如果使用最新的 `docker-compose.yml`，建议在 `.env` 中明确配置：
+## 第二步：修改 `.env`
+
+Paraformer 默认配置：
 
 ```bash
-UPLOAD_ASR_BACKEND=paraformer
 ASR_BACKEND=paraformer
+ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+UPLOAD_ASR_BATCH_SIZE_S=300
 MODELS_PATH=./models
-ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
-UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
 VAD_MODEL_PATH=/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch
 PUNC_MODEL_PATH=/app/models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch
 SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
 ```
 
-其中关键新增项为：
+全局切换到 Nano 时，只修改同一组 ASR 配置：
 
-- `UPLOAD_ASR_BACKEND=paraformer`
-- `ASR_BACKEND=paraformer`
-- `UPLOAD_ASR_MODEL_PATH=...`
-- `PUNC_MODEL_PATH=...`
+```bash
+ASR_BACKEND=nano
+ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
+```
 
-原有的 `VAD_MODEL_PATH` 如果已经配置，可继续复用。
+请从旧 `.env` 中删除 `UPLOAD_ASR_BACKEND` 和 `UPLOAD_ASR_MODEL_PATH`，它们已不再被代码读取。
 
-## 第四步：重启服务
+## 第三步：重启服务
 
-### slim 模式
+slim 模式：
 
 ```bash
 docker compose --profile slim up -d --no-build
 ```
 
-### 全量镜像模式
+全量镜像模式：
 
 ```bash
 docker compose up -d --no-build
 ```
 
-## 第五步：验证升级是否生效
+## 第四步：验证
 
-启动后检查日志，确认出现类似信息：
+启动日志应只出现一次 ASR 模型加载过程，并包含所选后端，例如：
 
-- `上传 ASR 模型加载完成`
-- `上传 ASR 复用 VAD 模型目录`
-- `上传 ASR 复用 PUNC 模型目录`
+```text
+加载 ASR 模型 (Paraformer)...
+ASR 模型路径: /app/models/asr/...
+ASR 模型加载完成 (paraformer)
+```
 
-如果这些日志都出现，说明离线模式已经切换到当前实现。
+最小验证清单：
 
-## 最小升级清单
-
-1. 执行 `python3 scripts/download_all_models.py --include-upload-asr`
-2. 把更新后的 `models/` 同步到离线服务器
-3. 在 `.env` 中增加 `ASR_BACKEND`、`UPLOAD_ASR_BACKEND`、`UPLOAD_ASR_MODEL_PATH`、`PUNC_MODEL_PATH`
-4. 重启 `docker compose`
-5. 检查启动日志确认 Paraformer / VAD / PUNC 已加载
+1. `.env` 中只有一组 `ASR_BACKEND` 和 `ASR_MODEL_PATH`
+2. 容器内只加载所选 ASR 模型
+3. 实时 WebSocket、上传和离线转写日志中的 `asr_backend` 一致
+4. Paraformer 模式下上传转写仍可生成句子时间戳

@@ -42,7 +42,6 @@ except ImportError:
 
 CONFIG = {
     "asr_language": "zh",           # 强制中文，避免短音频误判为日语
-    "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
     "asr_backend": os.environ.get("ASR_BACKEND", "paraformer"),  # paraformer / nano
     "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
@@ -83,7 +82,6 @@ CONFIG = {
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
     "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
     "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
-    "upload_asr_model_path": os.environ.get("UPLOAD_ASR_MODEL_PATH", ""),
     "punc_model_path": os.environ.get("PUNC_MODEL_PATH", ""),
     "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
 }
@@ -460,9 +458,11 @@ class ModelService:
     def __init__(self):
         self.vad_model = None
         self.asr_model = None
-        self.upload_asr_model = None
-        self.upload_asr_backend = CONFIG["upload_asr_backend"]
-        self.asr_backend = CONFIG["asr_backend"].lower()
+        self.asr_backend = (CONFIG["asr_backend"] or "paraformer").strip().lower()
+        if self.asr_backend not in {"paraformer", "nano"}:
+            raise ValueError(
+                f"不支持的 ASR_BACKEND={self.asr_backend!r}，可选值为 paraformer 或 nano"
+            )
         self.spk_model = None
         self.diarization_pipeline = None  # pyannote diarization
         self.registered_embeddings = {}
@@ -521,31 +521,8 @@ class ModelService:
 
             self.vad_model = AutoModel(**vad_model_kwargs)
         
-        # 2. ASR 模型 (Fun-ASR-Nano) - 实时/兼容链路默认使用
-        print("加载 ASR 模型 (Fun-ASR-Nano)...")
-        model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
-        fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
-        model_py_path = os.path.join(fun_asr_dir, "model.py")
-
-        asr_model_kwargs = {
-            "model": model_dir,
-            "trust_remote_code": True,
-            "remote_code": model_py_path,
-            "device": device,
-            "disable_update": True,
-        }
-
-        asr_model_path = CONFIG.get("asr_model_path")
-        if asr_model_path and os.path.exists(asr_model_path):
-            asr_model_kwargs["model_path"] = asr_model_path
-            print(f"  ASR 模型路径: {asr_model_path}")
-        elif asr_model_path:
-            print(f"  ⚠️ ASR 本地路径不存在: {asr_model_path}，将从网络下载")
-
-        self.asr_model = AutoModel(**asr_model_kwargs)
-
-        # 2.1 上传链路专用 ASR 后端
-        self._load_upload_asr_model(device=device)
+        # 2. ASR 模型：实时、上传和离线链路统一复用同一个后端和模型实例
+        self._load_asr_model(device=device)
         
         # 3. 声纹模型 (CAM++)
         print("加载声纹模型...")
@@ -589,66 +566,59 @@ class ModelService:
             self.extract_embedding(dummy)
         except Exception:
             pass
-        if self.upload_asr_model is not None and self.upload_asr_model is not self.asr_model:
-            try:
-                self.transcribe_full_audio(dummy, backend=self.upload_asr_backend)
-            except Exception:
-                pass
         print(f"🔥 CUDA warmup 完成，耗时 {time.time() - t0:.1f}s")
 
-    def _load_upload_asr_model(self, device: str):
-        """加载上传链路专用 ASR。"""
-        backend = CONFIG["upload_asr_backend"].lower()
-        self.upload_asr_backend = backend
+    def _load_asr_model(self, device: str):
+        """按 ASR_BACKEND 加载唯一的 ASR 模型，供全部转写链路复用。"""
+        backend = self.asr_backend
+        asr_model_path = CONFIG.get("asr_model_path")
 
         if backend == "nano":
-            self.upload_asr_model = self.asr_model
-            print("上传 ASR 后端: nano (沿用实时链路模型)")
-            return
+            print("加载 ASR 模型 (Fun-ASR-Nano)...")
+            model_py_path = os.path.join(PROJECT_ROOT, "Fun-ASR", "model.py")
+            asr_model_kwargs = {
+                "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+                "trust_remote_code": True,
+                "remote_code": model_py_path,
+                "device": device,
+                "disable_update": True,
+            }
+        else:
+            print("加载 ASR 模型 (Paraformer)...")
+            asr_model_kwargs = {
+                "model": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+                "vad_model": "fsmn-vad",
+                "vad_kwargs": {"max_single_segment_time": 30000},
+                "punc_model": "ct-punc",
+                "device": device,
+                "disable_update": True,
+            }
 
-        if backend != "paraformer":
-            print(f"⚠️ 未知上传 ASR 后端: {backend}，回退到 nano")
-            self.upload_asr_backend = "nano"
-            self.upload_asr_model = self.asr_model
-            return
+            vad_model_path = CONFIG.get("vad_model_path")
+            if vad_model_path and os.path.exists(vad_model_path):
+                asr_model_kwargs["vad_model"] = vad_model_path
+                print(f"  ASR 复用 VAD 模型目录: {vad_model_path}")
+            elif vad_model_path:
+                print(f"  ⚠️ ASR 的 VAD 本地路径不存在: {vad_model_path}，将使用默认下载源")
 
-        print("加载上传 ASR 模型 (Paraformer)...")
-        upload_asr_kwargs = {
-            "model": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-            "vad_model": "fsmn-vad",
-            "vad_kwargs": {"max_single_segment_time": 30000},
-            "punc_model": "ct-punc",
-            "device": device,
-            "disable_update": True,
-        }
-        upload_asr_model_path = CONFIG.get("upload_asr_model_path")
-        if upload_asr_model_path and os.path.exists(upload_asr_model_path):
-            upload_asr_kwargs["model_path"] = upload_asr_model_path
-            print(f"  上传 ASR 模型路径: {upload_asr_model_path}")
-        elif upload_asr_model_path:
-            print(f"  ⚠️ 上传 ASR 本地路径不存在: {upload_asr_model_path}，将从网络下载")
+            punc_model_path = CONFIG.get("punc_model_path")
+            if punc_model_path and os.path.exists(punc_model_path):
+                asr_model_kwargs["punc_model"] = punc_model_path
+                print(f"  ASR 复用 PUNC 模型目录: {punc_model_path}")
+            elif punc_model_path:
+                print(f"  ⚠️ ASR 的 PUNC 本地路径不存在: {punc_model_path}，将使用默认下载源")
 
-        vad_model_path = CONFIG.get("vad_model_path")
-        if vad_model_path and os.path.exists(vad_model_path):
-            upload_asr_kwargs["vad_model"] = vad_model_path
-            print(f"  上传 ASR 复用 VAD 模型目录: {vad_model_path}")
-        elif vad_model_path:
-            print(f"  ⚠️ 上传 ASR 的 VAD 本地路径不存在: {vad_model_path}，将使用默认下载源")
-
-        punc_model_path = CONFIG.get("punc_model_path")
-        if punc_model_path and os.path.exists(punc_model_path):
-            upload_asr_kwargs["punc_model"] = punc_model_path
-            print(f"  上传 ASR 复用 PUNC 模型目录: {punc_model_path}")
-        elif punc_model_path:
-            print(f"  ⚠️ 上传 ASR 的 PUNC 本地路径不存在: {punc_model_path}，将使用默认下载源")
+        if asr_model_path and os.path.exists(asr_model_path):
+            asr_model_kwargs["model_path"] = asr_model_path
+            print(f"  ASR 模型路径: {asr_model_path}")
+        elif asr_model_path:
+            print(f"  ⚠️ ASR 本地路径不存在: {asr_model_path}，将从网络下载")
 
         try:
-            self.upload_asr_model = AutoModel(**upload_asr_kwargs)
-            print("✅ 上传 ASR 模型加载完成")
-        except Exception as e:
-            print(f"⚠️ 上传 ASR 模型加载失败，回退到 nano: {e}")
-            self.upload_asr_backend = "nano"
-            self.upload_asr_model = self.asr_model
+            self.asr_model = AutoModel(**asr_model_kwargs)
+        except Exception as exc:
+            raise RuntimeError(f"ASR 模型加载失败({backend}): {exc}") from exc
+        print(f"✅ ASR 模型加载完成 ({backend})")
 
     def reload_voiceprints(self):
         """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
@@ -718,8 +688,8 @@ class ModelService:
             return np.ascontiguousarray(prepared)
         return prepared
 
-    def _prepare_upload_asr_input(self, audio_input):
-        """上传链路 ASR 输入预处理。"""
+    def _prepare_paraformer_input(self, audio_input):
+        """Paraformer 输入预处理。"""
         prepared = self._normalize_audio_array(audio_input)
         if isinstance(prepared, np.ndarray):
             return np.ascontiguousarray(prepared)
@@ -1272,6 +1242,9 @@ class ModelService:
         """
         if language is None:
             language = CONFIG["asr_language"]
+
+        if self.asr_backend == "paraformer":
+            return self.transcribe_full_audio(audio_input).get("text", "")
         
         try:
             prepared_input = self._prepare_asr_input(audio_input)
@@ -1289,47 +1262,29 @@ class ModelService:
         return ""
 
     def resolve_live_asr_backend(self) -> str:
-        """实时链路优先走低延迟 Paraformer；不可用时回退 Nano。"""
-        backend = (CONFIG.get("asr_backend") or "paraformer").lower()
-        if backend == "paraformer":
-            if self.upload_asr_backend == "paraformer" and self.upload_asr_model is not None:
-                return "paraformer"
-            return "nano"
-        if backend == "nano":
-            return "nano"
-        return "nano"
+        """返回全部转写链路统一使用的 ASR 后端。"""
+        return self.asr_backend
 
     def transcribe_live_segment(self, audio_input) -> str:
         """实时 WebSocket 短片段 ASR。"""
-        backend = self.resolve_live_asr_backend()
-        if backend == "paraformer":
-            result = self.transcribe_full_audio(
-                audio_input,
-                backend="paraformer",
-                return_timestamps=False,
-            )
-            return result.get("text", "")
         return self.transcribe_segment(audio_input)
 
-    def transcribe_full_audio(self, audio_input, backend: str = None, return_timestamps: bool = False) -> dict:
+    def transcribe_full_audio(self, audio_input, return_timestamps: bool = False) -> dict:
         """
-        上传链路整段 ASR。优先使用更快的离线模型；若不支持时间戳则由上层回退。
+        使用统一 ASR 模型进行整段识别；Nano 不支持时间戳时由上层回退。
         """
-        if backend is None:
-            backend = self.upload_asr_backend
-        backend = backend.lower()
+        backend = self.asr_backend
 
         if return_timestamps and backend != "paraformer":
             return {"text": "", "sentences": []}
 
-        model = self.upload_asr_model if backend == self.upload_asr_backend else self.asr_model
+        model = self.asr_model
         if model is None:
             return {"text": "", "sentences": []}
 
-        prepared_input = self._prepare_upload_asr_input(audio_input)
-
         try:
             if backend == "paraformer":
+                prepared_input = self._prepare_paraformer_input(audio_input)
                 if isinstance(prepared_input, str):
                     audio_array, _ = librosa.load(prepared_input, sr=16000)
                     prepared_input = np.ascontiguousarray(audio_array)
@@ -1341,6 +1296,7 @@ class ModelService:
                     kwargs["sentence_timestamp"] = True
                 res = model.generate(**kwargs)
             else:
+                prepared_input = self._prepare_asr_input(audio_input)
                 res = model.generate(
                     input=prepared_input,
                     language=CONFIG["asr_language"],

@@ -1,7 +1,7 @@
-# 声纹识别 Demo (Fun-ASR-Nano)
+# 声纹识别 Demo
 
-基于阿里达摩院 FunASR、Paraformer 与 Fun-ASR-Nano-2512 的声纹识别演示项目，支持：
-- 🎙️ 语音识别 (ASR) - 31 种语言，7 大方言
+基于阿里达摩院 FunASR、Paraformer 与可选 Fun-ASR-Nano-2512 的声纹识别演示项目，支持：
+- 🎙️ 语音识别 (ASR) - 默认 Paraformer，可全局切换到 Nano
 - 👤 说话人验证 (Speaker Verification)
 - 👥 说话人分离 (Speaker Diarization)
 
@@ -120,18 +120,20 @@ python -m app.utils.voiceprint list
 
 ## 🏗️ 系统架构
 
-本项目采用 **双轨制混合架构 (Hybrid Architecture)**，结合了业界领先的深度学习模型，以适应不同的应用场景：
+本项目的实时、上传和离线链路共享同一个 ASR 后端和模型实例，通过 `ASR_BACKEND` 与 `ASR_MODEL_PATH` 统一配置：
 
-1.  **离线/上传链路 (Paraformer + Pyannote)**：适用于会议记录生成、长音频处理。
-2.  **实时链路 (VAD + Nano)**：适用于实时对话流。
+1.  **离线/上传链路**：统一 ASR 模型配合 Pyannote，适用于会议记录生成和长音频处理；默认 Paraformer 可提供时间戳对齐。
+2.  **实时链路**：FSMN-VAD 切分后调用同一个 ASR 模型，避免重复加载同类型模型。
 
 ```mermaid
 graph TD
+    Config["ASR_BACKEND + ASR_MODEL_PATH<br/>唯一 ASR 配置"] --> ASR["统一 ASR 模型实例<br/>Paraformer 默认 / Nano 可选"]
     Input[音频输入] --> Mode{场景选择}
 
     %% 离线 / 上传路径
     Mode -->|离线/流式上传| P1[Pyannote Diarization]
-    Mode -->|离线/流式上传| P2[Paraformer 整段 ASR]
+    Mode -->|离线/流式上传| P2[整段或逐段识别]
+    ASR --> P2
     P1 --> Align[按时间轴对齐]
     P2 --> Align
     Align --> UploadSV[注册人保守匹配]
@@ -139,7 +141,8 @@ graph TD
 
     %% 实时路径
     Mode -->|实时 WebSocket| V1[FSMN-VAD 检测]
-    V1 -->|实时切分| R1[Fun-ASR-Nano 逐段识别]
+    V1 -->|实时切分| R1[逐段识别]
+    ASR --> R1
     V1 -->|实时切分| R2[CAM++ 声纹提取]
     R2 --> Match{声纹库匹配}
     Match -->|匹配成功| User["注册用户 (如:张三)"]
@@ -158,8 +161,7 @@ graph TD
 |------|----------|------|----------|
 | **Diarization** | `pyannote/speaker-diarization-community-1` | **说话人分离** | **SOTA 效果**。能精准区分"谁在说话"，支持 **Overlap (重叠人声)** 分离，能够全局追踪说话人。 |
 | **VAD** | `speech_fsmn_vad_zh-cn-16k-common` | 语音活动检测 | **超低延迟**。毫秒级切分音频，用于实时对话或 Pyannote 的回退方案。 |
-| **ASR (上传/离线)** | `speech_paraformer-large-vad-punc_asr_nat` | 整段语音转文字 + 时间戳 | **长音频优先**。支持 VAD / 标点 / 时间戳，适合上传音频和会议记录。 |
-| **ASR (实时)** | `Fun-ASR-Nano-2512` | 逐段语音转文字 | **实时语义理解强**。适合 WebSocket 低延迟场景。 |
+| **ASR（所有链路共用）** | 默认 `speech_paraformer-large-vad-punc_asr_nat`；可选 `Fun-ASR-Nano-2512` | 实时、上传和离线语音转文字 | **单实例复用**。Paraformer 支持 VAD / 标点 / 时间戳；Nano 适合需要其多语言能力的场景。 |
 | **Speaker** | `speech_campplus_sv` | 声纹识别 | **高鲁棒性**。提取声纹特征向量，用于识别已知用户。支持短语音特征提取。 |
 
 ## ⚙️ 识别参数配置
@@ -229,11 +231,12 @@ VoiceprintRecognition/
 
 ## 模型说明
 
-本项目使用 **Fun-ASR-Nano-2512** 端到端语音识别大模型：
+本项目默认使用 **Paraformer** 作为所有链路共用的 ASR 模型，也可通过 `ASR_BACKEND=nano` 全局切换到 **Fun-ASR-Nano-2512**：
 
 | 模型 | 用途 | 特点 |
 |------|------|------|
-| `Fun-ASR-Nano-2512` | 语音识别 (ASR) | 31 种语言，自动标点，基于 Qwen3-0.6B |
+| `speech_paraformer-large-vad-punc_asr_nat` | 默认语音识别 (ASR) | 支持长音频、VAD、标点和时间戳 |
+| `Fun-ASR-Nano-2512` | 可选语音识别 (ASR) | 31 种语言，自动标点，基于 Qwen3-0.6B |
 | `speech_campplus_sv` | 说话人验证 (声纹) | CAM++ 模型，高精度声纹识别 |
 
 > **Fun-ASR-Nano 特点**：
@@ -312,11 +315,11 @@ docker buildx build --platform linux/amd64  -f Dockerfile.slim -t your-registry/
 # 1) 生成 venv_docker（约 5-10 分钟，~5GB）
 bash scripts/build_venv.sh
 
-# 2) 预下载运行时模型（ASR/VAD/SPK）到 models/
+# 2) 按默认 ASR_BACKEND=paraformer 预下载唯一 ASR 模型及 VAD/PUNC/SPK
 python scripts/download_all_models.py
 
-# 上传/离线转写默认使用 Paraformer，建议一并下载
-python scripts/download_all_models.py --include-upload-asr
+# 如需全局改用 Nano，则改为：
+# python scripts/download_all_models.py --asr-backend nano
 
 # 3) 准备镜像（可直接 pull 已构建镜像）
 docker pull your-registry/voiceprint-server-slim:latest
@@ -351,10 +354,8 @@ docker images voiceprint-server-slim
 ```bash
 VENV_PATH=./venv_docker          # venv 目录路径（默认 ./venv_docker）
 MODELS_PATH=./models             # 本地模型目录（挂载到 /app/models，推荐）
-ASR_MODEL_PATH=/app/models/asr/Fun-ASR-Nano-2512
-UPLOAD_ASR_BACKEND=paraformer    # 上传/离线转写默认使用 Paraformer；需要旧行为时改回 nano
-ASR_BACKEND=paraformer           # 实时 WebSocket 默认复用 Paraformer 降低延迟；需要旧行为时改回 nano
-UPLOAD_ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+ASR_BACKEND=paraformer           # 所有转写链路统一使用的后端
+ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
 VAD_MODEL_PATH=/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch
 PUNC_MODEL_PATH=/app/models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch
 SPK_MODEL_PATH=/app/models/spk/speech_campplus_sv_zh-cn_16k-common
@@ -380,10 +381,10 @@ cp .env.example .env
 NVIDIA_DEVICE_ID=0
 # 推理设备 (默认 cuda:0)
 DEVICE=cuda:0
-# 上传/离线转写后端（默认 paraformer）
-UPLOAD_ASR_BACKEND=paraformer
-# 实时 WebSocket 转写后端（默认 paraformer；旧行为为 nano）
+# 所有实时、上传和离线转写统一使用的后端（默认 paraformer）
 ASR_BACKEND=paraformer
+# 与 ASR_BACKEND 对应的唯一 ASR 模型路径
+ASR_MODEL_PATH=/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
 # 宿主机端口 (默认 18008)
 HOST_PORT=18008
 # 声纹数据库路径 (默认 ./voiceprint_db)
