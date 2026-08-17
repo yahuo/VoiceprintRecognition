@@ -151,7 +151,15 @@ class RecordingApiTest(unittest.TestCase):
     def test_transcribe_recording_stream_by_file_id(self):
         file_id = server.recording_store.save_pcm_wav(b"\x00\x00" * 10)
 
-        async def fake_stream(content, suffix, threshold, allowed_speaker_ids, *, source_path=None):
+        async def fake_stream(
+            content,
+            suffix,
+            threshold,
+            allowed_speaker_ids,
+            *,
+            priority="speed",
+            source_path=None,
+        ):
             async def events():
                 yield b"data: {\"type\":\"done\"}\n\n"
 
@@ -173,6 +181,7 @@ class RecordingApiTest(unittest.TestCase):
         self.assertEqual(args[1], ".wav")
         self.assertEqual(args[2], 0.42)
         self.assertEqual(args[3], ["spk-a"])
+        self.assertEqual(kwargs["priority"], "speed")
         self.assertEqual(kwargs["source_path"], os.path.join(self.tmpdir.name, f"{file_id}.wav"))
 
     def test_transcribe_recording_stream_missing_and_invalid_file_id(self):

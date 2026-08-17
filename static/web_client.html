@@ -1557,26 +1557,55 @@
             const emptyState = transcriptBox.querySelector('.empty-state');
             if (emptyState) emptyState.remove();
 
-            const item = document.createElement('div');
-            item.className = 'transcript-item';
+            const segmentId = data.segmentId == null ? '' : String(data.segmentId);
+            let transcriptIndex = -1;
+            let item = null;
+
+            if (segmentId) {
+                transcriptIndex = liveTranscriptItems.findIndex(entry => entry.segmentId === segmentId);
+                if (transcriptIndex >= 0) {
+                    const current = liveTranscriptItems[transcriptIndex];
+                    const incomingRevision = Number(data.revision || 0);
+                    const currentRevision = Number(current.revision || 0);
+                    if ((current.isFinal && !data.isFinal) || incomingRevision <= currentRevision) {
+                        return;
+                    }
+                    item = Array.from(transcriptBox.querySelectorAll('.transcript-item'))
+                        .find(entry => entry.dataset.segmentId === segmentId) || null;
+                }
+            }
+
+            if (!item) {
+                item = document.createElement('div');
+                item.className = 'transcript-item';
+                if (segmentId) item.dataset.segmentId = segmentId;
+                transcriptBox.appendChild(item);
+            }
             item.innerHTML = `
                 <div class="meta">
                     <span class="time">[${data.time}]</span>
                     <span class="speaker">${data.speaker}</span>
-                    <span class="confidence">(置信度: ${data.confidence})</span>
+                    <span class="confidence">${data.degraded ? '(最终识别失败，保留临时结果)' : '(置信度: ' + data.confidence + ')'}</span>
                 </div>
                 <div class="text">${data.text}</div>
             `;
-            transcriptBox.appendChild(item);
             transcriptBox.scrollTop = transcriptBox.scrollHeight;
 
-            // 同时收集到 liveTranscriptItems 用于后续总结
-            liveTranscriptItems.push({
+            const transcriptItem = {
                 speaker: data.speaker,
                 text: data.text,
                 time: data.time || '',
-                confidence: data.confidence || 0
-            });
+                confidence: data.confidence || 0,
+                segmentId,
+                revision: Number(data.revision || 0),
+                isFinal: data.isFinal !== false,
+                degraded: data.degraded === true,
+            };
+            if (transcriptIndex >= 0) {
+                liveTranscriptItems[transcriptIndex] = transcriptItem;
+            } else {
+                liveTranscriptItems.push(transcriptItem);
+            }
         }
 
         function resetLiveRecordingFile() {
@@ -1695,6 +1724,7 @@
                 await ensureVoiceprintsSynced();
                 // 重置上次的数据
                 liveTranscriptItems = [];
+                transcriptBox.innerHTML = '<div class="empty-state">点击"开始录音"后，对话内容将在这里实时显示...</div>';
                 isRecordingPaused = false;
                 scriptResampleRemainder = new Float32Array(0);
                 scriptResampleIndex = 0;
@@ -1718,7 +1748,13 @@
                     if (data.type === 'recording_saved') {
                         liveRecordingFileId = data.fileId || '';
                         renderLiveRecordingFile(liveRecordingFileId);
-                        updateStatus('connected', liveRecordingFileId ? '录音已保存' : '已停止');
+                        const transcriptionFailed = data.transcriptionStatus === 'failed';
+                        updateStatus(
+                            transcriptionFailed ? '' : 'connected',
+                            transcriptionFailed
+                                ? '录音已保存，但最终识别失败'
+                                : (liveRecordingFileId ? '录音已保存' : '已停止')
+                        );
                         if (websocket && websocket.readyState === WebSocket.OPEN) websocket.close();
                         return;
                     }

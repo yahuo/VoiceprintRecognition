@@ -18,7 +18,7 @@ import shutil
 import tempfile
 import time
 import numpy as np
-from typing import Dict
+from typing import Annotated, Dict
 from datetime import datetime
 import librosa
 
@@ -37,6 +37,7 @@ from .core import (
 from .services.recording_store import (
     CHANNELS as RECORDING_CHANNELS,
     SAMPLE_RATE as RECORDING_SAMPLE_RATE,
+    SAMPLE_WIDTH_BYTES as RECORDING_SAMPLE_WIDTH_BYTES,
     recording_store,
 )
 
@@ -71,6 +72,173 @@ app.add_middleware(
 
 service = ModelService()
 DEVICE = "cpu"  # 默认设备，可通过命令行参数修改
+TRANSCRIPTION_PRIORITIES = frozenset({"speed", "accuracy"})
+ACCURACY_OUTPUT_TOKENS_PER_SECOND = 10
+ACCURACY_OUTPUT_TOKEN_BUFFER = 64
+ACCURACY_MIN_OUTPUT_TOKENS = 200
+ACCURACY_MAX_OUTPUT_TOKENS = 8192
+ACCURACY_MAX_AUDIO_SECONDS = (
+    ACCURACY_MAX_OUTPUT_TOKENS - ACCURACY_OUTPUT_TOKEN_BUFFER
+) / ACCURACY_OUTPUT_TOKENS_PER_SECOND
+ACCURACY_LIVE_MAX_SEGMENT_SECONDS = 60
+ACCURACY_HOTWORDS = ("生命体征",)
+OFFLINE_TRANSCRIPTION_PRIORITY_DESCRIPTION = (
+    "识别优先级：speed（默认）使用分段识别，速度优先；"
+    "accuracy 使用整段上下文识别，精度优先。"
+    f"显式请求 accuracy 且音频超过 {ACCURACY_MAX_AUDIO_SECONDS:.1f} 秒时，"
+    "服务端自动降级为 speed。"
+)
+
+
+def _normalize_transcription_priority(priority: str | None) -> str:
+    if priority is None:
+        return "speed"
+    normalized = priority.strip().lower()
+    if not normalized:
+        return "speed"
+    if normalized not in TRANSCRIPTION_PRIORITIES:
+        raise HTTPException(
+            status_code=400,
+            detail="priority 仅支持 speed 或 accuracy",
+        )
+    return normalized
+
+
+def _accuracy_max_length(duration_seconds: float) -> int:
+    """按音频时长预留输出空间，并限制单次生成的资源上限。"""
+    estimated_tokens = (
+        int(np.ceil(max(0.0, duration_seconds) * ACCURACY_OUTPUT_TOKENS_PER_SECOND))
+        + ACCURACY_OUTPUT_TOKEN_BUFFER
+    )
+    return min(
+        ACCURACY_MAX_OUTPUT_TOKENS,
+        max(ACCURACY_MIN_OUTPUT_TOKENS, estimated_tokens),
+    )
+
+
+def _resolve_offline_transcription_priority(
+    requested_priority: str,
+    duration_seconds: float | None,
+) -> tuple[str, str | None]:
+    """超长整段识别自动降级，并返回机器可读的降级原因。"""
+    if (
+        requested_priority == "accuracy"
+        and duration_seconds is not None
+        and duration_seconds > ACCURACY_MAX_AUDIO_SECONDS
+    ):
+        return "speed", "accuracy_duration_limit"
+    return requested_priority, None
+
+
+class _FixedFrameVadSegmenter:
+    """按固定 PCM 帧做能量检测，避免切分结果依赖 WebSocket 包大小。"""
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        sample_width_bytes: int,
+        frame_ms: int,
+        energy_threshold: float,
+        silence_duration: float,
+        min_segment_duration: float,
+        max_segment_duration: float | None = None,
+    ):
+        self.sample_rate = sample_rate
+        self.sample_width_bytes = sample_width_bytes
+        self.frame_samples = sample_rate * frame_ms // 1000
+        self.frame_bytes = self.frame_samples * sample_width_bytes
+        self.energy_threshold = energy_threshold
+        self.silence_samples_limit = int(silence_duration * sample_rate)
+        self.min_segment_bytes = int(
+            min_segment_duration * sample_rate * sample_width_bytes
+        )
+        self.max_segment_bytes = (
+            int(max_segment_duration * sample_rate * sample_width_bytes)
+            if max_segment_duration is not None
+            else None
+        )
+        self._pending = bytearray()
+        self._speech = bytearray()
+        self._is_speaking = False
+        self._silence_samples = 0
+
+    def feed(self, data: bytes) -> list[bytes]:
+        self._pending.extend(data)
+        segments = []
+        while len(self._pending) >= self.frame_bytes:
+            frame = bytes(self._pending[:self.frame_bytes])
+            del self._pending[:self.frame_bytes]
+            segment = self._consume_frame(frame)
+            if segment is not None:
+                segments.append(segment)
+        return segments
+
+    def flush(self) -> list[bytes]:
+        segments = []
+        if self._pending:
+            frame = bytes(self._pending)
+            self._pending.clear()
+            segment = self._consume_frame(frame)
+            if segment is not None:
+                segments.append(segment)
+
+        segment = self._take_segment()
+        if segment is not None:
+            segments.append(segment)
+        return segments
+
+    def reset(self):
+        self._pending.clear()
+        self._speech.clear()
+        self._is_speaking = False
+        self._silence_samples = 0
+
+    @property
+    def current_segment_size(self) -> int:
+        return len(self._speech)
+
+    def current_segment(self) -> bytes:
+        return bytes(self._speech)
+
+    def _consume_frame(self, frame: bytes) -> bytes | None:
+        usable_bytes = len(frame) - len(frame) % self.sample_width_bytes
+        if usable_bytes <= 0:
+            return None
+        frame = frame[:usable_bytes]
+        audio_np = np.frombuffer(frame, dtype=np.int16)
+        energy = float(np.abs(audio_np.astype(np.int32)).mean())
+
+        if energy > self.energy_threshold:
+            self._is_speaking = True
+            self._silence_samples = 0
+        elif self._is_speaking:
+            self._silence_samples += len(audio_np)
+
+        if self._is_speaking:
+            self._speech.extend(frame)
+
+        if (
+            self.max_segment_bytes is not None
+            and len(self._speech) >= self.max_segment_bytes
+        ):
+            return self._take_segment()
+
+        if (
+            self._is_speaking
+            and self._silence_samples > self.silence_samples_limit
+        ):
+            return self._take_segment()
+        return None
+
+    def _take_segment(self) -> bytes | None:
+        segment = bytes(self._speech)
+        self._speech.clear()
+        self._is_speaking = False
+        self._silence_samples = 0
+        if len(segment) < self.min_segment_bytes:
+            return None
+        return segment
 
 
 def _normalize_voiceprint_id(raw_id: str | None) -> str:
@@ -183,31 +351,70 @@ async def _transcribe_meeting_audio(
     audio_filename: str,
     threshold: float | None,
     allowed_speaker_ids: list[str] | None,
+    priority: str = "speed",
 ):
+    requested_priority = _normalize_transcription_priority(priority)
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speaker_ids = _normalize_allowed_speaker_ids(allowed_speaker_ids)
     should_match_speaker = _selected_speaker_matching_enabled(allowed_speaker_ids)
     matching_scope = service.build_matching_scope(allowed_speaker_ids) if should_match_speaker else None
 
-    from .services.meeting import process_meeting
+    duration_seconds = None
+    if requested_priority == "accuracy":
+        duration_seconds = await asyncio.to_thread(librosa.get_duration, path=audio_path)
 
-    transcript = await asyncio.to_thread(
-        process_meeting,
-        service,
-        audio_path,
-        threshold,
-        allowed_speaker_ids,
-        matching_scope,
-        should_match_speaker,
+    effective_priority, fallback_reason = _resolve_offline_transcription_priority(
+        requested_priority,
+        duration_seconds,
     )
+
+    if effective_priority == "accuracy":
+        text = await asyncio.to_thread(
+            service.transcribe_segment,
+            audio_path,
+            max_length=_accuracy_max_length(duration_seconds),
+            hotwords=ACCURACY_HOTWORDS,
+        )
+        if not text:
+            raise HTTPException(
+                status_code=502,
+                detail="accuracy 整段识别未返回文本，请重试或改用 speed 模式",
+            )
+        duration_ms = int(duration_seconds * 1000)
+        transcript = []
+        if text:
+            transcript.append({
+                "time": "00:00",
+                "speakerId": None,
+                "speaker": "未知",
+                "confidence": 0.0,
+                "text": text,
+                "start_ms": 0,
+                "end_ms": duration_ms,
+            })
+    else:
+        from .services.meeting import process_meeting
+
+        transcript = await asyncio.to_thread(
+            process_meeting,
+            service,
+            audio_path,
+            threshold,
+            allowed_speaker_ids,
+            matching_scope,
+            should_match_speaker,
+        )
     markdown = _build_meeting_markdown(transcript, audio_filename)
 
     return {
         "status": "success",
         "segments": len(transcript),
         "transcript": transcript,
-        "markdown": markdown
+        "markdown": markdown,
+        "requestedPriority": requested_priority,
+        "effectivePriority": effective_priority,
+        "fallbackReason": fallback_reason,
     }
 
 
@@ -395,6 +602,10 @@ async def transcribe_meeting(
         default=None,
         description="可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
     ),
+    priority: Annotated[
+        str,
+        Form(description=OFFLINE_TRANSCRIPTION_PRIORITY_DESCRIPTION),
+    ] = "speed",
 ):
     """
     上传音频文件，返回完整会议记录。
@@ -402,6 +613,11 @@ async def transcribe_meeting(
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
     - `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
+    - `priority`: `speed`（默认，速度优先）或 `accuracy`（整段上下文，精度优先）
+
+    显式请求 `accuracy` 且音频超过 812.8 秒时自动降级为 `speed`。响应中的
+    `requestedPriority`、`effectivePriority` 和 `fallbackReason` 分别表示请求模式、
+    实际模式和降级原因。
     """
     # 保存上传的音频
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
@@ -414,6 +630,7 @@ async def transcribe_meeting(
             file.filename,
             threshold,
             allowed_speaker_ids,
+            priority,
         )
         
     finally:
@@ -444,6 +661,10 @@ async def transcribe_meeting_stream(
         default=None,
         description="可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。",
     ),
+    priority: Annotated[
+        str,
+        Form(description=OFFLINE_TRANSCRIPTION_PRIORITY_DESCRIPTION),
+    ] = "speed",
 ):
     """
     流式处理会议音频（Server-Sent Events）。
@@ -451,12 +672,21 @@ async def transcribe_meeting_stream(
     - `file`: 会议音频文件
     - `threshold`: 可选的声纹匹配阈值
     - `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
+    - `priority`: `speed`（默认，速度优先）或 `accuracy`（整段上下文，精度优先）
 
     返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
+    显式请求 `accuracy` 且音频超过 812.8 秒时会先推送 `phase=fallback` 的
+    `status` 事件，再按 `speed` 处理；`done` 事件包含请求模式、实际模式和降级原因。
     """
     content = await file.read()
     suffix = os.path.splitext(file.filename or "")[1] or ".wav"
-    return await _stream_meeting_transcription(content, suffix, threshold, allowed_speaker_ids)
+    return await _stream_meeting_transcription(
+        content,
+        suffix,
+        threshold,
+        allowed_speaker_ids,
+        priority=priority,
+    )
 
 
 async def _stream_meeting_transcription(
@@ -465,6 +695,7 @@ async def _stream_meeting_transcription(
     threshold: float | None,
     allowed_speaker_ids: list[str] | None,
     *,
+    priority: str = "speed",
     source_path: str | None = None,
 ):
     """SSE 流式转录。`content` 为上传音频字节；或传 `source_path` 直接复用磁盘上的录音。"""
@@ -473,6 +704,7 @@ async def _stream_meeting_transcription(
     if (content is None) == (source_path is None):
         raise ValueError("must supply exactly one of content or source_path")
 
+    requested_priority = _normalize_transcription_priority(priority)
     if threshold is None:
         threshold = CONFIG["speaker_threshold"]
     allowed_speaker_ids = _normalize_allowed_speaker_ids(allowed_speaker_ids)
@@ -512,6 +744,65 @@ async def _stream_meeting_transcription(
             audio_duration_ms = int(audio_duration * 1000)
             t_load = time.perf_counter()
             print(f"⏱️ SSE 音频加载: {t_load - t_start:.2f}s, 时长: {audio_duration:.1f}s")
+
+            effective_priority, fallback_reason = _resolve_offline_transcription_priority(
+                requested_priority,
+                audio_duration,
+            )
+            priority_metadata = {
+                "requestedPriority": requested_priority,
+                "effectivePriority": effective_priority,
+                "fallbackReason": fallback_reason,
+            }
+            if fallback_reason is not None:
+                fallback_event = {
+                    "type": "status",
+                    "phase": "fallback",
+                    "message": "录音超过 accuracy 整段识别上限，已自动切换为 speed 模式",
+                    **priority_metadata,
+                }
+                yield f"data: {json_module.dumps(fallback_event, ensure_ascii=False)}\n\n"
+
+            if effective_priority == "accuracy":
+                yield f"data: {json_module.dumps({'type': 'status', 'phase': 'transcribing', 'message': '正在使用完整上下文识别...'}, ensure_ascii=False)}\n\n"
+                try:
+                    text = await asyncio.to_thread(
+                        service.transcribe_segment,
+                        speech_full,
+                        max_length=_accuracy_max_length(audio_duration),
+                        hotwords=ACCURACY_HOTWORDS,
+                    )
+                except Exception as exc:
+                    print(f"SSE accuracy 整段识别失败: {exc}")
+                    yield f"data: {json_module.dumps({'type': 'error', 'message': 'accuracy 整段识别失败，请重试或改用 speed 模式'}, ensure_ascii=False)}\n\n"
+                    return
+                if not text:
+                    yield f"data: {json_module.dumps({'type': 'error', 'message': 'accuracy 整段识别未返回文本，请重试或改用 speed 模式'}, ensure_ascii=False)}\n\n"
+                    return
+                if text:
+                    accuracy_info = {
+                        "type": "info",
+                        "total_segments": 1,
+                        "method": "accuracy",
+                        **priority_metadata,
+                    }
+                    yield f"data: {json_module.dumps(accuracy_info, ensure_ascii=False)}\n\n"
+                    result = {
+                        "type": "segment",
+                        "index": 0,
+                        "time": "00:00",
+                        "speakerId": None,
+                        "speaker": "未知",
+                        "confidence": 0.0,
+                        "text": text,
+                        "start_ms": 0,
+                        "end_ms": audio_duration_ms,
+                    }
+                    yield f"data: {json_module.dumps(result, ensure_ascii=False)}\n\n"
+                elapsed = time.perf_counter() - t_start
+                print(f"⏱️ SSE accuracy 整段识别完成: 总耗时 {elapsed:.2f}s")
+                yield f"data: {json_module.dumps({'type': 'done', **priority_metadata})}\n\n"
+                return
 
             full_audio_asr_task = None
             if service.upload_asr_backend == "paraformer":
@@ -1037,7 +1328,7 @@ async def _stream_meeting_transcription(
             # 发送完成信号
             t_done = time.perf_counter()
             print(f"⏱️ SSE 片段处理: {t_done - t_diarize:.2f}s, 总耗时: {t_done - t_start:.2f}s")
-            yield f"data: {json_module.dumps({'type': 'done'})}\n\n"
+            yield f"data: {json_module.dumps({'type': 'done', **priority_metadata})}\n\n"
 
         except Exception as e:
             import traceback
@@ -1088,11 +1379,15 @@ async def transcribe_meeting_recording(
         default=None,
         description="可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
     ),
+    priority: Annotated[
+        str,
+        Query(description=OFFLINE_TRANSCRIPTION_PRIORITY_DESCRIPTION),
+    ] = "speed",
 ):
     """
     根据实时录音返回的 fileId 识别录音内容，不需要客户端重新上传音频。
 
-    返回结构与 `/v1/meeting/transcribe` 保持一致。
+    返回结构、`priority` 模式和自动降级规则与 `/v1/meeting/transcribe` 保持一致。
     """
     normalized = _normalize_recording_file_id(file_id)
     try:
@@ -1105,6 +1400,7 @@ async def transcribe_meeting_recording(
         recording.filename,
         threshold,
         allowed_speaker_ids,
+        priority,
     )
 
 
@@ -1123,10 +1419,15 @@ async def transcribe_meeting_recording_stream(
         default=None,
         description="可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。",
     ),
+    priority: Annotated[
+        str,
+        Query(description=OFFLINE_TRANSCRIPTION_PRIORITY_DESCRIPTION),
+    ] = "speed",
 ):
     """
     根据实时录音返回的 fileId 以 SSE 流式方式识别录音内容，事件结构与
     `/v1/meeting/transcribe/stream` 完全一致：`status / info / segment / done / error`。
+    `priority` 模式、自动降级规则和完成事件元数据也与上传 SSE 接口一致。
     """
     normalized = _normalize_recording_file_id(file_id)
     try:
@@ -1136,7 +1437,12 @@ async def transcribe_meeting_recording_stream(
 
     suffix = os.path.splitext(recording.filename)[1] or ".wav"
     return await _stream_meeting_transcription(
-        None, suffix, threshold, allowed_speaker_ids, source_path=recording.path
+        None,
+        suffix,
+        threshold,
+        allowed_speaker_ids,
+        priority=priority,
+        source_path=recording.path,
     )
 
 
@@ -1163,13 +1469,20 @@ async def websocket_live(websocket: WebSocket):
     Swagger/OpenAPI 不展示 WebSocket 参数；当前支持通过 query string
     重复传 `allowed_speaker_ids` 来限制本次会议的匹配范围，例如：
     `/ws/meeting/live?allowed_speaker_ids=speaker-a&allowed_speaker_ids=speaker-b`
+    也可传 `priority=speed|accuracy`；默认 `speed`。`accuracy` 会对同一语音段
+    发送带 `segmentId / revision / isFinal` 的可修订结果，不使用离线接口的
+    812.8 秒自动降级规则。
 
     客户端发送音频流 (bytes)，服务端返回识别结果 (JSON)。
     """
     raw_allowed_speaker_ids = websocket.query_params.getlist("allowed_speaker_ids")
+    raw_priorities = websocket.query_params.getlist("priority")
     await websocket.accept()
     try:
         allowed_speaker_ids = _normalize_allowed_speaker_ids(raw_allowed_speaker_ids)
+        priority = _normalize_transcription_priority(
+            raw_priorities[-1] if raw_priorities else None
+        )
     except HTTPException as exc:
         await websocket.send_json({
             "type": "error",
@@ -1180,19 +1493,46 @@ async def websocket_live(websocket: WebSocket):
     should_match_speaker = _selected_speaker_matching_enabled(allowed_speaker_ids)
     matching_scope = service.build_matching_scope(allowed_speaker_ids) if should_match_speaker else None
 
-    print(f"WebSocket 连接建立，实时声纹识别: {'开启' if should_match_speaker else '关闭'}")
+    print(
+        f"WebSocket 连接建立，priority={priority}，"
+        f"实时声纹识别: {'开启' if should_match_speaker else '关闭'}"
+    )
     
-    audio_buffer = bytearray()
     recording_writer = recording_store.begin_pcm_wav()
-    is_speaking = False
-    silence_duration = 0
-    min_segment_bytes = 16000  # 约 0.5 秒，16kHz * 16bit * 1ch
+    vad_segmenter = _FixedFrameVadSegmenter(
+        sample_rate=RECORDING_SAMPLE_RATE,
+        sample_width_bytes=RECORDING_SAMPLE_WIDTH_BYTES,
+        frame_ms=10,
+        energy_threshold=CONFIG["silence_energy"],
+        silence_duration=(
+            max(1.5, CONFIG["silence_duration"])
+            if priority == "accuracy"
+            else CONFIG["silence_duration"]
+        ),
+        min_segment_duration=0.5,
+        max_segment_duration=(
+            ACCURACY_LIVE_MAX_SEGMENT_SECONDS
+            if priority == "accuracy"
+            else None
+        ),
+    )
     stop_requested = False
     is_paused = False
 
     # 使用 SpeakerTracker 进行说话人追踪
     tracker = SpeakerTracker()
     segment_queue = asyncio.Queue()
+    accuracy_interval_bytes = (
+        4 * RECORDING_SAMPLE_RATE * RECORDING_SAMPLE_WIDTH_BYTES
+    )
+    accuracy_segment_sequence = 0
+    accuracy_segment_id = None
+    accuracy_segment_time = None
+    accuracy_revision = 0
+    accuracy_next_interim_bytes = accuracy_interval_bytes
+    latest_interim_revision = {}
+    accuracy_texts = {}
+    transcription_failed = False
 
     async def safe_send_json(payload: dict):
         try:
@@ -1202,44 +1542,197 @@ async def websocket_live(websocket: WebSocket):
             print(f"WebSocket 发送失败: {e}")
             return False
 
-    async def flush_audio_buffer(reason: str):
-        nonlocal audio_buffer, is_speaking, silence_duration
-        if len(audio_buffer) >= min_segment_bytes:
-            segment_duration = len(audio_buffer) / (16000 * 2)
-            await segment_queue.put(bytes(audio_buffer))
+    async def send_accuracy_final_failure(work: dict):
+        nonlocal transcription_failed
+        transcription_failed = True
+        segment_id = work["segmentId"]
+        revision = work["revision"]
+        fallback_text = accuracy_texts.get(segment_id, "")
+        if fallback_text:
+            await safe_send_json({
+                "type": "transcript",
+                "time": work["time"] or datetime.now().strftime("%H:%M:%S"),
+                "speakerId": None,
+                "speaker": "未知",
+                "confidence": 0.0,
+                "text": fallback_text,
+                "segmentId": segment_id,
+                "revision": revision,
+                "isFinal": True,
+                "degraded": True,
+            })
+        await safe_send_json({
+            "type": "error",
+            "message": (
+                "最终识别失败，已保留最近一次临时结果"
+                if fallback_text
+                else "最终识别失败，请使用已保存录音重试"
+            ),
+            "segmentId": segment_id,
+            "revision": revision,
+            "isFinal": True,
+        })
+        accuracy_texts.pop(segment_id, None)
+        latest_interim_revision.pop(segment_id, None)
+
+    def ensure_accuracy_segment():
+        nonlocal accuracy_segment_sequence
+        nonlocal accuracy_segment_id
+        nonlocal accuracy_segment_time
+        if accuracy_segment_id is None:
+            accuracy_segment_sequence += 1
+            accuracy_segment_id = f"segment-{accuracy_segment_sequence}"
+            accuracy_segment_time = datetime.now().strftime("%H:%M:%S")
+        return accuracy_segment_id
+
+    def reset_accuracy_segment():
+        nonlocal accuracy_segment_id
+        nonlocal accuracy_segment_time
+        nonlocal accuracy_revision
+        nonlocal accuracy_next_interim_bytes
+        accuracy_segment_id = None
+        accuracy_segment_time = None
+        accuracy_revision = 0
+        accuracy_next_interim_bytes = accuracy_interval_bytes
+
+    async def enqueue_accuracy_interim(audio_chunk: bytes):
+        nonlocal accuracy_revision
+        nonlocal accuracy_next_interim_bytes
+        segment_id = ensure_accuracy_segment()
+        accuracy_revision += 1
+        latest_interim_revision[segment_id] = accuracy_revision
+        await segment_queue.put({
+            "audio": audio_chunk,
+            "segmentId": segment_id,
+            "revision": accuracy_revision,
+            "isFinal": False,
+            "time": accuracy_segment_time,
+        })
+        accuracy_next_interim_bytes = len(audio_chunk) * 2
+
+    async def enqueue_accuracy_final(audio_chunk: bytes):
+        nonlocal accuracy_revision
+        segment_id = ensure_accuracy_segment()
+        accuracy_revision += 1
+        await segment_queue.put({
+            "audio": audio_chunk,
+            "segmentId": segment_id,
+            "revision": accuracy_revision,
+            "isFinal": True,
+            "time": accuracy_segment_time,
+        })
+        reset_accuracy_segment()
+
+    async def maybe_enqueue_accuracy_interim():
+        if (
+            priority != "accuracy"
+            or vad_segmenter.current_segment_size < accuracy_next_interim_bytes
+        ):
+            return
+        await enqueue_accuracy_interim(vad_segmenter.current_segment())
+
+    async def enqueue_audio_segments(segments: list[bytes], reason: str):
+        for segment in segments:
+            segment_duration = len(segment) / (
+                RECORDING_SAMPLE_RATE * RECORDING_SAMPLE_WIDTH_BYTES
+            )
+            if priority == "accuracy":
+                await enqueue_accuracy_final(segment)
+            else:
+                await segment_queue.put({
+                    "audio": segment,
+                    "segmentId": None,
+                    "revision": None,
+                    "isFinal": True,
+                    "time": None,
+                })
             print(
                 f"📥 WebSocket {reason}片段入队: "
                 f"duration={segment_duration:.2f}s, queue_size={segment_queue.qsize()}"
             )
-        audio_buffer = bytearray()
-        is_speaking = False
-        silence_duration = 0
+
+    async def flush_audio_buffer(reason: str):
+        await enqueue_audio_segments(vad_segmenter.flush(), reason)
+        if priority == "accuracy":
+            reset_accuracy_segment()
 
     async def process_segment_worker():
         """后台处理已切分片段，避免阻塞 WebSocket 收包循环。"""
         while True:
-            audio_chunk = await segment_queue.get()
-            if audio_chunk is None:
+            work = await segment_queue.get()
+            if work is None:
                 segment_queue.task_done()
                 break
 
             try:
+                audio_chunk = work["audio"]
+                segment_id = work["segmentId"]
+                revision = work["revision"]
+                is_final = work["isFinal"]
+                if (
+                    segment_id is not None
+                    and not is_final
+                    and revision < latest_interim_revision.get(segment_id, revision)
+                ):
+                    continue
+
                 segment_duration = len(audio_chunk) / (16000 * 2)
                 queue_size = segment_queue.qsize()
                 started_at = time.perf_counter()
                 print(
-                    f"🎙️ WebSocket 片段开始处理: "
+                    f"🎙️ WebSocket {'最终' if is_final else '临时'}片段开始处理: "
                     f"duration={segment_duration:.2f}s, queue_size={queue_size}"
                 )
 
-                if should_match_speaker:
-                    text, emb = await asyncio.gather(
-                        asyncio.to_thread(service.transcribe_segment, audio_chunk),
-                        asyncio.to_thread(service.extract_embedding, audio_chunk),
+                transcribe_kwargs = {}
+                if segment_id is not None:
+                    transcribe_kwargs["max_length"] = _accuracy_max_length(
+                        segment_duration
                     )
+                    transcribe_kwargs["hotwords"] = ACCURACY_HOTWORDS
+                if segment_id is not None:
+                    try:
+                        text = await asyncio.to_thread(
+                            service.transcribe_segment,
+                            audio_chunk,
+                            **transcribe_kwargs,
+                        )
+                    except Exception as exc:
+                        if is_final:
+                            print(f"WebSocket 最终识别失败: {exc}")
+                            await send_accuracy_final_failure(work)
+                            continue
+                        raise
+                    if should_match_speaker and is_final:
+                        try:
+                            emb = await asyncio.to_thread(
+                                service.extract_embedding,
+                                audio_chunk,
+                            )
+                        except Exception as exc:
+                            print(f"WebSocket 最终片段声纹提取失败: {exc}")
+                            emb = None
+                    else:
+                        emb = None
                 else:
-                    text = await asyncio.to_thread(service.transcribe_segment, audio_chunk)
-                    emb = None
+                    if should_match_speaker:
+                        text, emb = await asyncio.gather(
+                            asyncio.to_thread(service.transcribe_segment, audio_chunk),
+                            asyncio.to_thread(service.extract_embedding, audio_chunk),
+                        )
+                    else:
+                        text = await asyncio.to_thread(
+                            service.transcribe_segment,
+                            audio_chunk,
+                        )
+                        emb = None
+
+                if segment_id is not None:
+                    if text:
+                        accuracy_texts[segment_id] = text
+                    elif is_final:
+                        await send_accuracy_final_failure(work)
+                        continue
 
                 if text:
                     speaker_id = None
@@ -1247,37 +1740,67 @@ async def websocket_live(websocket: WebSocket):
                     score = 0.0
 
                     if emb is not None:
-                        speaker_id, score = service.match_speaker_fast(
-                            emb,
-                            match_scope=matching_scope,
-                            allowed_speaker_ids=allowed_speaker_ids,
-                        )
-                        speaker_id, score = tracker.update(
-                            speaker_id, score, service.registered_embeddings
-                        )
-                        speaker_name = service.get_speaker_name(speaker_id)
+                        try:
+                            speaker_id, score = service.match_speaker_fast(
+                                emb,
+                                match_scope=matching_scope,
+                                allowed_speaker_ids=allowed_speaker_ids,
+                            )
+                            speaker_id, score = tracker.update(
+                                speaker_id, score, service.registered_embeddings
+                            )
+                            speaker_name = service.get_speaker_name(speaker_id)
+                        except Exception as exc:
+                            if segment_id is None:
+                                raise
+                            print(f"WebSocket 最终片段声纹匹配失败: {exc}")
+                            speaker_id = None
+                            speaker_name = "未知"
+                            score = 0.0
 
-                    # 过滤置信度极低的结果
-                    if not (speaker_id is not None and score < CONFIG["min_confidence"]):
-                        await safe_send_json({
-                            "time": datetime.now().strftime("%H:%M:%S"),
+                    low_speaker_confidence = (
+                        speaker_id is not None and score < CONFIG["min_confidence"]
+                    )
+                    if segment_id is not None and low_speaker_confidence:
+                        speaker_id = None
+                        speaker_name = "未知"
+                        score = 0.0
+
+                    # speed 保持原有低置信度过滤；accuracy 必须发送 final 收敛文本。
+                    if text and not (segment_id is None and low_speaker_confidence):
+                        payload = {
+                            "time": work["time"] or datetime.now().strftime("%H:%M:%S"),
                             "speakerId": speaker_id,
                             "speaker": speaker_name,
                             "confidence": round(score, 2),
-                            "text": text
-                        })
+                            "text": text,
+                        }
+                        if segment_id is not None:
+                            payload.update({
+                                "type": "transcript",
+                                "segmentId": segment_id,
+                                "revision": revision,
+                                "isFinal": is_final,
+                            })
+                        await safe_send_json(payload)
                         elapsed = time.perf_counter() - started_at
                         print(
                             f"✅ WebSocket 片段处理完成: "
                             f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s, "
                             f"speaker={speaker_name}, confidence={score:.2f}"
                         )
+                    if segment_id is not None and is_final:
+                        accuracy_texts.pop(segment_id, None)
+                        latest_interim_revision.pop(segment_id, None)
                 else:
                     elapsed = time.perf_counter() - started_at
                     print(
                         f"ℹ️ WebSocket 片段无有效文本: "
                         f"duration={segment_duration:.2f}s, elapsed={elapsed:.3f}s"
                     )
+                    if segment_id is not None and is_final:
+                        accuracy_texts.pop(segment_id, None)
+                        latest_interim_revision.pop(segment_id, None)
             except Exception as e:
                 print(f"WebSocket 片段处理错误: {e}")
             finally:
@@ -1316,9 +1839,7 @@ async def websocket_live(websocket: WebSocket):
                 if control.get("type") == "resume_recording":
                     if is_paused:
                         is_paused = False
-                        audio_buffer = bytearray()
-                        is_speaking = False
-                        silence_duration = 0
+                        vad_segmenter.reset()
                     await safe_send_json({"type": "recording_resumed"})
                     continue
 
@@ -1335,25 +1856,8 @@ async def websocket_live(websocket: WebSocket):
                 continue
 
             recording_writer.write_pcm(data)
-
-            # 简单的静音检测逻辑
-            audio_np = np.frombuffer(data, dtype=np.int16)
-            energy = np.abs(audio_np).mean()
-
-            if energy > CONFIG["silence_energy"]:
-                is_speaking = True
-                silence_duration = 0
-            else:
-                if is_speaking:
-                    silence_duration += len(data) / (16000 * 2)  # 16kHz, 16bit
-
-            # 只有检测到开始说话后才持续累积音频，避免把纯静音/环境噪声送进 ASR
-            if is_speaking:
-                audio_buffer.extend(data)
-
-            # 如果静音超过阈值且有足够长的音频，则处理
-            if is_speaking and silence_duration > CONFIG["silence_duration"]:
-                await flush_audio_buffer("")
+            await enqueue_audio_segments(vad_segmenter.feed(data), "")
+            await maybe_enqueue_accuracy_interim()
                 
     except WebSocketDisconnect:
         # Abnormal disconnects are not committed as recordings; callers must
@@ -1370,13 +1874,18 @@ async def websocket_live(websocket: WebSocket):
             try:
                 file_id = recording_writer.commit()
                 print(f"录音已落盘: {file_id}")
-                await safe_send_json({
+                recording_payload = {
                     "type": "recording_saved",
                     "fileId": file_id,
                     "format": "wav",
                     "sampleRate": RECORDING_SAMPLE_RATE,
                     "channels": RECORDING_CHANNELS,
-                })
+                }
+                if priority == "accuracy":
+                    recording_payload["transcriptionStatus"] = (
+                        "failed" if transcription_failed else "complete"
+                    )
+                await safe_send_json(recording_payload)
             except Exception as e:
                 recording_writer.abort()
                 print(f"WebSocket 录音保存错误: {e}")

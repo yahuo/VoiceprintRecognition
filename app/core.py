@@ -16,6 +16,7 @@ import time
 import tempfile
 import secrets
 import shutil
+import threading
 from dataclasses import dataclass
 import numpy as np
 import librosa
@@ -468,6 +469,7 @@ class ModelService:
         self._emb_names = []
         self._emb_name_to_idx = {}
         self._emb_matrix = None
+        self._asr_inference_lock = threading.Lock()
         self.is_loaded = False
 
     
@@ -1257,13 +1259,21 @@ class ModelService:
             print(f"声纹提取失败: {e}")
         return None
     
-    def transcribe_segment(self, audio_input, language: str = None) -> str:
+    def transcribe_segment(
+        self,
+        audio_input,
+        language: str = None,
+        max_length: int = 200,
+        hotwords: Collection[str] | None = None,
+    ) -> str:
         """
         识别单个音频片段
         
         Args:
             audio_input: 音频输入，支持文件路径、PCM bytes 或 numpy 音频数组
             language: 语言，默认使用 CONFIG["asr_language"]
+            max_length: 最大生成 token 数，短片段默认 200
+            hotwords: 可选的少量上下文热词
         
         Returns:
             识别的文本
@@ -1273,18 +1283,37 @@ class ModelService:
         
         try:
             prepared_input = self._prepare_asr_input(audio_input)
-            res = self.asr_model.generate(
-                input=prepared_input,
+            res = self._generate_nano(
+                prepared_input,
                 language=language,
-                use_itn=True,
-                batch_size=1,
-                max_length=200,
+                max_length=max_length,
+                hotwords=hotwords,
             )
             if res and len(res) > 0:
                 return res[0].get("text", "")
         except Exception as e:
             print(f"ASR 识别失败: {e}")
         return ""
+
+    def _generate_nano(
+        self,
+        prepared_input,
+        *,
+        language: str,
+        max_length: int,
+        hotwords: Collection[str] | None,
+    ):
+        # FunASR AutoModel 会原地更新单例 kwargs；串行调用并显式传空列表，
+        # 避免 accuracy 的热词在并发或后续 speed 请求中残留。
+        with self._asr_inference_lock:
+            return self.asr_model.generate(
+                input=prepared_input,
+                language=language,
+                itn=True,
+                hotwords=list(hotwords or ()),
+                batch_size=1,
+                max_length=max_length,
+            )
 
     def transcribe_full_audio(self, audio_input, backend: str = None, return_timestamps: bool = False) -> dict:
         """
@@ -1316,12 +1345,11 @@ class ModelService:
                     kwargs["sentence_timestamp"] = True
                 res = model.generate(**kwargs)
             else:
-                res = model.generate(
-                    input=prepared_input,
+                res = self._generate_nano(
+                    prepared_input,
                     language=CONFIG["asr_language"],
-                    use_itn=True,
-                    batch_size=1,
                     max_length=200,
+                    hotwords=None,
                 )
             return self._normalize_asr_result(res)
         except Exception as e:
