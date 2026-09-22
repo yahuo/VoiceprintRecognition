@@ -2089,6 +2089,18 @@
             if (activeMeetingJob?.terminal) document.getElementById('btnCancelMeeting').style.display = 'none';
         }
 
+        function formatMeetingIdentity(data) {
+            if (data.speakerId) return '声纹分数: ' + data.confidence;
+            if (data.identityStatus === 'not_requested') return '未选择参会人，仅匿名分人';
+            if (data.identityStatus === 'insufficient_audio') return '未确认身份：有效音频不足';
+            if (data.identityStatus === 'unavailable') return '未确认身份：声纹验证失败';
+            const reason = data.identityStatus === 'outside_winner' ? '候选外声纹更强'
+                : data.identityStatus === 'conflicting_windows' ? '窗口身份冲突' : '未通过声纹验证';
+            const score = typeof data.voiceprintScore === 'number' && Number.isFinite(data.voiceprintScore)
+                ? '；最高匹配分数: ' + data.voiceprintScore.toFixed(4) : '';
+            return '未确认身份：' + reason + score;
+        }
+
         async function consumeMeetingSseStream(response, sourceLabel) {
             const uploadStatus = document.getElementById('uploadStatus');
             const transcriptDiv = document.getElementById('meetingTranscript');
@@ -2158,7 +2170,7 @@
                                 <div class="meta">
                                     <span class="time">[${escapeHtml(data.time)}]</span>
                                     <span class="speaker">${escapeHtml(data.speaker)}</span>
-                                    <span class="confidence">(声纹分数: ${escapeHtml(data.confidence)})</span>
+                                    <span class="confidence">(${escapeHtml(formatMeetingIdentity(data))})</span>
                                 </div>
                                 <div class="text">${escapeHtml(data.text)}</div>
                             `;

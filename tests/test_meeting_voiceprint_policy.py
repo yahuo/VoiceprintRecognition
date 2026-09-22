@@ -7,8 +7,9 @@ import numpy as np
 import soundfile as sf
 
 from app.core import ModelService
-from app.services.meeting import process_meeting, _clean_speaker_window, export_markdown
-from app.services.moss import AudioTooLong, InvalidAudio, MossBusy
+from app.services.meeting import (process_meeting, _clean_speaker_window, export_markdown,
+                                  _speaker_sample_windows, _verify_speaker_windows)
+from app.services.moss import AudioTooLong, InvalidAudio, MossBusy, MossCancelled
 
 
 class MeetingVoiceprintPolicyTest(unittest.TestCase):
@@ -34,6 +35,7 @@ class MeetingVoiceprintPolicyTest(unittest.TestCase):
         self.service.match_registered_speaker_guarded.assert_not_called()
         self.assertEqual([x["speaker"] for x in rows], ["陌生人1", "陌生人2"])
         self.assertTrue(all(x["speakerId"] is None and x["confidence"] == 0 for x in rows))
+        self.assertTrue(all(x["voiceprintScore"] is None and x["identityStatus"] == "not_requested" for x in rows))
 
     def test_matches_current_segment_only_without_identity_inheritance(self):
         self.service.registered_speakers = {"a": {"name": "医生"}}
@@ -45,6 +47,89 @@ class MeetingVoiceprintPolicyTest(unittest.TestCase):
         self.assertEqual(rows[1]["confidence"], 0)
         self.assertEqual(self.service.match_registered_speaker_guarded.call_args.kwargs["allowed_speaker_ids"], ["a"])
         self.assertEqual(self.service.match_registered_speaker_guarded.call_args.kwargs["threshold"], .4)
+
+    def test_long_segment_samples_middle_and_tail_without_changing_transcript(self):
+        sf.write(self.path, np.linspace(-.1, .1, 16000 * 20), 16000)
+        self.service.moss.transcribe.return_value = [
+            {"start_ms": 1000, "end_ms": 19540, "diarizationSpeaker": "S01", "text": "连续发言。"}]
+        self.service.match_registered_speaker_guarded.side_effect = [(None, .25), (None, .29), ("a", .324)]
+        emitted = []
+        result = process_meeting(self.service, self.path, allowed_speaker_ids=["a", "b"],
+                                 match_registered_speakers=True, progress=emitted.append)
+        self.assertEqual(result[0]["speakerId"], "a")
+        self.assertEqual(result[0]["confidence"], .32)
+        self.assertEqual(result[0]["voiceprintScore"], .324)
+        self.assertEqual(result[0]["identityStatus"], "matched")
+        self.assertEqual(result[0]["end_ms"], 19540)
+        calls = self.service.extract_embedding.call_args_list
+        self.assertEqual([len(c.args[0]) for c in calls], [192000, 96000, 96000])
+        self.assertLess(calls[0].args[0][0], calls[1].args[0][0])
+        self.assertLess(calls[1].args[0][0], calls[2].args[0][0])
+        event = next(e for e in emitted if e['type'] == 'segment')
+        self.assertEqual({k: event[k] for k in result[0]}, result[0])
+
+    def test_sampling_is_bounded_and_keeps_short_segments_unchanged(self):
+        self.assertEqual(_speaker_sample_windows(500, 12500), [(500, 12500)])
+        self.assertEqual(_speaker_sample_windows(34510, 53050),
+                         [(34510, 46510), (40780, 46780), (47050, 53050)])
+        for start, end in [(0, 12001), (2000, 1000000)]:
+            windows = _speaker_sample_windows(start, end)
+            self.assertEqual(len(windows), 3)
+            self.assertTrue(all(start <= a < b <= end and b-a <= 12000 for a,b in windows))
+
+    def verify_windows(self):
+        return _verify_speaker_windows(self.service, np.ones(20 * 16000), 16000, 0, 20000,
+                                       .3, None, ["a", "b"], lambda: None)
+
+    def test_conflicting_passed_windows_do_not_pick_highest_score(self):
+        self.service.match_registered_speaker_guarded.side_effect = [("a", .8), (None, .2), ("b", .9)]
+        self.assertEqual(self.verify_windows(), (None, 0, .9, "conflicting_windows"))
+
+    def test_unconfirmed_score_is_preserved_without_fabricating_confidence(self):
+        self.service.match_registered_speaker_guarded.side_effect = [(None, .25), (None, .27), (None, .29)]
+        self.assertEqual(self.verify_windows(), (None, 0, .29, "unconfirmed"))
+        self.service.match_registered_speaker_guarded.side_effect = None
+        result = process_meeting(self.service, self.path, allowed_speaker_ids=["a"], match_registered_speakers=True)
+        self.assertEqual(result[0]["confidence"], 0)
+        self.assertEqual(result[0]["voiceprintScore"], .22)
+        self.assertEqual(result[0]["identityStatus"], "unconfirmed")
+
+    def test_matched_score_is_mean_of_passed_windows_not_maximum(self):
+        self.service.match_registered_speaker_guarded.side_effect = [("a", .8), (None, .2), ("a", .4)]
+        speaker, confidence, score, status = self.verify_windows()
+        self.assertEqual((speaker, status), ("a", "matched"))
+        self.assertAlmostEqual(confidence, .6)
+        self.assertEqual(confidence, score)
+
+    def test_failed_embedding_does_not_silently_skip_possible_conflict(self):
+        self.service.match_registered_speaker_guarded.return_value = ("a", .8)
+        self.service.extract_embedding.side_effect = [np.ones(2), None]
+        self.assertEqual(self.verify_windows(), (None, 0, None, "unavailable"))
+
+    def test_cancellation_between_windows_is_not_swallowed(self):
+        check = Mock(side_effect=[None, MossCancelled("cancelled")])
+        with self.assertRaises(MossCancelled):
+            _verify_speaker_windows(self.service, np.ones(20 * 16000), 16000, 0, 20000,
+                                    .3, None, ["a", "b"], check)
+        self.assertEqual(self.service.extract_embedding.call_count, 1)
+
+    def test_multi_window_preserves_real_outside_winner_and_single_candidate_guards(self):
+        self.service._emb_names = ["a", "b", "outside"]
+        self.service._emb_name_to_idx = {name: i for i, name in enumerate(self.service._emb_names)}
+        self.service._emb_matrix = np.eye(3, dtype=np.float32)
+        self.service.match_registered_speaker_guarded = ModelService.match_registered_speaker_guarded.__get__(self.service)
+        for ids in [["a"], ["a", "b"]]:
+            self.service.extract_embedding.side_effect = [
+                np.array([.6, 0, .8], dtype=np.float32),
+                np.array([1, 0, 0], dtype=np.float32),
+                np.array([1, 0, 0], dtype=np.float32),
+            ]
+            scope = self.service.build_matching_scope(ids)
+            result = _verify_speaker_windows(self.service, np.ones(20 * 16000), 16000, 0, 20000,
+                                             .3, scope, ids, lambda: None)
+            self.assertIsNone(result[0])
+            self.assertEqual(result[1], 0)
+            self.assertEqual(result[3], "outside_winner")
 
     def test_full_input_is_sent_once_with_original_text_and_times(self):
         seen = []

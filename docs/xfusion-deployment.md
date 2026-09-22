@@ -37,14 +37,14 @@ MOSS 运行环境与模型按文件哈希核对后复制进 PVC 的独立版本�
 
 `docker save` 离线导入可能使 Pod 的 imageID 指向外层 archive index。必须验证该 index **唯一指向本次 release index**，再核对唯一 ARM64 manifest 及 config；不把未知摘要直接放行，也不将外层 index 误报为平台子清单。
 
-当前发布为 `20260922-xfusion-cleanup`（应用代码 `3c64653`）。证据、前一版 Deployment、数据备份和带当前 spec/UID 守卫的回滚 patch 位于 `~/.local/share/voiceprint-cleanup-20260922/`。对应本地报告为 `output/xfusion-cleanup-20260922/`（不进入 Git/镜像）。本轮回滚恢复前一版 `20260922-xfusion-refresh`，不还原用户数据。
+当前发布为 `20260922-xfusion-voiceprint-windows`（基于 cleanup 镜像，仅更新部署时尚未提交的 `meeting.py` 与网页，实际源码以镜像内清单哈希为准）。证据、前一版 Deployment、数据备份和带当前 spec/UID 守卫的回滚 patch 位于 `~/.local/share/voiceprint-windows-20260922/`。对应本地证据为 `output/xfusion-voiceprint-windows-20260922/`（不进入 Git/镜像）。本轮回滚恢复前一版 `20260922-xfusion-cleanup`，不还原用户数据。
 
 原迁移数据备份/证据仍保留在 `~/.local/share/voiceprint-deploy-20260921/`，中间 UI 发布位于 `~/.local/share/voiceprint-ui-20260921/`；不要把旧发布的回滚守卫直接用于当前镜像。旧镜像仍在 containerd 中，回滚不自动还原数据备份，以免覆盖更新后用户新增的录音/声纹。
 
 确认目标身份及当前发布仍匹配，并检查没有上传、转写或录音后，可使用本次生成的带 UID/发布守卫的回滚 patch：
 
 ```bash
-ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-cleanup-20260922/rollback.patch.json"'
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-windows-20260922/rollback.patch.json"'
 ```
 
 该命令会重建应用 Pod，仅在明确要求回滚时执行。其他应用与 Nginx 不需要重启。
@@ -76,6 +76,17 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 - 隔离 CPU 实例完成真实 CAM++ 注册/删除和双音频比对，覆盖空文件 422、超限 413、正常注册 200；测试上传上限临时设为 1,000,000 字节，生产仍使用默认 256 MiB。完整 19.968 秒实时输入得到 9 个最终片段，无 error/degraded，保存 PCM 逐字节一致；仅删除隔离实例自己的测试记录。不是物理麦克风或身份准确率验收，也未创建第二套 GPU/MOSS 模型。
 - 生产 HTTPS 验证新注册空文件返回 422；完整同一短录音 MOSS 首段约 39.85 秒、完成约 40.08 秒，包含首次冷加载，2 段正常 done，终稿字段与上一版一致。未调用摘要服务；未重跑完整 MDT 或浏览器验收，未变的 MOSS/前端证据与本轮回归分开保留。
 - 切换前再次检查连接/任务/录音均空闲并备份数据。声纹文件哈希和原有 3 份录音的大小/mtime_ns 未变，六个其他服务启动时间/重启次数未变，Nginx 未重载。已核验实际 archive→release→ARM64 镜像链及 20 个运行源文件哈希。隔离测试容器已停止。
+
+## 2026-09-22 段内声纹多窗口验证（已上线）
+
+按用户授权于 15:51:01～15:51:33（UTC+08）更新为 `20260922-xfusion-voiceprint-windows`，Pod `voiceprint-ab-7b5d5d6644-cmw8n` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20260922-xfusion-voiceprint-windows-r1`，发布 index `sha256:331f7dec1573e424ed69abe80472ddc27e4d07762ce395978066caf75cc5c173`。本地构建、离线导入，未推送 registry；部署时尚未提交 Git，运行源码以 20 文件清单为准。只更新应用两文件、清单及发布注解，不变更依赖、模型或资源配置。
+- 长段补充中部/尾部窗口，每窗仍执行原阈值与候选保护；通过身份冲突或存在强候选外赢家时拒识，不跨片段继承姓名。网页区分拒识、有效音频不足和未选参会人，不再将其统称为 0 分。字段与取样规则见 [API](api.md#json)。
+- 本地及 ARM64 候选镜像 Python 各 131 项：130 通过、1 外部服务条件跳过；网页 Node 13/13。隔离 CPU CAM++ 使用部署声纹库只读挂载及本次 146.264s 输入，MOSS 片段复用旧版本实际结果；目标段命中，既有确认身份、短段结果未变，单选错误参会人仍全部拒识。该候选验证不冒充第二套真实 MOSS 推理。
+- 切换后经原 HTTPS 网关重新处理完整音频，19 段正常 done，文字、时间和匿名标签与旧版逐项一致；00:34 段命中许根桃，实际分数 0.3033（显示 0.3），其余原已确认身份及短段结果未变。首段 39.35s、完成 45.11s，含 worker 冷加载，不与旧版预热 6.37s 直接比较性能。
+- Chrome 先经临时 SSH 转发回放同一真实任务并刷新恢复，随后关闭本次转发，直接访问当前 LAN 地址 `https://10.16.78.160:8443/voiceprint/client` 复核 19 段、目标身份及拒识分数展示；没有重新上传或调用摘要。声纹哈希与原有 4 份录音元数据未变，六个其他服务启动/重启状态未变。候选测试容器已退出。
+- 该段仍接近阈值，本次单音频回归不代表声纹库质量、广泛误识率或医学准确率验收。未修改已有结果缓存，旧任务需重新处理才使用新规则。
 
 ## 尚未由部署验收证明的事项
 
