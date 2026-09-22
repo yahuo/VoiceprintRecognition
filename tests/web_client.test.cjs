@@ -81,6 +81,25 @@ test('offline review uses independent state and requires done', async () => {
     assert.ok(c.elements.get('meetingTranscript').children[0].innerHTML.includes('&lt;img'));
 });
 
+test('offline identity distinguishes rejected scores, no sampling, conflicts and confirmed matches', async () => {
+    const cases = [
+        [{ identityStatus:'unconfirmed', voiceprintScore:.2487 }, '未通过声纹验证；最高匹配分数: 0.2487'],
+        [{ identityStatus:'not_requested', voiceprintScore:null }, '未选择参会人，仅匿名分人'],
+        [{ identityStatus:'insufficient_audio', voiceprintScore:null }, '有效音频不足'],
+        [{ identityStatus:'unavailable', voiceprintScore:null }, '声纹验证失败'],
+        [{ identityStatus:'conflicting_windows', voiceprintScore:.8 }, '窗口身份冲突；最高匹配分数: 0.8000'],
+        [{ speakerId:'a', identityStatus:'matched', confidence:.32 }, '声纹分数: 0.32'],
+        [{}, '未确认身份：未通过声纹验证'],
+    ];
+    for (const [extra, expected] of cases) {
+        const c = client();
+        await c.scope.consumeMeetingSseStream(sse([{ type:'segment', ...row, ...extra }, { type:'done', segments:1 }]), 'test.wav');
+        const html = c.elements.get('meetingTranscript').children[0].innerHTML;
+        assert.ok(html.includes(expected), html);
+        if (!extra.speakerId) assert.ok(!html.includes('(声纹分数: 0)'));
+    }
+});
+
 test('SSE EOF without done or explicit error cannot be accepted as complete', async () => {
     for (const events of [
         [{ type:'segment', ...row }],

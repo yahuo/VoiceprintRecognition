@@ -89,7 +89,10 @@ id 不用于构造向量文件路径，旧名字索引仍支持迁移。不要�
 
 - `diarizationSpeaker`：本次完整录音中的匿名标签，不能跨录音当作真实身份。
 - `speakerId`：仅通过 CAM++ guard 后才返回注册 id；否则 `null`。
-- `confidence`：声纹匹配分数，不是文本准确率、匿名分人准确率或概率；未确认身份为 0。
+- 身份验证只使用当前片段内排除跨人重叠后的最长连续区。≤12 秒保持整窗验证；>12 秒取开头 12 秒、中部 6 秒、结尾 6 秒，最多三窗。每窗均执行原候选范围、阈值、时长及候选外赢家保护；至少一窗通过且所有通过窗身份一致才确认，有身份冲突、任一窗存在满足保护规则的强候选外赢家或取样失败则保留未知。不跨段继承身份，不降低阈值。
+- `confidence`：通过验证的窗口分数均值（单窗时即该窗分数），不是文本准确率、匿名分人准确率或概率；未确认身份仍为 0，兼容旧客户端。
+- `voiceprintScore`：确认身份时为通过窗分数均值；拒识时为各窗 guard 返回分数的最大值（候选范围内匹配分数，并非身份概率），保留 4 位小数；未执行验证或验证失败为 `null`。不能用此字段代替 `speakerId` 判定身份。
+- `identityStatus`：`matched` 已确认、`unconfirmed` 未通过保护规则、`conflicting_windows` 多窗通过了不同身份、`outside_winner` 存在更强候选外声纹、`insufficient_audio` 有效音频不足、`unavailable` 验证失败、`not_requested` 未选参会人。网页不再把拒识或未取样显示成“声纹分数 0”。
 - 允许跨说话人时间重叠。不会为让时间线“好看”而剪掉原始结果。
 - `requestedPriority/effectivePriority` 均兼容回显规范化后的 `speed/accuracy`，避免破坏旧客户端的枚举解析；标记已弃用，不再代表实际识别策略。新客户端看 `processingMode=unified`、`method=moss`。其余原有转写字段保持。
 

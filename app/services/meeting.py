@@ -111,29 +111,30 @@ def process_meeting(
                     break
                 label = segment["diarizationSpeaker"]
                 anonymous_names.setdefault(label, f"陌生人{len(anonymous_names) + 1}")
-                speaker_id, confidence = None, 0.0
+                speaker_id, confidence, voiceprint_score = None, 0.0, None
+                identity_status = "not_requested"
                 if match_registered_speakers:
                     start, end = _clean_speaker_window(segments, index)
+                    identity_status = "insufficient_audio"
                     if end - start >= CONFIG["offline_scoped_match_min_duration_ms"]:
-                        end = min(end, start + 12000)
                         try:
-                            embedding = service.extract_embedding(audio[start * sr // 1000:end * sr // 1000])
-                            if embedding is not None:
-                                speaker_id, confidence = service.match_registered_speaker_guarded(
-                                    embedding, threshold=threshold, duration_ms=end - start,
-                                    match_scope=matching_scope, allowed_speaker_ids=allowed_speaker_ids,
-                                )
+                            speaker_id, confidence, voiceprint_score, identity_status = _verify_speaker_windows(
+                                service, audio, sr, start, end, threshold,
+                                matching_scope, allowed_speaker_ids, check_cancelled,
+                            )
+                        except MossCancelled:
+                            raise
                         except Exception:
-                            speaker_id, confidence = None, 0.0
+                            identity_status = "unavailable"
                             emit({"type": "status", "phase": "identity_warning", "message": "声纹验证失败，保留匿名说话人与原文"})
                     # 不从同一匿名簇、上一句或文件名强行继承真实身份。
-                    if speaker_id is None:
-                        confidence = 0.0
                 item = {
                     **segment, "time": format_time(segment["start_ms"]),
                     "speakerId": speaker_id,
                     "speaker": service.get_speaker_name(speaker_id) if speaker_id is not None else anonymous_names[label],
                     "confidence": round(float(confidence), 2),
+                    "voiceprintScore": round(float(voiceprint_score), 4) if voiceprint_score is not None else None,
+                    "identityStatus": identity_status,
                 }
                 transcript.append(item)
                 emit({"type": "segment", "index": index, **item})
@@ -161,6 +162,52 @@ def process_meeting(
         return transcript
     finally:
         service._offline_lock.release()
+
+
+def _speaker_sample_windows(start, end):
+    """短段保持原取样；长段补充中部/尾部，各窗不越过已排除重叠的连续区。"""
+    windows = [(start, min(end, start + 12000))]
+    if end - start > 12000:
+        middle = start + (end - start - 6000) // 2
+        windows.extend([(middle, middle + 6000), (end - 6000, end)])
+    return windows
+
+
+def _verify_speaker_windows(service, audio, sr, start, end, threshold,
+                            matching_scope, allowed_speaker_ids, check_cancelled):
+    """每窗独立过 guard；只接受唯一通过的身份，有冲突/提取失败则保留未知。
+
+    未过阈值的窗口不投身份票，也不把匿名标签当身份依据。返回实际通过窗的
+    平均分，而不是挑最高分冒充整段置信度；拒识时另保留最高原始匹配分数。
+    """
+    decisions, scores = [], []
+    outside_conflict = False
+    scope = matching_scope or service.build_matching_scope(allowed_speaker_ids)
+    for left, right in _speaker_sample_windows(start, end):
+        check_cancelled()
+        embedding = service.extract_embedding(audio[left * sr // 1000:right * sr // 1000])
+        if embedding is None:
+            return None, 0.0, None, "unavailable"
+        speaker_id, score = service.match_registered_speaker_guarded(
+            embedding, threshold=threshold, duration_ms=right - left,
+            match_scope=scope, allowed_speaker_ids=allowed_speaker_ids,
+        )
+        if not np.isfinite(score):
+            return None, 0.0, None, "unavailable"
+        scores.append(score)
+        # 不能让尾窗的候选身份覆盖另一窗已发现的强候选外赢家。
+        outside_conflict |= service._scoped_match_conflicts_with_outside_winner(
+            embedding, speaker_id, score, threshold, scope,
+        )
+        if speaker_id is not None:
+            decisions.append((speaker_id, score))
+    if outside_conflict:
+        return None, 0.0, max(scores), "outside_winner"
+    identities = {speaker_id for speaker_id, _ in decisions}
+    if len(identities) == 1:
+        score = sum(score for _, score in decisions) / len(decisions)
+        return decisions[0][0], score, score, "matched"
+    return None, 0.0, max(scores), "conflicting_windows" if identities else "unconfirmed"
 
 
 def _clean_speaker_window(segments, index):
