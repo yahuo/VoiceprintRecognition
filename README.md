@@ -52,6 +52,8 @@ worker 在本机懒加载、常驻、单请求串行；不暴露网络端口，�
 
 ## 运行时配置
 
+配置模板见 [.env.example](.env.example)。已有 `.env` 请逐项迁移，不要覆盖；示例中的容器路径须与实际挂载一致。
+
 ```bash
 # 实时及声纹模型，可使用 scripts/download_all_models.py 输出的本地路径
 ASR_MODEL_PATH=/path/to/models/asr/Fun-ASR-Nano-2512
