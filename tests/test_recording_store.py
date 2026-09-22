@@ -159,6 +159,8 @@ class RecordingApiTest(unittest.TestCase):
             *,
             priority="speed",
             source_path=None,
+            source_label=None,
+            job_id=None,
         ):
             async def events():
                 yield b"data: {\"type\":\"done\"}\n\n"
@@ -378,6 +380,12 @@ class FakeWebSocket:
 
 class FakeService:
     registered_embeddings = {}
+
+    def vad_stream(self, _audio, _cache, **kwargs):
+        return []
+
+    def transcribe_stream_chunk(self, _audio, _cache, **kwargs):
+        return ""
 
     def build_matching_scope(self, allowed_speaker_ids):
         return None

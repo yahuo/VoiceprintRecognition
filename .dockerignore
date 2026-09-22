@@ -10,17 +10,32 @@ __pycache__
 *.pyd
 .Python
 venv
-.venv
+venv_*
+.venv*
 pip-log.txt
 pip-delete-this-directory.txt
 
 # Environment variables
-.env
+.env*
 
 # Data
 voiceprint_db/
+recordings/
 samples/
+output/
 outputs/
+models/
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.wma
+*.mp4
+*.mov
+*.npy
 
 # IDEs
 .idea

@@ -45,7 +45,17 @@ class _CapturingService:
     def build_matching_scope(self, _allowed_speaker_ids):
         return None
 
-    def transcribe_segment(self, audio):
+    def vad_stream(self, audio, cache, *, is_final, **kwargs):
+        first = not cache
+        cache["samples"] = cache.get("samples", 0) + len(audio) // 2
+        if is_final:
+            return [[0 if first else -1, cache["samples"] // 16]]
+        return [[0, -1]] if first else []
+
+    def transcribe_stream_chunk(self, audio, cache, **kwargs):
+        return "首遍"
+
+    def transcribe_segment(self, audio, **kwargs):
         self.transcribed_audio.append(bytes(audio))
         return "测试"
 

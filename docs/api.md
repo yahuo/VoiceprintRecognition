@@ -1,294 +1,176 @@
-# Voiceprint Meeting System API 接口文档
+# Voiceprint Meeting API 3.0
 
-- 版本: `2.0.0`
-- Base URL: `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
-- OpenAPI JSON: `http://localhost:8000/openapi.json`
+基本地址示例：`http://localhost:8000`。网页：`GET /client`。
 
-## REST 接口
+语音处理均在自托管环境中运行。实时稿与会后复核稿是不同版本；自动识别结果不是医学事实或身份认证结论。
 
-### `GET /`
-- 摘要: Root
+## 健康状态
 
-健康检查
+`GET /` 返回 `models_loaded`、注册声纹数、固定的实时/离线链路名称和 `offline_configured`。
 
-响应:
+`offline_configured` 仅表示已提供 MOSS 配置，不代表 worker 已热启动、CUDA 可用或已通过真实音频验收。健康接口不返回 API key、LLM 地址、模型路径等私有配置。
 
-| 状态码 | 说明 | Content-Type |
+## 声纹管理
+
+### 注册
+
+`POST /v1/voiceprint/register`，`multipart/form-data`：
+
+| 字段 | 必填 | 说明 |
 |---|---|---|
-| `200` | Successful Response | `application/json` |
+| `name` | 是 | 展示名，去除首尾空白后不可为空 |
+| `file` | 是 | 注册音频，推荐安静环境单人 10–30 秒 |
+| `id` | 否 | 不透明外部 id；不传生成 24 位随机 id。同 id 覆盖原记录，同名可有多个 id |
 
-### `GET /client`
-- 摘要: Client
+成功返回 `status/id/name/message/embedding_shape`。提取失败返回 400。声纹向量不通过 API 返回。
 
-响应:
+```bash
+curl -X POST http://localhost:8000/v1/voiceprint/register \
+  -F 'id=doctor-a' -F 'name=医生A' -F 'file=@registration.wav'
+```
 
-| 状态码 | 说明 | Content-Type |
+### 查询与删除
+
+- `GET /v1/voiceprint/list` → `{status, count, speakers:[{id,name}]}`。
+- `GET /v1/voiceprint/exists?id=doctor-a` → `{registered, id, name}`。
+- `DELETE /v1/voiceprint?id=doctor-a`：不存在返回 404，成功返回 `{status,id,name,message}`。
+- `POST /v1/voiceprint/reload`：重新加载已有索引与向量。
+
+id 不用于构造向量文件路径，旧名字索引仍支持迁移。不要把姓名或录音文件名当作声纹识别结果。
+
+## 离线全文识别
+
+### 四个共用入口
+
+| 接口 | 输入 | 输出 |
 |---|---|---|
-| `200` | Successful Response | `application/json` |
+| `POST /v1/meeting/transcribe` | multipart 上传 `file` | JSON |
+| `POST /v1/meeting/transcribe/stream` | multipart 上传 `file` | SSE |
+| `POST /v1/meeting/recordings/{fileId}/transcribe` | 已保存的原始 WAV | JSON |
+| `POST /v1/meeting/recordings/{fileId}/transcribe/stream` | 已保存的原始 WAV | SSE |
 
-### `POST /v1/meeting/summarize`
-- 摘要: Summarize Meeting Api
+共同参数：上传接口通过 Form，其余通过 Query 传入。
 
-生成会议总结
-
-Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
+| 参数 | 默认 | 说明 |
 |---|---|---|
-| `200` | Successful Response | `application/json` |
+| `threshold` | 服务配置（0.30） | 0–1 的有限数值；不能绕过身份保护阈值 |
+| `allowed_speaker_ids` | 未指定 | 可重复；只匹配选定的已注册声纹 id。未知 id 返回 400 |
+| `priority` | `speed` | **已弃用的兼容参数**；接受 `speed/accuracy`，其他值 400；不再改变离线链路 |
 
-### `POST /v1/meeting/transcribe`
-- 摘要: 上传音频生成会议记录
+未选择参会人时，仅提供 MOSS 匿名分人，不提取声纹、不查全库身份。即使只选一人，也不能把所有片段强制分给此人；存在更强的候选外注册人时仍拒识。
 
-上传音频文件，返回完整会议记录。
+所有离线请求运行 **同一套 MOSS 完整输入推理**，没有旧的 `accuracy` 整段 Nano 或 `speed` 分段 ASR/对齐分支，没有 812.8 秒自动降级。默认最多 2600 秒完整音频、256 MiB 上传文件；超限明确报错，不截断、不以独立分块结果冒充整段处理。
 
-- `file`: 会议音频文件
-- `threshold`: 可选的声纹匹配阈值，默认使用服务端配置
-- `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
-- `priority`: 可选的识别优先级，默认 `speed`
-
-请求体:
-
-- 请求体必填: 是
-- Content-Type: `multipart/form-data`
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `file` | `string` | 是 | 会议音频文件，支持 WAV、MP3、M4A 等格式。 |
-| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
-| `priority` | `string` | 否 | `speed`（默认，分段识别、速度优先）或 `accuracy`（整段上下文、精度优先）。其他值返回 `400`。 |
-
-模式与自动降级规则:
-
-- 不传 `priority` 或传 `priority=speed`: 使用默认的速度优先模式。
-- 传 `priority=accuracy`: 优先使用整段上下文识别，并返回一个整段结果。
-- 显式请求 `accuracy` 且音频超过 `812.8` 秒: 自动降级为 `speed`，请求不会因整段时长上限失败。
-
-成功响应额外包含以下字段:
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `requestedPriority` | `string` | 调用方请求的模式。未传 `priority` 时为 `speed`。 |
-| `effectivePriority` | `string` | 服务端实际使用的模式。 |
-| `fallbackReason` | `string \| null` | 未降级时为 `null`；超过整段上限时为 `accuracy_duration_limit`。 |
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | 完整会议转写结果与 Markdown | `application/json` |
-| `422` | Validation Error | `application/json` |
-
-### `POST /v1/meeting/transcribe/stream`
-- 摘要: 流式处理会议音频
-
-流式处理会议音频（Server-Sent Events）。
-
-- `file`: 会议音频文件
-- `threshold`: 可选的声纹匹配阈值
-- `allowed_speaker_ids`: 可选的参会人声纹 id 白名单。未传时不匹配注册声纹；传入后只在指定注册声纹范围内识别说话人
-- `priority`: 可选的识别优先级，默认 `speed`；模式和自动降级规则与非 SSE 上传接口一致
-
-返回 `text/event-stream`，会按阶段推送 `status / info / segment / done / error` 事件。
-发生自动降级时，服务端会先推送 `type=status, phase=fallback` 事件；最终 `done`
-事件包含 `requestedPriority`、`effectivePriority` 和 `fallbackReason`。
-
-请求体:
-
-- 请求体必填: 是
-- Content-Type: `multipart/form-data`
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `file` | `string` | 是 | 会议音频文件，支持 WAV、MP3、M4A 等格式。 |
-| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名字段；传入后只会在这些已注册声纹中匹配。 |
-| `priority` | `string` | 否 | `speed`（默认）或 `accuracy`。其他值返回 `400`。 |
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | SSE 流，按阶段和分段持续返回转写结果 | `text/event-stream` |
-| `422` | Validation Error | `application/json` |
-
-### `GET /v1/voiceprint/list`
-- 摘要: List Speakers
-
-列出已注册的声纹
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | Successful Response | `application/json` |
-
-### `POST /v1/voiceprint/register`
-- 摘要: Register Speaker
-
-注册声纹
-
-- **name**: 说话人姓名
-- **id**: 可选的外部声纹 id；未传时自动生成 24 位 ObjectId 风格随机 id
-- **file**: 音频文件 (WAV, MP3, M4A 等)
-- 服务启动/读取声纹索引时会自动把旧版 `name -> npy文件` 索引迁移为新版 `id -> {id, name, file}`。
-
-请求体:
-
-- 请求体必填: 是
-- Content-Type: `multipart/form-data`
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `name` | `string` | 是 |  |
-| `id` | `string` | 否 | 外部声纹 id，任意非空字符串。 |
-| `file` | `string` | 是 |  |
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | Successful Response | `application/json` |
-| `422` | Validation Error | `application/json` |
-
-### `POST /v1/voiceprint/reload`
-- 摘要: Reload Voiceprints
-
-热重载声纹库（无需重启服务）
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | Successful Response | `application/json` |
-
-### `GET /v1/voiceprint/exists`
-- 摘要: Voiceprint Exists
-
-按 id 判断声纹是否已注册
-
-请求参数:
-
-| 名称 | 位置 | 类型 | 必填 | 说明 |
-|---|---|---|---|---|
-| `id` | `query` | `string` | 是 | 声纹 id |
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | Successful Response | `application/json` |
-| `422` | Validation Error | `application/json` |
-
-### `DELETE /v1/voiceprint`
-- 摘要: Delete Speaker
-
-按 id 删除已注册的声纹
-
-请求参数:
-
-| 名称 | 位置 | 类型 | 必填 | 说明 |
-|---|---|---|---|---|
-| `id` | `query` | `string` | 是 | 声纹 id |
-
-响应:
-
-| 状态码 | 说明 | Content-Type |
-|---|---|---|
-| `200` | Successful Response | `application/json` |
-| `422` | Validation Error | `application/json` |
-
-## WebSocket 接口
-
-### `WS /ws/meeting/live`
-
-- 用途: 实时会议识别与录音保存。客户端发送 PCM 音频 bytes，服务端按片段返回 JSON 识别结果；客户端发送停止控制消息后，服务端保存完整录音并返回 `fileId`。
-- 连接地址: `ws://localhost:8000/ws/meeting/live`
-- Query 参数: `allowed_speaker_ids` 可重复传入，用于限制本次会议的声纹匹配范围。
-- Query 参数: `priority` 可选，支持 `speed`（默认）和 `accuracy`。
-- 示例: `ws://localhost:8000/ws/meeting/live?allowed_speaker_ids=speaker-a&priority=accuracy`
-
-实时模式规则:
-
-- `speed`: 保持原有按语音段返回结果的方式，速度优先。
-- `accuracy`: 增大同一语音段的上下文，并用相同 `segmentId`、递增 `revision` 和
-  `isFinal` 标识临时结果与最终结果；客户端应按 `segmentId` 替换旧文本，而不是追加。
-- 实时 WebSocket 不使用离线接口的 `812.8` 秒自动降级规则；单个连续语音段最长
-  `60` 秒，达到上限后结束当前段并开始下一段。
-
-服务端消息示例:
+### JSON
 
 ```json
 {
-  "time": "14:23:01",
-  "speakerId": "speaker-a",
-  "speaker": "张三",
-  "confidence": 0.82,
-  "text": "这里是实时识别出的文本"
+  "status": "success",
+  "segments": 1,
+  "transcript": [{
+    "time": "00:01",
+    "start_ms": 1200,
+    "end_ms": 3200,
+    "diarizationSpeaker": "S01",
+    "speakerId": null,
+    "speaker": "陌生人1",
+    "confidence": 0.0,
+    "text": "示例发言。"
+  }],
+  "markdown": "# 会议复核稿...",
+  "requestedPriority": "speed",
+  "effectivePriority": "speed",
+  "processingMode": "unified",
+  "fallbackReason": null,
+  "priorityDeprecated": true,
+  "method": "moss"
 }
 ```
 
-`accuracy` 可修订消息示例（后续消息使用相同 `segmentId` 和更大的 `revision`）:
+- `diarizationSpeaker`：本次完整录音中的匿名标签，不能跨录音当作真实身份。
+- `speakerId`：仅通过 CAM++ guard 后才返回注册 id；否则 `null`。
+- `confidence`：声纹匹配分数，不是文本准确率、匿名分人准确率或概率；未确认身份为 0。
+- 允许跨说话人时间重叠。不会为让时间线“好看”而剪掉原始结果。
+- `requestedPriority/effectivePriority` 均兼容回显规范化后的 `speed/accuracy`，避免破坏旧客户端的枚举解析；标记已弃用，不再代表实际识别策略。新客户端看 `processingMode=unified`、`method=moss`。其余原有转写字段保持。
+
+### SSE
+
+`Content-Type: text/event-stream`，每个 JSON 事件以 `data: ...\n\n` 分隔：
+
+1. `status`：`phase=queued/loading/transcribing`，包含 `message`。
+2. `segment`：生成过程中逐段推送，`index` 从 0 连续递增，其他字段与 JSON `transcript` 中的条目一致。
+3. `info`：正常 EOS 后确定整数 `total_segments`、`method=moss` 及弃用参数元数据。它可能晚于已经发出的 `segment`；少量等待身份验证的尾段可在它之后发出。不要要求先收到总段数才显示文字。
+4. `done`：`segments`、`method` 和弃用参数元数据。
+5. `error`：失败时返回 `message`，**不会再发送 done**。
+
+输入仍是一次完整录音，不独立切块。MOSS 生成过程中，将格式边界和时间戳已验证的完整片段逐段推送；选定参会人时还需等待后续时间水位排除跨人重叠，才执行 CAM++ 匹配。期间可能有 `: processing` 注释心跳，但心跳不代表文字输出。
+
+只有正常 EOS、全文校验、流式前缀与终稿一致、全部片段发送完成后才发 `done`。此前显示的是尚未完成的转写；若后续截断、取消或异常，已显示的部分不能冒充成功结果。网页在 `done` 前禁用导出和摘要，失败时保留未完成状态。HTTP 200、收到片段、连接关闭均不能替代 `done`。
+
+```bash
+curl -N http://localhost:8000/v1/meeting/transcribe/stream \
+  -F 'file=@meeting.wav' -F 'allowed_speaker_ids=doctor-a' -F 'allowed_speaker_ids=doctor-b'
+
+curl -X POST \
+  'http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speaker_ids=doctor-a'
+```
+
+JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无法解码，502 模型失败/输出异常，503 未配置或离线忙，504 推理超时。SSE 已发送响应头后的失败使用 `error` 事件。
+
+### 后台任务与刷新恢复
+
+上传 SSE 可传 Form `job_id`，保存录音 SSE 可传 Query `job_id`，均为规范小写 UUIDv4；不传则由服务端生成。网页在上传前将最近的随机 jobId 与原服务器地址存入本机浏览器 `localStorage`，不保存转写正文。同一浏览器刷新或重新打开同一页面地址可恢复该任务。首次 `status` 和响应头 `X-Meeting-Job-Id` 返回任务 ID。
+
+- `GET /v1/meeting/jobs/{jobId}`：状态 `running/cancelling/done/error/cancelled`、源文件显示名、片段/事件数。
+- `GET /v1/meeting/jobs/{jobId}/events?after=0`：从头回放再继续订阅；每个 JSON 事件带连续整数 `eventId`。断线重连可以传已应用的最后一个 eventId；刷新后空白页面从 0 重建结果。`index` 仍是从 0 开始的片段序号，不等于 eventId。
+- `POST /v1/meeting/jobs/{jobId}/cancel`：显式取消，最终发 `error`（`cancelled=true`），不发 `done`。不会删除已保存原始录音。正常取消只 abort 当前 vLLM 请求，模型继续常驻；无法确认取消或模型/协议异常才回收 worker。
+- **关闭网页、刷新、SSE 断开只释放订阅，不取消任务、不卸载模型。** 输入文件由后台任务持有，计算结束后才清理。重复提交相同 jobId 返回 409，恢复使用 GET，不再次 POST 音频。
+- 单进程最多一个进行中任务；最多缓存 8 个任务，每个事件缓存上限 32MiB、同时最多 4 个订阅。已完成结果可恢复至完成后 1 小时，容量不足时可能提前淘汰最旧且无人读取的完成稿。过期/未接受/重启丢失返回 404 或 410；不提供可枚举其他任务的列表，jobId 不应分享。
+- 仅保证**已经接受的离线任务**跨页面刷新。上传未完成可能需要重新选择文件；服务进程重启不支持推理断点续跑，已保存录音不受影响。实时麦克风仍属于当前页面，刷新前应先停止保存，不能将离线恢复承诺扩展到麦克风录音。
+
+网页恢复绑定原服务器，重新核验连续片段、事件及最终总数，只有 `done` 才启用下载/摘要。短暂网络错误只重连订阅，不能借重连重新推理。
+
+## 实时 WebSocket
+
+`/ws/meeting/live?allowed_speaker_ids=doctor-a&allowed_speaker_ids=doctor-b`
+
+- 输入：16kHz、单声道、PCM16 little-endian 二进制音频；建议小包持续发送，不是 WAV/MP3 文件容器。
+- 普通 PCM 包跨采样边界时会缓存半个采样；单包最多 2 MiB。
+- 未传参会人只转写、不匹配人名。
+- 所有模式使用 FSMN-VAD、Paraformer 增量缓存、Nano 句末精修，不再保留 legacy 能量切分链路。
+- `priority=speed` 默认：约 500ms 端点静音、连续段上限12s。
+- `priority=accuracy`：同一流水线使用至少1500ms端点静音、连续段上限60s和已有少量热词。这不是另一个 ASR 后端。
+- 模型缓存按会话/段隔离；队列有界，可合并过期 interim，不丢弃尚未送入模型的 PCM。
+
+转写消息：
 
 ```json
 {
   "type": "transcript",
-  "time": "14:23:01",
+  "segmentId": "segment-1",
+  "revision": 2,
+  "isFinal": false,
+  "time": "10:20:30",
+  "start_ms": 500,
+  "end_ms": 1700,
   "speakerId": null,
   "speaker": "未知",
   "confidence": 0.0,
-  "text": "给一床患者录生命体征",
-  "segmentId": "segment-1",
-  "revision": 2,
-  "isFinal": true
+  "text": "临时文字"
 }
 ```
 
-暂停录音控制消息:
+同一 `segmentId` 按更高 `revision` 更新，不应追加为重复句子。`isFinal=true` 为该段精修稿，不等于整场会后复核稿或人工确认。身份仅在句末保守验证，未知不继承上一位说话人。
 
-```json
-{
-  "type": "pause_recording"
-}
-```
+若首遍失败，发送 `type=status, phase=fallback` 并继续句末精修。若句末失败但有首遍文字，发送 `degraded=true` 的 final 保留首遍稿，再发送带段 id 的 `error`；没有首遍也发送最终错误，不假称成功。
 
-暂停成功消息:
+### 控制与录音保存
 
-```json
-{
-  "type": "recording_paused"
-}
-```
+客户端发送 JSON 文本消息：
 
-继续录音控制消息:
-
-```json
-{
-  "type": "resume_recording"
-}
-```
-
-继续成功消息:
-
-```json
-{
-  "type": "recording_resumed"
-}
-```
-
-停止录音控制消息:
-
-```json
-{
-  "type": "stop_recording"
-}
-```
-
-录音保存成功消息:
+- `{"type":"pause_recording"}`：排空当前段，服务端回复 `recording_paused`；暂停期间音频不入录音。
+- `{"type":"resume_recording"}`：恢复，回复 `recording_resumed`；时间戳按实际保存 PCM 连续计时。
+- `{"type":"stop_recording"}`：排空尾段、等待精修、提交原始 WAV，回复：
 
 ```json
 {
@@ -301,135 +183,21 @@ Body: { "transcript": [{"speaker": "...", "text": "...", "time": "..."}, ...] }
 }
 ```
 
-`transcriptionStatus` 仅在 `accuracy` 模式返回；最终识别失败时为 `failed`，录音文件仍会保存。
+`transcriptionStatus` **所有模式都会返回**；句末失败时为 `failed`，原始录音仍可用于会后 MOSS 重试。异常断连不会提交录音；客户端应等待 `recording_saved` 再关闭连接。保存的只是原始录音，转写稿由调用方保存；网页保留实时稿与复核稿的独立状态，不实现病历持久化/人工稿编辑。
 
-暂停期间客户端不发送 PCM，服务端不录音也不转写。
+### 原始录音管理
 
-**最终 WAV 会直接跳过暂停时间段，不写入静音。**
+- `GET /v1/meeting/recordings/{fileId}`：下载 `{fileId}.wav`。
+- `POST /v1/meeting/recordings/delete`，JSON：`{"fileIds":["UUID"],"reason":"可选","requestId":"可选"}`。
+- 返回 `{status, deleted, missing, failed}`，幂等删除，部分失败时 `status=partial`。
+- fileId 必须是 UUID；服务端不保存病人 id/住院号等业务关联。
 
-错误消息示例:
+## 会议摘要
 
-```json
-{
-  "type": "error",
-  "message": "以下参会人未注册声纹: 李四"
-}
-```
-
-### `GET /v1/meeting/recordings/{fileId}`
-
-- 用途: 根据实时录音返回的 `fileId` 下载 WAV 音频文件。
-- 成功响应: `audio/wav`
-- 下载文件名: `{fileId}.wav`
-- `fileId` 不存在返回 `404`
-- `fileId` 非法返回 `400`
-
-示例:
-
-```bash
-curl -L -o 742d5634-bf12-4384-8099-d85c01858436.wav \
-  http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436
-```
-
-### `POST /v1/meeting/recordings/{fileId}/transcribe`
-
-- 用途: 根据实时录音返回的 `fileId` 直接识别录音内容，不需要客户端重新上传音频。
-- 返回结构: 与 `POST /v1/meeting/transcribe` 一致，包含转写结果及 `requestedPriority`、`effectivePriority`、`fallbackReason`。
-- 模式与自动降级规则: 与 `POST /v1/meeting/transcribe` 一致。
-- `fileId` 不存在返回 `404`
-- `fileId` 非法返回 `400`
-
-查询参数:
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
-| `priority` | `string` | 否 | `speed`（默认）或 `accuracy`。显式请求 `accuracy` 且音频超过 `812.8` 秒时自动降级为 `speed`。 |
-
-示例:
-
-```bash
-curl -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speaker_ids=speaker-a&priority=accuracy"
-```
-
-### `POST /v1/meeting/recordings/{fileId}/transcribe/stream`
-
-- 用途: 根据实时录音返回的 `fileId` 流式识别录音内容，前端“一键转录”使用该接口。
-- 响应: `text/event-stream`
-- 事件结构: 与 `POST /v1/meeting/transcribe/stream` 一致，按阶段返回 `status / info / segment / done / error`。
-- 模式、自动降级规则和完成事件元数据: 与 `POST /v1/meeting/transcribe/stream` 一致。
-- `fileId` 不存在返回 `404`
-- `fileId` 非法返回 `400`
-
-查询参数:
-
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `threshold` | `number` | 否 | 可选的声纹匹配阈值；不传时使用服务端默认值。 |
-| `allowed_speaker_ids` | `array[string] \| null` | 否 | 可选的参会人声纹 id 白名单。可重复传多个同名查询参数；传入后只会在这些已注册声纹中匹配。 |
-| `priority` | `string` | 否 | `speed`（默认）或 `accuracy`。显式请求 `accuracy` 且音频超过 `812.8` 秒时自动降级为 `speed`。 |
-
-示例:
-
-```bash
-curl -N -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speaker_ids=speaker-a&priority=accuracy"
-```
-
-### `POST /v1/meeting/recordings/delete`
-
-- 用途: 由业务系统按业务事件主动清理录音文件，例如病人出院后清理相关查房录音。
-- 语义: 服务端只按 `fileId` 删除，不保存 `patientId`、住院号等业务字段。
-- 幂等: 已删除或不存在的 `fileId` 会进入 `missing`，不会导致整个请求失败。
-- `failed` 非空时，响应 `status` 为 `partial`。
-
-请求体:
+`POST /v1/meeting/summarize`，JSON：
 
 ```json
-{
-  "fileIds": ["742d5634-bf12-4384-8099-d85c01858436"],
-  "reason": "patient_discharged",
-  "requestId": "business-request-id"
-}
+{"transcript":[{"speaker":"医生A","time":"00:01","text":"示例文字"}]}
 ```
 
-响应示例:
-
-```json
-{
-  "status": "success",
-  "deleted": ["742d5634-bf12-4384-8099-d85c01858436"],
-  "missing": [],
-  "failed": []
-}
-```
-
-## 常用调用示例
-
-```bash
-curl http://localhost:8000/
-curl http://localhost:8000/v1/voiceprint/list
-curl -X POST http://localhost:8000/v1/voiceprint/reload
-curl -X POST http://localhost:8000/v1/voiceprint/register \
-  -F "name=张三" \
-  -F "id=speaker-a" \
-  -F "file=@samples/jinxin.m4a"
-curl "http://localhost:8000/v1/voiceprint/exists?id=speaker-a"
-curl -X DELETE "http://localhost:8000/v1/voiceprint?id=speaker-a"
-curl -X POST http://localhost:8000/v1/meeting/transcribe \
-  -F "file=@samples/test_zh.mp3" \
-  -F "threshold=0.3" \
-  -F "allowed_speaker_ids=speaker-a" \
-  -F "priority=accuracy"
-curl -L -o recording.wav \
-  http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436
-curl -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe?allowed_speaker_ids=speaker-a&priority=accuracy"
-curl -N -X POST \
-  "http://localhost:8000/v1/meeting/recordings/742d5634-bf12-4384-8099-d85c01858436/transcribe/stream?allowed_speaker_ids=speaker-a&priority=accuracy"
-curl -X POST http://localhost:8000/v1/meeting/recordings/delete \
-  -H "Content-Type: application/json" \
-  -d '{"fileIds":["742d5634-bf12-4384-8099-d85c01858436"],"reason":"patient_discharged","requestId":"req-1"}'
-```
+仍使用现有 OpenAI-compatible 摘要配置，可选 `base_url/api_key/model` 覆盖参数保持兼容。语音本地处理不代表摘要一定本地：文本是否发送外部 LLM 取决于该配置与业务授权。建议人工核对后再生成摘要，不把 LLM 医学常识当作修改原文数字的依据。

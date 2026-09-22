@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-统一下载离线模型到 models/ 目录：
+下载业务运行模型到 models/ 目录：
 - ASR: FunAudioLLM/Fun-ASR-Nano-2512 (Hugging Face)
 - VAD: iic/speech_fsmn_vad_zh-cn-16k-common-pytorch (ModelScope)
 - SPK: iic/speech_campplus_sv_zh-cn_16k-common (ModelScope)
 
 说明：
-- 本脚本不会处理 models/pyannote（仓库已内置）。
+- 默认下载 Nano / 流式 Paraformer / VAD / CAM++；--include-moss 下载固定版本的 MOSS。
+- 不再下载或使用 Pyannote、离线 Paraformer 和独立标点模型。
 - 已存在的目标目录会自动跳过，避免重复下载。
 
 用法:
     python scripts/download_all_models.py
-    python scripts/download_all_models.py --include-upload-asr
+    python scripts/download_all_models.py --include-moss
     python scripts/download_all_models.py --output-dir /data/voiceprint/models --force
 """
 
@@ -32,6 +33,7 @@ class ModelSpec:
     repo_id: str
     subdir: str
     marker_file: str | None = None
+    revision: str | None = None
 
 
 MODEL_SPECS = [
@@ -55,18 +57,16 @@ MODEL_SPECS = [
     ),
 ]
 
-UPLOAD_ASR_SPEC = ModelSpec(
-    name="UPLOAD_ASR",
-    source="modelscope",
-    repo_id="iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-    subdir="asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-)
+MODEL_SPECS.append(ModelSpec(
+    name="STREAMING_ASR", source="modelscope",
+    repo_id="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
+    subdir="asr/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
+))
 
-UPLOAD_PUNC_SPEC = ModelSpec(
-    name="UPLOAD_PUNC",
-    source="modelscope",
-    repo_id="iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-    subdir="punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+MOSS_SPEC = ModelSpec(
+    name="MOSS", source="hf", repo_id="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+    subdir="moss/MOSS-Transcribe-Diarize",
+    revision="704aa4a9c304e8520be88901e0d1960158ef5b15",
 )
 
 
@@ -83,9 +83,9 @@ def parse_args() -> argparse.Namespace:
         help="强制重新下载（会删除目标模型目录后重下）",
     )
     parser.add_argument(
-        "--include-upload-asr",
+        "--include-moss", "--include-upload-asr",
         action="store_true",
-        help="额外下载上传链路用的 Paraformer 模型",
+        help="额外下载固定版本的 MOSS（旧 --include-upload-asr 仅为弃用别名）",
     )
     return parser.parse_args()
 
@@ -93,7 +93,8 @@ def parse_args() -> argparse.Namespace:
 def has_any_file(path: Path) -> bool:
     if not path.exists():
         return False
-    return any(p.is_file() for p in path.rglob("*"))
+    return any(p.is_file() and p.suffix in {".bin", ".safetensors", ".pt", ".pth", ".pb", ".onnx"}
+               for p in path.rglob("*"))
 
 
 def is_model_ready(path: Path, marker_file: str | None) -> bool:
@@ -108,13 +109,13 @@ def clean_target(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def download_hf(repo_id: str, local_dir: Path) -> None:
+def download_hf(repo_id: str, local_dir: Path, revision: str | None = None) -> None:
     from huggingface_hub import snapshot_download
 
     snapshot_download(
         repo_id=repo_id,
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
+        revision=revision,
     )
 
 
@@ -134,24 +135,25 @@ def main() -> int:
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else (project_root / "models")
 
     print(f"📦 模型输出目录: {output_dir}")
-    print("ℹ️ 跳过 pyannote（默认使用仓库中的 models/pyannote）")
+    print("ℹ️ 离线识别仅使用 MOSS；不下载旧离线模型。")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     failures: list[str] = []
     model_specs = list(MODEL_SPECS)
-    if args.include_upload_asr:
-        model_specs.append(UPLOAD_ASR_SPEC)
-        model_specs.append(UPLOAD_PUNC_SPEC)
+    if args.include_moss:
+        model_specs.append(MOSS_SPEC)
 
     for spec in model_specs:
         target = output_dir / spec.subdir
         print(f"\n==> [{spec.name}] {spec.repo_id}")
         print(f"    目标路径: {target}")
 
+        complete = target / ".download-complete"
+        signature = spec.repo_id + "@" + (spec.revision or "default")
         if args.force:
             print("    force 模式: 清理后重新下载")
             clean_target(target)
-        elif is_model_ready(target, spec.marker_file):
+        elif complete.is_file() and complete.read_text() == signature and is_model_ready(target, spec.marker_file):
             print("    已存在，跳过")
             continue
         else:
@@ -159,13 +161,14 @@ def main() -> int:
 
         try:
             if spec.source == "hf":
-                download_hf(spec.repo_id, target)
+                download_hf(spec.repo_id, target, spec.revision)
             else:
                 download_modelscope(spec.repo_id, target)
 
             if not is_model_ready(target, spec.marker_file):
                 raise RuntimeError("下载完成但未检测到有效模型文件")
 
+            complete.write_text(signature)
             print("✅ 完成")
         except Exception as exc:
             msg = f"{spec.name}: 下载失败 - {exc}"
@@ -182,16 +185,9 @@ def main() -> int:
     print("✅ 全部模型下载完成")
     print("\n可用于 .env 的本地模型路径示例：")
     print(f"ASR_MODEL_PATH={output_dir / 'asr/Fun-ASR-Nano-2512'}")
-    if args.include_upload_asr:
-        print("UPLOAD_ASR_BACKEND=paraformer")
-        print(
-            "UPLOAD_ASR_MODEL_PATH="
-            f"{output_dir / 'asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch'}"
-        )
-        print(
-            "PUNC_MODEL_PATH="
-            f"{output_dir / 'punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch'}"
-        )
+    print(f"STREAMING_ASR_MODEL_PATH={output_dir / MODEL_SPECS[-1].subdir}")
+    if args.include_moss:
+        print(f"MOSS_MODEL_PATH={output_dir / MOSS_SPEC.subdir}")
     print(f"VAD_MODEL_PATH={output_dir / 'vad/speech_fsmn_vad_zh-cn-16k-common-pytorch'}")
     print(f"SPK_MODEL_PATH={output_dir / 'spk/speech_campplus_sv_zh-cn_16k-common'}")
     print(f"MODELS_PATH={output_dir}")

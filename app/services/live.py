@@ -1,199 +1,90 @@
 #!/usr/bin/env python3
-"""
-实时会议记录工具 (Live Meeting Transcription)
-实时采集麦克风音频 → 自动切分 → 识别并输出带姓名的记录
-
-基于 Fun-ASR-Nano (LLM) 和 CAM++ (声纹)
-"""
+"""麦克风 CLI，与 WebSocket 使用同一个两遍流式会话实现。"""
 
 import argparse
-import os
-import threading
-import queue
-import numpy as np
-import pyaudio
-import wave
-import tempfile
+import asyncio
 from datetime import datetime
+import json
+from pathlib import Path
+import signal
 
-# 导入核心模块
-from concurrent.futures import ThreadPoolExecutor
-from app.core import (
-    CONFIG,
-    ModelService,
-    SpeakerTracker,
-)
-
-
-# 录音参数
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 16000
-CHUNK = 1024
+from app.core import ModelService
+from app.services.live_session import run_live_session
+from app.services.recording_store import recording_store
 
 
-class AudioProcessor:
-    def __init__(self, device: str = "cpu", output_file: str = "live_meeting.md"):
-        print("正在加载模型 (可能需要一些时间)...")
-
-        # 使用核心模块的 ModelService
-        self.service = ModelService()
-        self.service.load_models(device=device, load_vad=False)  # 实时场景不需要 VAD
-
-        # 使用 SpeakerTracker 进行说话人追踪
-        self.tracker = SpeakerTracker()
-
-        self.queue = queue.Queue()
+class MicrophoneSession:
+    def __init__(self, stream, output_file):
+        self.stream = stream
         self.output_file = output_file
-        self.running = True
-        self._pool = ThreadPoolExecutor(max_workers=2)
+        self.stopping = False
+        self.file_id = None
 
-        # 复用临时 WAV 文件
-        _tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        self._tmp_path = _tmp.name
-        _tmp.close()
+    async def receive(self):
+        if self.stopping:
+            return {"type": "websocket.receive", "text": json.dumps({"type": "stop_recording"})}
+        data = await asyncio.to_thread(self.stream.read, 1024, exception_on_overflow=False)
+        return {"type": "websocket.receive", "bytes": data}
 
-        # 初始化输出文件
-        with open(self.output_file, "w", encoding="utf-8") as f:
-            f.write(f"# 实时会议记录\n\n")
-            f.write(f"日期: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n")
+    async def send_json(self, payload):
+        kind = payload.get("type")
+        if kind == "transcript":
+            print(f"\r[{payload['time']}] {payload['speaker']}: {payload['text']}", end="\n" if payload["isFinal"] else "", flush=True)
+            if payload["isFinal"]:
+                with open(self.output_file, "a", encoding="utf-8") as output:
+                    note = "（精修失败，保留首遍稿）" if payload.get("degraded") else ""
+                    output.write(f"**[{payload['time']}] {payload['speaker']}**{note}:\n> {payload['text']}\n\n")
+        elif kind == "recording_saved":
+            self.file_id = payload["fileId"]
+            print(f"\n原始录音 fileId: {self.file_id}")
+        elif kind == "error":
+            print(f"\n警告: {payload['message']}")
 
-    def process_segment(self, audio_data: bytes):
-        """处理单个音频片段（并行 ASR + 声纹）"""
+
+async def record(args):
+    import pyaudio
+    service = ModelService()
+    audio = stream = None
+    try:
+        await asyncio.to_thread(service.load_models, device=args.device)
+        if set(args.speaker_id) - service.registered_embeddings.keys():
+            raise ValueError("存在未注册的 speaker-id")
+        audio = pyaudio.PyAudio()
+        stream = audio.open(format=pyaudio.paInt16, channels=1, rate=16000,
+                            input=True, frames_per_buffer=1024)
+        session = MicrophoneSession(stream, args.output)
+        with open(args.output, "x", encoding="utf-8") as output:
+            output.write(f"# 实时会议稿\n\n日期: {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, lambda: setattr(session, "stopping", True))
         try:
-            # 复用临时文件
-            with wave.open(self._tmp_path, 'wb') as wf:
-                wf.setnchannels(CHANNELS)
-                wf.setsampwidth(pyaudio.get_sample_size(FORMAT))
-                wf.setframerate(RATE)
-                wf.writeframes(audio_data)
-
-            # 并行 ASR + 声纹提取
-            future_text = self._pool.submit(self.service.transcribe_segment, self._tmp_path)
-            future_emb = self._pool.submit(self.service.extract_embedding, self._tmp_path)
-
-            text = future_text.result()
-            if not text:
-                return
-
-            emb = future_emb.result()
-            speaker_id = None
-            speaker = "未知"
-            score = 0.0
-
-            if emb is not None:
-                speaker_id, score = self.service.match_speaker_fast(emb)
-
-                # 使用 SpeakerTracker 处理继承逻辑
-                speaker_id, score = self.tracker.update(speaker_id, score, self.service.registered_embeddings)
-                speaker = self.service.get_speaker_name(speaker_id)
-
-            # 过滤低置信度结果
-            if score < CONFIG["min_confidence"]:
-                return
-
-            # 输出结果
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            print(f"\r[{timestamp}] {speaker} (conf:{score:.2f}): {text}")
-            print("🎙️  正在聆听...", end="", flush=True)
-
-            # 写入文件
-            with open(self.output_file, "a", encoding="utf-8") as f:
-                f.write(f"**[{timestamp}] {speaker}** (conf:{score:.2f}):\n> {text}\n\n")
-
-        except Exception as e:
-            print(f"\n处理出错: {e}")
-
-    def worker(self):
-        """后台工作线程"""
-        while self.running:
-            try:
-                audio_data = self.queue.get(timeout=1)
-                self.process_segment(audio_data)
-                self.queue.task_done()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"Worker Error: {e}")
-
-    def start(self):
-        """开始录音和处理"""
-        # 启动处理线程
-        t = threading.Thread(target=self.worker)
-        t.daemon = True
-        t.start()
-        
-        p = pyaudio.PyAudio()
-        stream = p.open(format=FORMAT,
-                        channels=CHANNELS,
-                        rate=RATE,
-                        input=True,
-                        frames_per_buffer=CHUNK)
-        
-        print("\n🎙️  开始录音... (按 Ctrl+C 停止)")
-        print("🎙️  正在聆听...", end="", flush=True)
-        
-        frames = []
-        silent_chunks = 0
-        is_speaking = False
-        chunks_per_second = RATE / CHUNK
-        
-        try:
-            while self.running:
-                data = stream.read(CHUNK, exception_on_overflow=False)
-                audio_np = np.frombuffer(data, dtype=np.int16)
-                
-                # 简单能量检测
-                energy = np.abs(audio_np).mean()
-                
-                if energy > CONFIG["silence_energy"]:
-                    is_speaking = True
-                    silent_chunks = 0
-                else:
-                    if is_speaking:
-                        silent_chunks += 1
-                
-                if is_speaking:
-                    frames.append(data)
-                
-                # 判断一句话结束 (使用核心配置)
-                if is_speaking and silent_chunks > CONFIG["silence_duration"] * chunks_per_second:
-                    # 只有当录音长度足够长时才处理 (比如至少 0.5秒)
-                    if len(frames) > 0.5 * chunks_per_second:
-                        print("\n⏳ 正在处理...", end="", flush=True)
-                        audio_content = b''.join(frames)
-                        self.queue.put(audio_content)
-                    
-                    # 重置
-                    frames = []
-                    is_speaking = False
-                    silent_chunks = 0
-                    
-        except KeyboardInterrupt:
-            print("\n\n🛑 停止录音")
+            print("开始录音，Ctrl+C 停止并排空尾段。")
+            await run_live_session(session, service, recording_store,
+                                   priority="speed", allowed_speaker_ids=args.speaker_id)
         finally:
-            self.running = False
-            self._pool.shutdown(wait=False)
-            if os.path.exists(self._tmp_path):
-                os.remove(self._tmp_path)
+            loop.remove_signal_handler(signal.SIGINT)
+        if session.file_id:
+            recording = recording_store.resolve(session.file_id)
+            print(f"实时稿: {args.output}\n原始录音: {recording.path}")
+            print("会后复核请使用 python -m app.services.meeting --audio <原始录音路径> --output <新文件>，不要覆盖实时稿。")
+    finally:
+        if stream is not None:
             stream.stop_stream()
             stream.close()
-            p.terminate()
-            print(f"✅ 会议记录已保存至: {self.output_file}")
+        if audio is not None:
+            audio.terminate()
+        service.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="实时会议记录工具")
-    parser.add_argument("--device", "-d", default="cpu", help="运行设备 (默认: cpu)")
-    parser.add_argument("--output", "-o", default="live_meeting.md", help="输出文件路径")
-    parser.add_argument("--threshold", "-t", type=int, default=None, help="静音能量阈值")
+    parser = argparse.ArgumentParser(description="两遍实时会议记录（使用与 WebSocket 相同的流水线）")
+    parser.add_argument("--device", "-d", default="cpu")
+    parser.add_argument("--output", "-o", default="live_meeting.md")
+    parser.add_argument("--speaker-id", action="append", default=[], help="只匹配选定的声纹 id，可重复；默认不识别人名")
     args = parser.parse_args()
-    
-    if args.threshold:
-        CONFIG["silence_energy"] = args.threshold
-    
-    processor = AudioProcessor(device=args.device, output_file=args.output)
-    processor.start()
+    if Path(args.output).exists():
+        parser.error("输出已存在，请选择新的实时稿文件")
+    asyncio.run(record(args))
 
 
 if __name__ == "__main__":
