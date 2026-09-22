@@ -887,7 +887,7 @@
 
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('live')">🔴 实时录音</button>
-            <button class="tab-btn" onclick="switchTab('upload')">📤 上传会议</button>
+            <button class="tab-btn" onclick="switchTab('upload')">📤 上传／会后复核</button>
             <button class="tab-btn" onclick="switchTab('voiceprint')">👤 声纹管理</button>
         </div>
 
@@ -1008,11 +1008,12 @@
             </div>
 
             <div id="meetingResult" style="display: none;">
-                <h3 style="margin-bottom: 15px;">📝 会议记录</h3>
                 <div class="result-box" id="meetingTranscript"></div>
                 <div class="controls" style="margin-top: 15px;">
-                    <button class="btn-primary" onclick="downloadMarkdown()">下载 Markdown</button>
+                    <button class="btn-primary" id="btnDownloadMeeting" onclick="downloadMarkdown()" disabled>下载 Markdown</button>
                     <button class="btn-summary" id="btnUploadSummary" onclick="requestSummary('upload')" disabled>📋 会议总结</button>
+                    <button class="btn-primary" id="btnResumeMeeting" onclick="restoreMeetingJob()" style="display: none;">恢复连接</button>
+                    <button class="btn-primary" id="btnCancelMeeting" onclick="cancelMeetingJob()" style="display: none;">取消转写</button>
                 </div>
 
                 <div id="uploadSummarySection" class="summary-section" style="display: none;">
@@ -1063,6 +1064,12 @@
         let meetingMarkdown = '';
         let liveTranscriptItems = [];  // 收集实时录音转写数据
         let liveRecordingFileId = '';
+        let liveSessionServerUrl = '';
+        let liveSessionParticipants = [];
+        let meetingRequestInProgress = false;
+        let activeMeetingJob = null;
+        let meetingEventCursor = 0;
+        const MEETING_JOB_STORAGE_KEY = 'voiceprint.meeting.job.v1';
         let registeredSpeakers = [];
         let voiceprintLoadError = '';
         let voiceprintSourceUrl = '';
@@ -1551,6 +1558,12 @@
             }, 5000);
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
+        }
+
         function addTranscript(data) {
             if (!data.text || data.text.trim() === '') return;
 
@@ -1583,11 +1596,11 @@
             }
             item.innerHTML = `
                 <div class="meta">
-                    <span class="time">[${data.time}]</span>
-                    <span class="speaker">${data.speaker}</span>
-                    <span class="confidence">${data.degraded ? '(最终识别失败，保留临时结果)' : '(置信度: ' + data.confidence + ')'}</span>
+                    <span class="time">[${escapeHtml(data.time)}]</span>
+                    <span class="speaker">${escapeHtml(data.speaker)}</span>
+                    <span class="confidence">${data.degraded ? '(最终识别失败，保留临时结果)' : data.isFinal === false ? '(临时稿)' : '(句末稿；声纹分数: ' + escapeHtml(data.confidence) + ')'}</span>
                 </div>
-                <div class="text">${data.text}</div>
+                <div class="text">${escapeHtml(data.text)}</div>
             `;
             transcriptBox.scrollTop = transcriptBox.scrollHeight;
 
@@ -1658,15 +1671,17 @@
 
             const downloadLink = document.createElement('a');
             downloadLink.className = 'recording-card-btn recording-card-btn-secondary';
-            downloadLink.href = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}`;
+            const recordingServerUrl = liveSessionServerUrl || getApiUrl();
+            const recordingParticipants = [...liveSessionParticipants];
+            downloadLink.href = `${recordingServerUrl}/v1/meeting/recordings/${encodeURIComponent(fileId)}`;
             downloadLink.download = `${fileId}.wav`;
             downloadLink.innerHTML = '<span>⬇</span><span>下载录音</span>';
 
             const transcribeBtn = document.createElement('button');
             transcribeBtn.type = 'button';
             transcribeBtn.className = 'recording-card-btn recording-card-btn-primary';
-            transcribeBtn.innerHTML = '<span>🎯</span><span>一键转录</span>';
-            transcribeBtn.onclick = () => transcribeLiveRecording(fileId);
+            transcribeBtn.innerHTML = '<span>🎯</span><span>MOSS 会后复核</span>';
+            transcribeBtn.onclick = () => transcribeLiveRecording(fileId, recordingServerUrl, recordingParticipants);
 
             actions.appendChild(downloadLink);
             actions.appendChild(transcribeBtn);
@@ -1732,6 +1747,8 @@
                 document.getElementById('liveSummarySection').style.display = 'none';
                 document.getElementById('btnLiveSummary').disabled = true;
                 const selectedParticipants = getSelectedParticipants('live');
+                liveSessionServerUrl = getApiUrl();
+                liveSessionParticipants = [...selectedParticipants];
 
                 websocket = new WebSocket(getWsUrl(selectedParticipants));
 
@@ -1898,32 +1915,143 @@
 
         let meetingTranscriptItems = [];
 
+        function meetingJobBusy() {
+            return meetingRequestInProgress || (activeMeetingJob && !activeMeetingJob.terminal && !activeMeetingJob.unavailable);
+        }
+
+        function rememberMeetingJob(apiUrl, sourceLabel) {
+            const bytes = crypto.getRandomValues(new Uint8Array(16));
+            bytes[6] = (bytes[6] & 15) | 64;
+            bytes[8] = (bytes[8] & 63) | 128;
+            const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+            const jobId = `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+            // 仅保存最近任务引用，重新打开页面也可恢复；不持久保存转写或声纹信息。
+            const reference = { jobId, apiUrl };
+            localStorage.setItem(MEETING_JOB_STORAGE_KEY, JSON.stringify(reference));
+            activeMeetingJob = { ...reference, sourceLabel, terminal: false };
+            meetingEventCursor = 0;
+            return jobId;
+        }
+
+        function showMeetingConnectionStatus(message) {
+            const status = document.getElementById('uploadStatus');
+            status.style.display = 'block';
+            status.innerHTML = `<div class="loading"><div class="spinner"></div><span>${escapeHtml(message)}</span></div>`;
+        }
+
+        async function followMeetingJob(initialResponse = null) {
+            const job = activeMeetingJob;
+            let response = initialResponse;
+            for (let attempt = 0; attempt < 4; attempt++) {
+                try {
+                    if (!response) {
+                        response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/events?after=${meetingEventCursor}`);
+                    }
+                    await consumeMeetingSseStream(response, job.sourceLabel);
+                    return;
+                } catch (error) {
+                    if (error.terminal || error.protocol || error.httpStatus || attempt === 3) throw error;
+                    // 只重连 GET 订阅；绝不重发音频或创建第二次推理。
+                    showMeetingConnectionStatus('连接中断，后台转写继续，正在恢复连接...');
+                    response = null;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                }
+            }
+        }
+
+        async function restoreMeetingJob() {
+            if (meetingRequestInProgress) return;
+            let reference;
+            try {
+                reference = JSON.parse(localStorage.getItem(MEETING_JOB_STORAGE_KEY) || 'null');
+                if (!reference) return;
+                if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reference.jobId)
+                    || !['http:', 'https:'].includes(new URL(reference.apiUrl).protocol)) {
+                    throw new Error('无效的转写恢复信息');
+                }
+            } catch (error) {
+                console.warn('读取转写恢复信息失败');
+                return;
+            }
+            meetingRequestInProgress = true;
+            activeMeetingJob = { ...reference, terminal: false };
+            meetingEventCursor = 0;
+            switchTab('upload');
+            resetMeetingResultUi();
+            showMeetingConnectionStatus('正在恢复转写任务...');
+            try {
+                const response = await fetch(`${reference.apiUrl}/v1/meeting/jobs/${encodeURIComponent(reference.jobId)}`);
+                if (!response.ok) {
+                    activeMeetingJob.unavailable = response.status === 404 || response.status === 410;
+                    const data = await response.json();
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                const state = await response.json();
+                activeMeetingJob.sourceLabel = state.sourceLabel;
+                document.getElementById('btnCancelMeeting').style.display = ['running', 'cancelling'].includes(state.state) ? '' : 'none';
+                await followMeetingJob();
+            } catch (error) {
+                showMeetingFailure(error);
+            } finally {
+                meetingRequestInProgress = false;
+            }
+        }
+
+        async function cancelMeetingJob() {
+            const job = activeMeetingJob;
+            if (!job || job.terminal) return;
+            if (!confirm('取消当前转写？已保存的原始录音不会删除。')) return;
+            const button = document.getElementById('btnCancelMeeting');
+            button.disabled = true;
+            try {
+                const response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST' });
+                if (!response.ok) throw new Error((await response.json()).detail || `HTTP ${response.status}`);
+                const state = await response.json();
+                if (job.terminal) return;
+                if (state.state === 'cancelling') showMeetingConnectionStatus('已请求取消，正在结束当前任务...');
+                if (!meetingRequestInProgress) await restoreMeetingJob();
+            } catch (error) {
+                alert('取消请求失败：' + error.message);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
         async function handleMeetingUpload(input) {
             const file = input.files[0];
             if (!file) return;
+            if (meetingJobBusy()) {
+                alert('已有后台转写，请先恢复连接或取消该任务');
+                input.value = '';
+                return;
+            }
+            meetingRequestInProgress = true;
 
             try {
                 resetMeetingResultUi();
 
                 await ensureVoiceprintsSynced();
 
+                const apiUrl = getApiUrl();
+                const jobId = rememberMeetingJob(apiUrl, file.name);
                 const formData = new FormData();
                 formData.append('file', file);
+                formData.append('job_id', jobId);
                 getSelectedParticipants('upload').forEach(id => {
                     formData.append('allowed_speaker_ids', id);
                 });
 
-                const response = await fetch(`${getApiUrl()}/v1/meeting/transcribe/stream`, {
+                const response = await fetch(`${apiUrl}/v1/meeting/transcribe/stream`, {
                     method: 'POST',
                     body: formData
                 });
 
-                await consumeMeetingSseStream(response, file.name);
+                await followMeetingJob(response);
             } catch (error) {
-                alert('请求失败: ' + error.message);
-                document.getElementById('uploadStatus').style.display = 'none';
+                showMeetingFailure(error);
             } finally {
                 input.value = '';
+                meetingRequestInProgress = false;
             }
         }
 
@@ -1936,7 +2064,7 @@
             uploadStatus.innerHTML = `
                 <div class="loading">
                     <div class="spinner"></div>
-                    <span>正在准备...</span>
+                    <span>正在上传音频...</span>
                 </div>
             `;
             meetingResult.style.display = 'block';
@@ -1944,8 +2072,21 @@
             meetingTranscriptItems = [];
             meetingMarkdown = '';
             document.getElementById('btnUploadSummary').disabled = true;
+            document.getElementById('btnDownloadMeeting').disabled = true;
+            document.getElementById('btnResumeMeeting').style.display = 'none';
+            document.getElementById('btnCancelMeeting').style.display = 'none';
             const summarySection = document.getElementById('uploadSummarySection');
             if (summarySection) summarySection.style.display = 'none';
+        }
+
+        function showMeetingFailure(error) {
+            const status = document.getElementById('uploadStatus');
+            status.style.display = 'block';
+            status.innerHTML = `<span>转写未完成：${escapeHtml(error.message)}</span>`;
+            document.getElementById('btnUploadSummary').disabled = true;
+            document.getElementById('btnDownloadMeeting').disabled = true;
+            document.getElementById('btnResumeMeeting').style.display = activeMeetingJob && !activeMeetingJob.terminal ? '' : 'none';
+            if (activeMeetingJob?.terminal) document.getElementById('btnCancelMeeting').style.display = 'none';
         }
 
         async function consumeMeetingSseStream(response, sourceLabel) {
@@ -1958,103 +2099,115 @@
                     const errData = await response.json();
                     detail = errData.detail || '';
                 } catch (_) { /* ignore */ }
-                throw new Error(detail || `HTTP ${response.status}`);
+                const error = new Error(detail || `HTTP ${response.status}`);
+                error.httpStatus = response.status;
+                if (activeMeetingJob && [400, 404, 410, 413, 422, 503].includes(response.status)) activeMeetingJob.unavailable = true;
+                throw error;
             }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            let completed = false;
 
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n\n');
-                buffer = lines.pop();
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop();
 
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    let data;
-                    try {
-                        data = JSON.parse(line.slice(6));
-                    } catch (e) {
-                        console.error('SSE 解析错误:', e);
-                        continue;
-                    }
-
-                    if (data.type === 'status') {
-                        uploadStatus.innerHTML = `
-                            <div class="loading">
-                                <div class="spinner"></div>
-                                <span>${data.message}</span>
-                            </div>
-                        `;
-                    } else if (data.type === 'info') {
-                        uploadStatus.innerHTML = `
-                            <div class="loading">
-                                <div class="spinner"></div>
-                                <span>正在处理，共 ${data.total_segments} 个片段（${data.method}）...</span>
-                            </div>
-                        `;
-                    } else if (data.type === 'segment') {
-                        const div = document.createElement('div');
-                        div.className = 'transcript-item';
-                        div.innerHTML = `
-                            <div class="meta">
-                                <span class="time">[${data.time}]</span>
-                                <span class="speaker">${data.speaker}</span>
-                                <span class="confidence">(置信度: ${data.confidence})</span>
-                            </div>
-                            <div class="text">${data.text}</div>
-                        `;
-                        transcriptDiv.appendChild(div);
-                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-
-                        meetingTranscriptItems.push(data);
-
-                        uploadStatus.innerHTML = `
-                            <div class="loading">
-                                <div class="spinner"></div>
-                                <span>已处理 ${typeof data.index === 'number' ? data.index + 1 : meetingTranscriptItems.length} 个片段...</span>
-                            </div>
-                        `;
-                    } else if (data.type === 'speaker_correction') {
-                        for (const update of data.updates) {
-                            const idx = update.index;
-                            const newSpeaker = update.speaker;
-
-                            if (meetingTranscriptItems[idx]) {
-                                meetingTranscriptItems[idx].speaker = newSpeaker;
-                            }
-
-                            const items = transcriptDiv.querySelectorAll('.transcript-item');
-                            if (items[idx]) {
-                                const speakerSpan = items[idx].querySelector('.speaker');
-                                if (speakerSpan) {
-                                    speakerSpan.textContent = newSpeaker;
-                                    speakerSpan.style.color = '#ff9f43';
-                                    speakerSpan.style.transition = 'all 0.5s';
-                                    speakerSpan.style.transform = 'scale(1.1)';
-                                    setTimeout(() => {
-                                        speakerSpan.style.transform = 'scale(1)';
-                                    }, 500);
-                                }
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let data;
+                        try { data = JSON.parse(line.slice(6)); }
+                        catch (_) { const error = new Error('转写事件格式异常'); error.protocol = true; throw error; }
+                        if (activeMeetingJob) {
+                            if (!Number.isInteger(data.eventId) || data.eventId !== meetingEventCursor + 1
+                                || (data.jobId && data.jobId !== activeMeetingJob.jobId)) {
+                                const error = new Error('转写事件游标不连续，未确认完整结果');
+                                error.protocol = true;
+                                throw error;
                             }
                         }
-                    } else if (data.type === 'done') {
-                        uploadStatus.style.display = 'none';
-                        generateMeetingMarkdown(sourceLabel);
-                        document.getElementById('btnUploadSummary').disabled = false;
-                    } else if (data.type === 'error') {
-                        throw new Error(data.message || '转录失败');
+
+                        if (data.type === 'status') {
+                            if (data.jobId) document.getElementById('btnCancelMeeting').style.display = '';
+                            uploadStatus.innerHTML = `
+                                <div class="loading">
+                                    <div class="spinner"></div>
+                                    <span>${escapeHtml(data.message)}</span>
+                                </div>
+                            `;
+                        } else if (data.type === 'info') {
+                            uploadStatus.innerHTML = `
+                                <div class="loading">
+                                    <div class="spinner"></div>
+                                    <span>正在处理，共 ${escapeHtml(data.total_segments)} 个片段（${escapeHtml(data.method)}）...</span>
+                                </div>
+                            `;
+                        } else if (data.type === 'segment') {
+                            if (typeof data.index === 'number' && data.index !== meetingTranscriptItems.length) {
+                                throw new Error('复核片段序号不连续，请保留原始录音后重试');
+                            }
+                            const div = document.createElement('div');
+                            div.className = 'transcript-item';
+                            div.innerHTML = `
+                                <div class="meta">
+                                    <span class="time">[${escapeHtml(data.time)}]</span>
+                                    <span class="speaker">${escapeHtml(data.speaker)}</span>
+                                    <span class="confidence">(声纹分数: ${escapeHtml(data.confidence)})</span>
+                                </div>
+                                <div class="text">${escapeHtml(data.text)}</div>
+                            `;
+                            transcriptDiv.appendChild(div);
+                            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+                            meetingTranscriptItems.push(data);
+
+                            uploadStatus.innerHTML = `
+                                <div class="loading">
+                                    <div class="spinner"></div>
+                                    <span>正在转写，已显示 ${meetingTranscriptItems.length} 段...</span>
+                                </div>
+                            `;
+                        } else if (data.type === 'done') {
+                            if (data.segments !== meetingTranscriptItems.length) {
+                                throw new Error('复核片段数量不完整，请保留原始录音后重试');
+                            }
+                            completed = true;
+                            if (activeMeetingJob) activeMeetingJob.terminal = true;
+                            document.getElementById('btnCancelMeeting').style.display = 'none';
+                            document.getElementById('btnResumeMeeting').style.display = 'none';
+                            uploadStatus.style.display = 'none';
+                            generateMeetingMarkdown(sourceLabel);
+                            document.getElementById('btnUploadSummary').disabled = false;
+                            document.getElementById('btnDownloadMeeting').disabled = false;
+                        } else if (data.type === 'error') {
+                            if (activeMeetingJob) activeMeetingJob.terminal = true;
+                            const error = new Error(data.message || '转录失败');
+                            error.terminal = true;
+                            throw error;
+                        }
+                        if (activeMeetingJob) meetingEventCursor = data.eventId;
                     }
+                    if (completed) return;
                 }
+                if (!completed) throw new Error('连接中断，未收到完成确认；后台任务可能仍在继续，请恢复连接');
+            } finally {
+                await reader.cancel().catch(() => {});
+                reader.releaseLock();
             }
         }
 
-        async function transcribeLiveRecording(fileId) {
+        async function transcribeLiveRecording(fileId, apiUrl = getApiUrl(), participants = getSelectedParticipants('live')) {
             if (!fileId) return;
+            if (meetingJobBusy()) {
+                alert('已有后台转写，请先恢复连接或取消该任务');
+                return;
+            }
+            meetingRequestInProgress = true;
             switchTab('upload');
 
             try {
@@ -2067,23 +2220,24 @@
                     </div>
                 `;
 
-                await ensureVoiceprintsSynced();
-
-                const params = new URLSearchParams();
-                getSelectedParticipants('live').forEach(id => {
+                // 使用录音当时的服务器和候选集合，不能将旧 fileId 发到后来切换的后端。
+                const jobId = rememberMeetingJob(apiUrl, `录音 ${fileId}.wav`);
+                const params = new URLSearchParams({ job_id: jobId });
+                participants.forEach(id => {
                     params.append('allowed_speaker_ids', id);
                 });
                 const qs = params.toString();
-                const url = `${getApiUrl()}/v1/meeting/recordings/${encodeURIComponent(fileId)}/transcribe/stream${qs ? '?' + qs : ''}`;
+                const url = `${apiUrl}/v1/meeting/recordings/${encodeURIComponent(fileId)}/transcribe/stream${qs ? '?' + qs : ''}`;
 
                 const response = await fetch(url, { method: 'POST' });
                 if (response.status === 404) {
                     throw new Error('录音文件不存在或已被清理');
                 }
-                await consumeMeetingSseStream(response, `录音 ${fileId}.wav`);
+                await followMeetingJob(response);
             } catch (error) {
-                alert('请求失败: ' + error.message);
-                document.getElementById('uploadStatus').style.display = 'none';
+                showMeetingFailure(error);
+            } finally {
+                meetingRequestInProgress = false;
             }
         }
 
@@ -2091,7 +2245,7 @@
             const now = new Date();
             const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
 
-            let md = `# 会议记录\n\n`;
+            let md = `# 会议复核稿\n\n> 自动转写，医学数字、术语与身份归属需人工核对。\n\n`;
             md += `- **日期**: ${dateStr}\n`;
             md += `- **音频文件**: ${filename}\n`;
             md += `---\n\n## 会议内容\n`;
@@ -2305,6 +2459,9 @@
                 return;
             }
 
+            const summaryApiUrl = getApiUrl();
+            if (!confirm(`请确认已核对医学数字、单位、否定词与身份。\n将向 ${summaryApiUrl} 发送当前转写；若该服务器配置了外部 LLM，文本也会发送给该服务。是否继续？`)) return;
+
             // 显示 loading
             btn.disabled = true;
             btn.textContent = '⏳ 正在生成总结...';
@@ -2312,7 +2469,7 @@
             box.innerHTML = '<div class="summary-loading"><div class="spinner"></div><span>正在调用 AI 生成会议总结，请稍候...</span></div>';
 
             try {
-                const response = await fetch(`${getApiUrl()}/v1/meeting/summarize`, {
+                const response = await fetch(`${summaryApiUrl}/v1/meeting/summarize`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ transcript: items })
@@ -2325,12 +2482,12 @@
                     btn.textContent = '📋 重新生成总结';
                     btn.disabled = false;
                 } else {
-                    box.innerHTML = `<div style="color: #ff4757;">❌ ${result.message || '生成失败'}</div>`;
+                    box.innerHTML = `<div style="color: #ff4757;">❌ ${escapeHtml(result.message || '生成失败')}</div>`;
                     btn.textContent = '📋 重试总结';
                     btn.disabled = false;
                 }
             } catch (error) {
-                box.innerHTML = `<div style="color: #ff4757;">❌ 请求失败: ${error.message}</div>`;
+                box.innerHTML = `<div style="color: #ff4757;">❌ 请求失败: ${escapeHtml(error.message)}</div>`;
                 btn.textContent = '📋 重试总结';
                 btn.disabled = false;
             }
@@ -2338,7 +2495,7 @@
 
         function renderSummary(container, markdownText) {
             // 简易 Markdown 渲染 (无需额外依赖)
-            let html = markdownText
+            let html = escapeHtml(markdownText)
                 .replace(/^### (.+)$/gm, '<h3>$1</h3>')
                 .replace(/^## (.+)$/gm, '<h2>$1</h2>')
                 .replace(/^# (.+)$/gm, '<h1>$1</h1>')
@@ -2395,7 +2552,8 @@
             refreshVoiceprintsForCurrentServer();
         });
 
-        // 页面加载时尝试获取声纹列表，供实时/上传页面勾选参会人
+        // 页面加载时恢复最近任务；只订阅原服务器，不重新上传或重新推理。
+        restoreMeetingJob();
         loadVoiceprints();
     </script>
 </body>

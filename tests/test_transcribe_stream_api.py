@@ -1,3 +1,4 @@
+import codecs
 import io
 import json
 import mimetypes
@@ -59,10 +60,12 @@ class TranscribeStreamApiTest(unittest.TestCase):
         started_at = time.perf_counter()
         first_event_at = None
         first_segment_at = None
+        segment_times = []
         segment_count = 0
         saw_done = False
         event_types: list[str] = []
         buffer = ""
+        decoder = codecs.getincrementaldecoder("utf-8")()
 
         with urllib.request.urlopen(request, timeout=600) as response:
             while True:
@@ -70,7 +73,7 @@ class TranscribeStreamApiTest(unittest.TestCase):
                 if not chunk:
                     break
 
-                buffer += chunk.decode("utf-8", errors="ignore")
+                buffer += decoder.decode(chunk)
                 parts = buffer.split("\n\n")
                 buffer = parts.pop()
 
@@ -84,10 +87,15 @@ class TranscribeStreamApiTest(unittest.TestCase):
                         event_type = payload.get("type", "unknown")
                         event_types.append(event_type)
                         if event_type == "segment":
+                            self.assertFalse(saw_done, "Segment arrived after done")
+                            self.assertEqual(payload.get("index"), segment_count)
+                            self.assertTrue(payload.get("text", "").strip())
+                            segment_times.append(time.perf_counter())
                             if first_segment_at is None:
-                                first_segment_at = time.perf_counter()
+                                first_segment_at = segment_times[-1]
                             segment_count += 1
                         if event_type == "done":
+                            self.assertEqual(payload.get("segments"), segment_count)
                             saw_done = True
 
         finished_at = time.perf_counter()
@@ -95,10 +103,12 @@ class TranscribeStreamApiTest(unittest.TestCase):
         self.assertIsNotNone(first_event_at, "No SSE event was received from the stream endpoint.")
         self.assertIsNotNone(first_segment_at, "No segment event was received from the stream endpoint.")
         self.assertTrue(saw_done, "Stream completed without emitting a done event.")
+        self.assertNotIn("error", event_types, "Stream contained an error event.")
 
         first_event_seconds = first_event_at - started_at
         first_segment_seconds = first_segment_at - started_at
         total_seconds = finished_at - started_at
+        segment_span_seconds = segment_times[-1] - segment_times[0]
 
         event_summary = Counter(event_types)
         avg_segment_seconds = total_seconds / segment_count if segment_count else 0.0
@@ -112,9 +122,10 @@ class TranscribeStreamApiTest(unittest.TestCase):
         print("-" * 64)
         print(f"First Event    : {first_event_seconds:8.3f} s")
         print(f"First Segment  : {first_segment_seconds:8.3f} s")
+        print(f"Segment Span   : {segment_span_seconds:8.3f} s")
         print(f"Total Time     : {total_seconds:8.3f} s")
         print(f"Segments       : {segment_count:8d}")
-        print(f"Avg/Segment    : {avg_segment_seconds:8.3f} s")
+        print(f"Total/Segments : {avg_segment_seconds:8.3f} s (not segment latency)")
         print("-" * 64)
         print(
             "Events         : "
@@ -133,6 +144,13 @@ class TranscribeStreamApiTest(unittest.TestCase):
                 float(max_first_event),
                 f"First SSE event exceeded threshold: {first_event_seconds:.3f}s > {max_first_event}s",
             )
+
+        max_first_segment = os.environ.get("STREAM_TEST_MAX_FIRST_SEGMENT_SECONDS")
+        if max_first_segment:
+            self.assertLessEqual(first_segment_seconds, float(max_first_segment), "Real transcript arrived too late")
+        min_segment_span = os.environ.get("STREAM_TEST_MIN_SEGMENT_SPAN_SECONDS")
+        if min_segment_span:
+            self.assertGreaterEqual(segment_span_seconds, float(min_segment_span), "Segments arrived as a terminal burst, not incrementally")
 
         max_total = os.environ.get("STREAM_TEST_MAX_TOTAL_SECONDS")
         if max_total:

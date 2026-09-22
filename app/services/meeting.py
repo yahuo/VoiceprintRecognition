@@ -1,29 +1,71 @@
 #!/usr/bin/env python3
-"""
-会议记录工具 (Meeting Transcription)
-上传会议音频 → 自动识别并输出带姓名的文字记录
+"""离线唯一链路：完整音频 MOSS 转写/匿名分人 → CAM++ 保守身份验证。
 
-策略：
-1. 使用 VAD 模型显式切分音频
-2. 循环处理每个片段：ASR 识别文本 + CAM++ 识别说话人
-3. 聚合结果，生成会议纪要
+JSON、SSE、已保存录音及 CLI 共用 process_meeting；不再运行旧离线 ASR/对齐分支。
 """
 
 import argparse
-import os
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from collections.abc import Collection
-import numpy as np
-import librosa
+from datetime import datetime
+import os
+import subprocess
+import tempfile
+import time
+import wave
 
-# 导入核心模块
-from app.core import (
-    CONFIG,
-    ModelService,
-    format_time,
-    merge_diarization_segments,
-)
+import numpy as np
+
+from app.core import CONFIG, ModelService, format_time
+from app.services.moss import AudioTooLong, InvalidAudio, MossBusy, MossCancelled, MossError, MossTimeout, MossUnavailable, max_audio_seconds
+
+
+def _decode_audio(audio_path, wav_path, cancelled=None):
+    """与验收基准相同的 FFmpeg PCM16 解码；先限长/下混，避免展开原采样率多通道大数组。"""
+    limit = max_audio_seconds()
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin", "-y", "-xerror", "-threads", "2",
+        "-protocol_whitelist", "file,pipe",
+        "-format_whitelist", "wav,mp3,mov,mp4,m4a,3gp,3g2,mj2,aac,flac,ogg,aiff,asf,matroska,webm,amr",
+        "-i", os.path.abspath(audio_path), "-t", str(limit + 0.1),
+        "-vn", "-sn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+        "-map_metadata", "-1", "-f", "wav", wav_path,
+    ]
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError as exc:
+        raise MossUnavailable("本机缺少 FFmpeg，无法解码录音") from exc
+    try:
+        deadline = time.monotonic() + 120
+        while process.poll() is None:
+            if cancelled is not None and cancelled.is_set():
+                raise MossCancelled("离线转写已取消")
+            if time.monotonic() >= deadline:
+                raise MossTimeout("音频解码超时，未启动模型推理")
+            time.sleep(0.05)
+        if process.returncode:
+            raise InvalidAudio("无法解码录音，请检查格式；不接受网络音频引用或播放列表")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    try:
+        with wave.open(wav_path, "rb") as decoded:
+            if (decoded.getframerate(), decoded.getnchannels(), decoded.getsampwidth()) != (16000, 1, 2):
+                raise InvalidAudio("解码结果不是 16kHz 单声道 PCM16")
+            # 多解码 0.1s 只用于检测超长；超过上限绝不送入 MOSS。
+            if decoded.getnframes() > int(limit * 16000):
+                raise AudioTooLong(f"录音超过当前 MOSS 完整上下文上限 {limit:g} 秒，未截断或分块识别")
+            pcm = decoded.readframes(decoded.getnframes())
+    except (wave.Error, EOFError) as exc:
+        raise InvalidAudio("无法读取解码后的录音") from exc
+    if not pcm:
+        raise InvalidAudio("录音为空")
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0, 16000
+
 
 def process_meeting(
     service: ModelService,
@@ -31,411 +73,157 @@ def process_meeting(
     threshold: float = None,
     allowed_speaker_ids: Collection[str] | None = None,
     matching_scope=None,
-    match_registered_speakers: bool = True,
+    match_registered_speakers: bool = False,
+    *,
+    progress=None,
+    cancelled=None,
 ) -> list:
-    """
-    处理会议音频
-    
-    策略优先级：
-    1. 尝试使用 pyannote 进行说话人分离 (更准确)
-    2. 回退到 VAD 分段 + DBSCAN 聚类 (原方案)
-    
-    Args:
-        service: ModelService 实例
-        audio_path: 音频文件路径
-        threshold: 声纹匹配阈值
-        allowed_speaker_ids: 本次会议允许匹配的注册声纹 id
-        match_registered_speakers: 是否匹配注册声纹；False 时不会提取声纹或查询声纹库
-    
-    Returns:
-        transcript 列表
-    """
-    if threshold is None:
-        threshold = CONFIG["speaker_threshold"]
-    if match_registered_speakers and matching_scope is None:
-        matching_scope = service.build_matching_scope(allowed_speaker_ids)
-    
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"音频文件不存在: {audio_path}")
-    
-    print(f"\n正在处理会议录音: {audio_path}")
-    print("-" * 60)
-    
-    # 读取音频
-    speech_full, sr = librosa.load(audio_path, sr=16000)
-    
-    # ========== 尝试使用 pyannote diarization ==========
-    diarization_segments = service.diarize(audio_path, audio_data=speech_full)
-    
-    if diarization_segments:
-        # 合并同一说话人的相邻碎片段
-        diarization_segments = merge_diarization_segments(diarization_segments)
-        # 使用 pyannote 分段结果
-        return _process_with_diarization(
-            service, audio_path, speech_full, sr, 
-            diarization_segments, threshold, allowed_speaker_ids, matching_scope, match_registered_speakers
-        )
-    else:
-        # 回退到 VAD 分段
-        return _process_with_vad(
-            service, audio_path, speech_full, sr, threshold, allowed_speaker_ids, matching_scope, match_registered_speakers
-        )
+    """保留源文本与重叠时间；匿名编号绝不当作注册身份或匹配置信度。"""
+    if not service._offline_lock.acquire(blocking=False):
+        raise MossBusy("已有离线录音正在处理，请稍后重试")
 
+    def check_cancelled():
+        if cancelled is not None and cancelled.is_set():
+            raise MossCancelled("离线转写已取消")
 
-def _process_with_diarization(service: ModelService, audio_path: str,
-                               speech_full: np.ndarray, sr: int,
-                               segments: list, threshold: float,
-                               allowed_speaker_ids: Collection[str] | None = None,
-                               matching_scope=None,
-                               match_registered_speakers: bool = True) -> list:
-    """
-    使用 pyannote diarization 结果处理会议
-    
-    Args:
-        segments: [(start_ms, end_ms, speaker_id), ...]
-    """
-    print(f"Step 1: 使用 pyannote 分离结果 ({len(segments)} 个片段)")
-    
-    transcript = []
-    total_segments = len(segments)
-    
-    # 建立 pyannote speaker_id -> 最终说话人名 的映射
-    speaker_mapping = {}  # "SPEAKER_00" -> "张三" 或 "陌生人1"
-    segment_verified_mapping = {}
-    stranger_counter = 0
-    speaker_registered_mapping = {}
-    if match_registered_speakers:
-        top_k = max(1, CONFIG["offline_registered_match_top_k"])
-        speaker_candidate_segments = {}
-        for start_ms, end_ms, pyannote_speaker in segments:
-            speaker_candidate_segments.setdefault(pyannote_speaker, []).append((start_ms, end_ms))
+    def emit(event):
+        check_cancelled()
+        if progress is not None:
+            progress(event)
 
-        for pyannote_speaker, segments_for_speaker in speaker_candidate_segments.items():
-            candidate_segments = sorted(
-                segments_for_speaker,
-                key=lambda item: item[1] - item[0],
-                reverse=True,
-            )[:top_k]
-            candidate_embeddings = []
-            for start_ms, end_ms in candidate_segments:
-                start_sample = int(start_ms / 1000 * sr)
-                end_sample = int(end_ms / 1000 * sr)
-                speech = speech_full[start_sample:end_sample]
-                if len(speech) < 0.2 * sr:
-                    continue
-                emb = service.extract_embedding(speech)
-                candidate_embeddings.append((emb, end_ms - start_ms))
-            speaker_registered_mapping[pyannote_speaker] = service.match_registered_speaker_consensus(
-                candidate_embeddings,
-                threshold=threshold,
-                match_scope=matching_scope,
-                allowed_speaker_ids=allowed_speaker_ids,
+    try:
+        threshold = CONFIG["speaker_threshold"] if threshold is None else threshold
+        if match_registered_speakers and matching_scope is None:
+            matching_scope = service.build_matching_scope(allowed_speaker_ids)
+        emit({"type": "status", "phase": "loading", "message": "正在解码完整录音..."})
+        segments, transcript = [], []
+        anonymous_names = {}
+
+        def publish_available(*, final=False):
+            while len(transcript) < len(segments):
+                check_cancelled()
+                index = len(transcript)
+                segment = segments[index]
+                # 后续起点单调递增。等水位越过当前段末，才排除尚未生成的跨人重叠；
+                # 不为提前显示姓名而放松声纹取样保护。匿名模式不需等待这个水位。
+                if (match_registered_speakers and not final
+                        and segments[-1]["start_ms"] < segment["end_ms"]):
+                    break
+                label = segment["diarizationSpeaker"]
+                anonymous_names.setdefault(label, f"陌生人{len(anonymous_names) + 1}")
+                speaker_id, confidence = None, 0.0
+                if match_registered_speakers:
+                    start, end = _clean_speaker_window(segments, index)
+                    if end - start >= CONFIG["offline_scoped_match_min_duration_ms"]:
+                        end = min(end, start + 12000)
+                        try:
+                            embedding = service.extract_embedding(audio[start * sr // 1000:end * sr // 1000])
+                            if embedding is not None:
+                                speaker_id, confidence = service.match_registered_speaker_guarded(
+                                    embedding, threshold=threshold, duration_ms=end - start,
+                                    match_scope=matching_scope, allowed_speaker_ids=allowed_speaker_ids,
+                                )
+                        except Exception:
+                            speaker_id, confidence = None, 0.0
+                            emit({"type": "status", "phase": "identity_warning", "message": "声纹验证失败，保留匿名说话人与原文"})
+                    # 不从同一匿名簇、上一句或文件名强行继承真实身份。
+                    if speaker_id is None:
+                        confidence = 0.0
+                item = {
+                    **segment, "time": format_time(segment["start_ms"]),
+                    "speakerId": speaker_id,
+                    "speaker": service.get_speaker_name(speaker_id) if speaker_id is not None else anonymous_names[label],
+                    "confidence": round(float(confidence), 2),
+                }
+                transcript.append(item)
+                emit({"type": "segment", "index": index, **item})
+
+        def on_segment(segment):
+            check_cancelled()
+            segments.append(segment)
+            publish_available()
+
+        # worker 只读取请求专属的本机 WAV；等待推理结束后才删除，不切分音频输入。
+        with tempfile.TemporaryDirectory(prefix="voiceprint-moss-") as work_dir:
+            wav_path = os.path.join(work_dir, "audio.wav")
+            audio, sr = _decode_audio(audio_path, wav_path, cancelled)
+            emit({"type": "status", "phase": "transcribing", "message": "正在转写..."})
+            result = service.moss.transcribe(
+                wav_path, len(audio) / sr, cancelled=cancelled, on_segment=on_segment,
             )
-    
-    step2_action = "逐段识别文本与匹配声纹" if match_registered_speakers else "逐段识别文本"
-    print(f"Step 2: {step2_action}（并行推理）...")
+        if segments != result[:len(segments)]:
+            raise MossError("MOSS 流式片段与最终结果不一致")
+        for segment in result[len(segments):]:
+            on_segment(segment)
+        # 总数只能在正常 EOS 后确定；info 保持整数总数，允许它晚于流式 segment。
+        emit({"type": "info", "method": "moss", "total_segments": len(result)})
+        publish_available(final=True)
+        return transcript
+    finally:
+        service._offline_lock.release()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        for i, (start_ms, end_ms, pyannote_speaker) in enumerate(segments):
-            print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
 
-            # 提取片段
-            start_sample = int(start_ms / 1000 * sr)
-            end_sample = int(end_ms / 1000 * sr)
-            speech = speech_full[start_sample:end_sample]
-
-            if len(speech) < 0.2 * sr:
-                continue
-
-            # 直接传 numpy 数组给模型，避免临时文件 IO
-            need_embedding = match_registered_speakers and pyannote_speaker not in speaker_mapping
-            future_text = pool.submit(service.transcribe_segment, speech)
-            if need_embedding:
-                future_emb = pool.submit(service.extract_embedding, speech)
-
-            text = future_text.result()
-            if not text:
-                continue
-
-            # 确定说话人
-            seg_key = (start_ms, end_ms, pyannote_speaker)
-            if seg_key in segment_verified_mapping:
-                speaker_id, speaker, confidence = segment_verified_mapping[seg_key]
+def _clean_speaker_window(segments, index):
+    """从原片段扣除其他匿名说话人的重叠区，选最长连续区做身份验证。"""
+    current = segments[index]
+    windows = [(current["start_ms"], current["end_ms"])]
+    for other in segments:
+        if other["start_ms"] >= current["end_ms"]:
+            break
+        if other["diarizationSpeaker"] == current["diarizationSpeaker"] or other["end_ms"] <= current["start_ms"]:
+            continue
+        remaining = []
+        for start, end in windows:
+            if other["end_ms"] <= start or other["start_ms"] >= end:
+                remaining.append((start, end))
             else:
-                try:
-                    local_id = None
-                    local_score = 0.0
-                    if need_embedding:
-                        emb = future_emb.result()
-                    else:
-                        emb = None
-                    if emb is not None:
-                        local_id, local_score = service.match_registered_speaker_guarded(
-                            emb,
-                            threshold=threshold,
-                            duration_ms=end_ms - start_ms,
-                            match_scope=matching_scope,
-                            allowed_speaker_ids=allowed_speaker_ids,
-                        )
-
-                    if local_id is not None:
-                        speaker_id = local_id
-                        speaker = service.get_speaker_name(local_id)
-                        confidence = local_score
-                    else:
-                        matched_id, score = speaker_registered_mapping.get(pyannote_speaker, (None, 0.0))
-                        if matched_id is not None:
-                            speaker_id = None
-                            speaker = "未知"
-                            confidence = 0.0
-                        else:
-                            if pyannote_speaker not in speaker_mapping:
-                                stranger_counter += 1
-                                speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
-                            speaker_id = None
-                            speaker = speaker_mapping[pyannote_speaker]
-                            confidence = 1.0
-                except Exception:
-                    if pyannote_speaker not in speaker_mapping:
-                        stranger_counter += 1
-                        speaker_mapping[pyannote_speaker] = f"陌生人{stranger_counter}"
-                    speaker_id = None
-                    speaker = speaker_mapping[pyannote_speaker]
-                    confidence = 1.0
-
-                segment_verified_mapping[seg_key] = (speaker_id, speaker, confidence)
-
-            segment_info = {
-                "time": format_time(start_ms),
-                "speakerId": speaker_id,
-                "speaker": speaker,
-                "confidence": round(confidence, 2),
-                "text": text,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-            }
-
-            transcript.append(segment_info)
-
-    print(f"\n✅ 处理完成! 识别出 {len(speaker_mapping)} 位说话人")
-    for pyannote_id, name in speaker_mapping.items():
-        print(f"   {pyannote_id} -> {name}")
-    
-    return transcript
-
-
-def _process_with_vad(service: ModelService, audio_path: str,
-                      speech_full: np.ndarray, sr: int,
-                      threshold: float,
-                      allowed_speaker_ids: Collection[str] | None = None,
-                      matching_scope=None,
-                      match_registered_speakers: bool = True) -> list:
-    """
-    使用 VAD 分段 + 后聚类方案处理会议 (fallback)
-    """
-    print("Step 1: 正在进行 VAD 切分...")
-    segments = service.vad_segment(audio_path)
-    
-    if not segments:
-        print("VAD 未返回切分结果，尝试使用默认分段...")
-        dur = librosa.get_duration(filename=audio_path)
-        dur_ms = int(dur * 1000)
-        segments = [[t, min(t+10000, dur_ms)] for t in range(0, dur_ms, 10000)]
-    
-    print(f"获得 {len(segments)} 个语音片段")
-    
-    transcript = []
-    total_segments = len(segments)
-    
-    step2_action = "逐段识别文本与说话人" if match_registered_speakers else "逐段识别文本"
-    print(f"Step 2: {step2_action}（并行推理）...")
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        for i, seg in enumerate(segments):
-            start_ms, end_ms = seg
-            print(f"\r处理片段 {i+1}/{total_segments} [{format_time(start_ms)}]", end="", flush=True)
-
-            # 提取片段
-            start_sample = int(start_ms / 1000 * sr)
-            end_sample = int(end_ms / 1000 * sr)
-            speech = speech_full[start_sample:end_sample]
-
-            if len(speech) < 0.2 * sr:
-                continue
-
-            # 直接传 numpy 数组给模型，避免临时文件 IO
-            future_text = pool.submit(service.transcribe_segment, speech)
-            if match_registered_speakers:
-                future_emb = pool.submit(service.extract_embedding, speech)
-
-            text = future_text.result()
-            emb = future_emb.result() if match_registered_speakers else None
-            if not text:
-                continue
-
-            speaker_id = None
-            speaker = "未知"
-            score = 0.0
-
-            # 第一阶段：尝试匹配已注册声纹
-            if emb is not None:
-                speaker_id, score = service.match_registered_speaker_guarded(
-                    emb,
-                    threshold=threshold,
-                    duration_ms=end_ms - start_ms,
-                    match_scope=matching_scope,
-                    allowed_speaker_ids=allowed_speaker_ids,
-                )
-                speaker = service.get_speaker_name(speaker_id)
-
-            segment_info = {
-                "time": format_time(start_ms),
-                "speakerId": speaker_id,
-                "speaker": speaker,
-                "confidence": round(score, 2),
-                "text": text,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "embedding": emb  # 暂存 embedding 用于后续聚类
-            }
-
-            transcript.append(segment_info)
-    
-    # 💥 第二阶段：对陌生人进行聚类 (Diarization)
-    from app.core import cluster_embeddings
-    
-    # 1. 收集所有"未知"且有声纹的片段
-    unknown_indices = []
-    unknown_embeddings = []
-    
-    for i, item in enumerate(transcript):
-        if item["speaker"] == "未知" and item.get("embedding") is not None:
-            unknown_indices.append(i)
-            unknown_embeddings.append(item["embedding"])
-    
-    # 2. 如果未知片段足够多，执行聚类
-    if len(unknown_embeddings) >= 2:
-        print(f"\n检测到 {len(unknown_embeddings)} 个未知片段，正在进行聚类分析...")
-        try:
-            # 自动聚类
-            labels = cluster_embeddings(unknown_embeddings)
-            
-            # 3. 将聚类结果回填
-            cluster_map = {}  # label -> "陌生人 X"
-            next_stranger_id = 1
-            
-            for idx, label in zip(unknown_indices, labels):
-                if label not in cluster_map:
-                    cluster_map[label] = f"陌生人{next_stranger_id}"
-                    next_stranger_id += 1
-                
-                transcript[idx]["speaker"] = cluster_map[label]
-                transcript[idx]["speakerId"] = None
-                transcript[idx]["confidence"] = 1.0  # 聚类结果置信度设为1
-                
-            print(f"✅ 成功分离出 {len(cluster_map)} 位陌生人")
-            
-        except Exception as e:
-            print(f"聚类失败: {e}")
-            
-    # 清理 embedding 数据 (不返回给前端)
-    for item in transcript:
-        if "embedding" in item:
-            del item["embedding"]
-            
-    print("\n处理完成!")
-    return transcript
-
+                if start < other["start_ms"]:
+                    remaining.append((start, other["start_ms"]))
+                if other["end_ms"] < end:
+                    remaining.append((other["end_ms"], end))
+        windows = remaining
+    return max(windows, key=lambda span: span[1] - span[0], default=(0, 0))
 
 
 def print_transcript(transcript: list):
-    """打印会议记录"""
-    print("\n" + "=" * 60)
-    print("【会议记录】")
-    print("=" * 60 + "\n")
-    
-    current_speaker = None
-    
     for item in transcript:
-        speaker = item["speaker"]
-        time = item["time"]
-        text = item["text"]
-        
-        # 只有当说话人变化时才打印新标题
-        if speaker != current_speaker:
-            if current_speaker is not None:
-                print()
-            print(f"[{time}] {speaker}:")
-            current_speaker = speaker
-        
-        print(f"    {text}")
-    
-    print("\n" + "=" * 60)
+        print(f"[{item['time']}] {item['speaker']}: {item['text']}")
 
 
 def export_markdown(transcript: list, output_path: str, audio_path: str):
-    """导出为 Markdown 文件"""
-    
-    speakers = set(item["speaker"] for item in transcript)
-    
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("# 会议记录\n\n")
-        f.write(f"- **日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-        f.write(f"- **音频文件**: {os.path.basename(audio_path)}\n")
-        f.write(f"- **参会人**: {', '.join(sorted(speakers))}\n\n")
-        f.write("---\n\n")
-        f.write("## 会议内容\n\n")
-        
-        current_speaker = None
-        
+    with open(output_path, "x", encoding="utf-8") as output:
+        output.write(f"# 会议复核稿\n\n日期: {datetime.now():%Y-%m-%d %H:%M}\n\n")
+        output.write(f"音频文件: {os.path.basename(audio_path)}\n\n")
+        output.write("> MOSS 自动转写；医学数字、术语与身份归属需人工核对。\n\n")
         for item in transcript:
-            speaker = item["speaker"]
-            time = item["time"]
-            text = item["text"]
-            
-            if speaker != current_speaker:
-                if current_speaker is not None:
-                    f.write("\n")
-                f.write(f"**[{time}] {speaker}**:\n\n")
-                current_speaker = speaker
-            
-            f.write(f"> {text}\n")
-        
-        f.write("\n---\n\n")
-        f.write("*由 FunASR 声纹识别系统自动生成*\n")
-    
-    print(f"\n✅ 已导出到: {output_path}")
+            output.write(f"**[{item['time']}] {item['speaker']}**:\n\n> {item['text']}\n\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="会议记录工具")
-    parser.add_argument("--audio", "-a", required=True, help="会议音频文件路径")
-    parser.add_argument("--output", "-o", help="输出 Markdown 文件路径")
-    parser.add_argument("--threshold", "-t", type=float, default=None, 
-                        help=f"声纹匹配阈值 (默认: {CONFIG['speaker_threshold']})")
-    parser.add_argument("--device", "-d", default="cpu", help="运行设备 (默认: cpu)")
+    parser = argparse.ArgumentParser(description="MOSS + CAM++ 会议复核稿")
+    parser.add_argument("--audio", "-a", required=True)
+    parser.add_argument("--output", "-o")
+    parser.add_argument("--threshold", "-t", type=float, default=None)
+    parser.add_argument("--speaker-id", action="append", default=[], help="仅匹配这些已注册声纹 id；可重复")
+    parser.add_argument("--device", "-d", default="cpu", help="CAM++ 设备；MOSS 使用独立 CUDA worker")
     args = parser.parse_args()
-    
-    # 创建模型服务
+    if args.output and os.path.exists(args.output):
+        parser.error("输出已存在，请为复核稿选择新文件，避免覆盖实时稿或人工修改")
     service = ModelService()
-    service.load_models(device=args.device, load_vad=True)
-    
-    # 处理会议录音
-    transcript = process_meeting(
-        service, 
-        args.audio, 
-        threshold=args.threshold
-    )
-    
-    # 打印结果
-    if transcript:
+    try:
+        service.load_models(device=args.device, load_live=False)
+        missing = set(args.speaker_id) - service.registered_embeddings.keys()
+        if missing:
+            parser.error("存在未注册的 speaker-id")
+        transcript = process_meeting(
+            service, args.audio, args.threshold, args.speaker_id,
+            match_registered_speakers=bool(args.speaker_id),
+        )
         print_transcript(transcript)
-        
-        # 导出 Markdown
         if args.output:
             export_markdown(transcript, args.output, args.audio)
-    else:
-        print("未能生成会议记录")
+    finally:
+        service.close()
 
 
 if __name__ == "__main__":

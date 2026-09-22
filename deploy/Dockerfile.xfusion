@@ -1,0 +1,26 @@
+# xfusion Linux ARM64: 复用已验收的 Python 依赖，不继承旧应用/模型/数据层。
+# APP_DEPS_IMAGE 必须在构建前校验不可变 image ID；这是定向部署配方，不是多架构声明。
+ARG APP_DEPS_IMAGE
+FROM ${APP_DEPS_IMAGE} AS dependencies
+FROM python:3.11.16-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libsndfile1 libportaudio2 libgomp1 gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=dependencies /usr/local/ /usr/local/
+RUN find /usr/local/lib/python3.11/site-packages/nvidia -maxdepth 2 -type d -name lib \
+      > /etc/ld.so.conf.d/nvidia-python.conf && ldconfig
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 \
+    HOME=/tmp HF_HOME=/tmp/hf HF_MODULES_CACHE=/tmp/hf/modules \
+    MODELSCOPE_CACHE=/tmp/modelscope \
+    RECORDINGS_DIR=/data/recordings VOICEPRINT_DB_DIR=/data/voiceprints
+COPY app/ ./app/
+COPY static/ ./static/
+COPY Fun-ASR/ ./Fun-ASR/
+COPY source-manifest.json ./source-manifest.json
+RUN python -c "from app import server; import torch; assert server.app.version == '3.0.0'; assert torch.__version__ == '2.10.0+cu130'; print('APP_IMPORT_OK')"
+EXPOSE 8000
+CMD ["python", "-m", "app.server", "--host", "0.0.0.0", "--port", "8000", "--device", "cuda:0"]

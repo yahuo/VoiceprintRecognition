@@ -1,5 +1,5 @@
-# FunASR 声纹识别依赖
-# Requirements: python>=3.8, torch>=1.13
+# 业务 / 实时环境；MOSS 使用独立环境 requirements-moss.txt
+# Requirements: python>=3.10
 
 # 核心依赖
 funasr>=1.3.1
@@ -14,7 +14,6 @@ huggingface_hub
 numpy>=1.20.0
 soundfile>=0.12.0
 librosa>=0.10.0
-scikit-learn>=1.0.0
 
 # 其他依赖
 transformers
@@ -28,6 +27,4 @@ websockets>=10.0
 # 实时录音
 pyaudio>=0.2.13
 
-# 说话人分离 (Speaker Diarization)
-pyannote.audio>=3.1.0
 python-dotenv>=1.0.0

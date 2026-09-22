@@ -41,16 +41,16 @@ class RecordingWriter:
         self._wav_file = wav_file
         self._closed = False
         self.frames_written = 0
+        self._pending = b""
 
     def write_pcm(self, pcm_bytes: bytes):
-        if not pcm_bytes:
-            return
-        if len(pcm_bytes) % SAMPLE_WIDTH_BYTES != 0:
-            pcm_bytes = pcm_bytes[:-(len(pcm_bytes) % SAMPLE_WIDTH_BYTES)]
-            if not pcm_bytes:
-                return
-        self._wav_file.writeframes(pcm_bytes)
-        self.frames_written += len(pcm_bytes) // SAMPLE_WIDTH_BYTES
+        # WebSocket 包边界不一定对齐采样，保留跨包的半个 PCM16 样本。
+        pcm_bytes = self._pending + pcm_bytes
+        usable = len(pcm_bytes) - len(pcm_bytes) % SAMPLE_WIDTH_BYTES
+        self._pending = pcm_bytes[usable:]
+        if usable:
+            self._wav_file.writeframes(pcm_bytes[:usable])
+            self.frames_written += usable // SAMPLE_WIDTH_BYTES
 
     def commit(self) -> str:
         self._close()

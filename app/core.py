@@ -13,14 +13,11 @@ import os
 import sys
 import json
 import time
-import tempfile
 import secrets
 import shutil
 import threading
 from dataclasses import dataclass
 import numpy as np
-import librosa
-import soundfile as sf
 from collections.abc import Collection
 from typing import Dict, List, Tuple, Optional
 
@@ -43,8 +40,7 @@ except ImportError:
 
 CONFIG = {
     "asr_language": "zh",           # 强制中文，避免短音频误判为日语
-    "upload_asr_backend": os.environ.get("UPLOAD_ASR_BACKEND", "paraformer"),  # paraformer / nano
-    "upload_asr_batch_size_s": int(os.environ.get("UPLOAD_ASR_BATCH_SIZE_S", "300")),
+    "streaming_asr_model_path": os.environ.get("STREAMING_ASR_MODEL_PATH", ""),
     "speaker_threshold": 0.30,      # 声纹匹配阈值
     "offline_registered_match_min_duration_ms": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_DURATION_MS", "3000")),
     "offline_registered_match_score_floor": float(os.environ.get("OFFLINE_REGISTERED_MATCH_SCORE_FLOOR", "0.38")),
@@ -55,9 +51,6 @@ CONFIG = {
     "offline_scoped_single_match_min_duration_ms": int(os.environ.get("OFFLINE_SCOPED_SINGLE_MATCH_MIN_DURATION_MS", "1500")),
     "offline_scoped_single_match_score_floor": float(os.environ.get("OFFLINE_SCOPED_SINGLE_MATCH_SCORE_FLOOR", "0.38")),
     "offline_scoped_outside_margin": float(os.environ.get("OFFLINE_SCOPED_OUTSIDE_MARGIN", "0.03")),
-    "offline_scoped_single_inherit_min_confidence": float(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_CONFIDENCE", "0.55")),
-    "offline_scoped_single_inherit_min_overlap_ratio": float(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_OVERLAP_RATIO", "0.85")),
-    "offline_scoped_single_inherit_min_duration_ms": int(os.environ.get("OFFLINE_SCOPED_SINGLE_INHERIT_MIN_DURATION_MS", "1500")),
     "offline_short_match_min_duration_ms": int(os.environ.get("OFFLINE_SHORT_MATCH_MIN_DURATION_MS", "500")),
     "offline_short_match_score_floor": float(os.environ.get("OFFLINE_SHORT_MATCH_SCORE_FLOOR", "0.48")),
     "offline_short_match_min_margin": float(os.environ.get("OFFLINE_SHORT_MATCH_MIN_MARGIN", "0.10")),
@@ -68,30 +61,21 @@ CONFIG = {
     "offline_registered_match_top_k": int(os.environ.get("OFFLINE_REGISTERED_MATCH_TOP_K", "3")),
     "offline_registered_match_min_support": int(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_SUPPORT", "2")),
     "offline_registered_match_min_share": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_SHARE", "0.60")),
-    "offline_sentence_exact_match_max_duration_ms": int(os.environ.get("OFFLINE_SENTENCE_EXACT_MATCH_MAX_DURATION_MS", "1500")),
-    "asr_pause_split_gap_ms": int(os.environ.get("ASR_PAUSE_SPLIT_GAP_MS", "400")),
-    "min_confidence": 0.15,         # 低置信度过滤（低于此值丢弃）
+    "min_confidence": 0.15,         # 低分仅拒绝身份，仍保留文字与未知说话人
     "silence_duration": 0.5,        # 静音切分阈值（秒）
-    "inheritance_timeout": 3.0,     # 说话人继承超时（秒）
-    "silence_energy": 500,          # 静音能量阈值
-    "diarization_merge_gap_ms": int(os.environ.get("DIARIZATION_MERGE_GAP_MS", "800")),
-    "diarization_short_segment_ms": int(os.environ.get("DIARIZATION_SHORT_SEGMENT_MS", "1500")),
-    "diarization_max_merged_ms": int(os.environ.get("DIARIZATION_MAX_MERGED_MS", "12000")),
     # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
     "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
     "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
     "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
-    "upload_asr_model_path": os.environ.get("UPLOAD_ASR_MODEL_PATH", ""),
-    "punc_model_path": os.environ.get("PUNC_MODEL_PATH", ""),
     "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
 }
 
 
 # ========== 声纹数据库路径 ==========
 
-VOICEPRINT_DB_DIR = os.path.join(PROJECT_ROOT, "voiceprint_db")
+VOICEPRINT_DB_DIR = os.environ.get("VOICEPRINT_DB_DIR", os.path.join(PROJECT_ROOT, "voiceprint_db"))
 VOICEPRINT_INDEX_FILE = os.path.join(VOICEPRINT_DB_DIR, "index.json")
 VOICEPRINT_FILES_DIR = os.path.join(VOICEPRINT_DB_DIR, "files")
 
@@ -257,7 +241,7 @@ def load_voiceprint_embeddings() -> Dict[str, np.ndarray]:
     return embeddings
 
 
-# ========== 声纹匹配与聚类 ==========
+# ========== 声纹匹配 ==========
 
 def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
     """计算余弦相似度"""
@@ -303,145 +287,6 @@ def match_speaker(embedding: np.ndarray,
         return (UNKNOWN_SPEAKER_ID, best_score)
 
 
-def cluster_embeddings(embeddings: List[np.ndarray], 
-                       n_clusters: int = None, 
-                       min_clusters: int = 1, 
-                       max_clusters: int = 10) -> List[int]:
-    """
-    对一组声纹嵌入进行聚类 (用于区分陌生人)
-    
-    使用谱聚类 (Spectral Clustering)
-    
-    Args:
-        embeddings: 声纹向量列表
-        n_clusters: 指定聚类数量 (None 表示自动估计)
-        min_clusters: 最小聚类数
-        max_clusters: 最大聚类数
-    
-    Returns:
-        labels: 每个向量对应的类别标签 [0, 1, 0, 2...]
-    """
-    try:
-        from sklearn.cluster import DBSCAN
-        from sklearn.metrics.pairwise import cosine_similarity as sklearn_cossim
-    except ImportError:
-        print("警告: 未安装 scikit-learn，无法执行聚类。请运行 pip install scikit-learn")
-        return [0] * len(embeddings)
-
-    if not embeddings:
-        return []
-    
-    X = np.array(embeddings)
-    n_samples = X.shape[0]
-    
-    if n_samples < 2:
-        return [0] * n_samples
-        
-    # 如果指定了聚类数，使用层次聚类
-    if n_clusters:
-        from sklearn.cluster import AgglomerativeClustering
-        clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(X)
-        return clustering.labels_.tolist()
-    
-    # ========== 使用 DBSCAN 自适应聚类 ==========
-    # DBSCAN 的优势：
-    # 1. 不需要预设聚类数
-    # 2. 能自动识别噪声点（异常片段）
-    # 3. 基于密度，更适合声纹这种"簇内紧密"的数据
-    
-    # 计算余弦距离矩阵
-    similarity_matrix = sklearn_cossim(X)
-    distance_matrix = 1 - similarity_matrix
-    distance_matrix[distance_matrix < 0] = 0
-    
-    # DBSCAN 参数:
-    # - eps: 邻域半径 (距离阈值)，余弦距离通常在 0~2 范围
-    #   0.65 表示相似度 > 0.35 的样本会被归为同一类
-    # - min_samples: 形成一个簇的最小样本数，会议中设为 1 允许单句成簇
-    eps = 0.50  # 更严格的阈值，相似度需 > 0.5 才合并
-    
-    print(f"聚类分析: 使用 DBSCAN，eps={eps:.2f} (相似度阈值≈{1-eps:.2f})")
-    
-    clustering = DBSCAN(
-        eps=eps,
-        min_samples=1,  # 允许单个样本成簇
-        metric='precomputed'
-    ).fit(distance_matrix)
-    
-    labels = clustering.labels_.tolist()
-    
-    # DBSCAN 会把噪声标记为 -1，我们需要把它们分配到新的类
-    max_label = max(labels) if labels else -1
-    for i, label in enumerate(labels):
-        if label == -1:
-            max_label += 1
-            labels[i] = max_label
-    
-    n_cl = len(set(labels))
-    print(f"聚类结果: 发现 {n_cl} 位陌生人")
-    
-    return labels
-
-
-# ========== 片段合并 ==========
-
-def merge_diarization_segments(
-    segments: list,
-    gap_threshold_ms: int = 800,
-    short_segment_ms: int = 1500,
-    max_merged_duration_ms: int = 12000,
-) -> list:
-    """
-    合并同一说话人的相邻短片段，减少推理次数。
-
-    Args:
-        segments: [(start_ms, end_ms, speaker_id), ...]
-        gap_threshold_ms: 同一说话人相邻片段间隔小于此值时合并
-        short_segment_ms: 前后任一片段很短时，优先合并
-        max_merged_duration_ms: 合并后单段最大时长，避免过度合并
-
-    Returns:
-        合并后的片段列表
-    """
-    if not segments:
-        return segments
-
-    merged = [segments[0]]
-    for start_ms, end_ms, speaker in segments[1:]:
-        prev_start, prev_end, prev_speaker = merged[-1]
-        gap_ms = start_ms - prev_end
-        prev_duration_ms = prev_end - prev_start
-        current_duration_ms = end_ms - start_ms
-        merged_duration_ms = end_ms - prev_start
-
-        can_merge = (
-            speaker == prev_speaker
-            and gap_ms <= gap_threshold_ms
-            and merged_duration_ms <= max_merged_duration_ms
-            and (
-                gap_ms <= gap_threshold_ms // 2
-                or prev_duration_ms <= short_segment_ms
-                or current_duration_ms <= short_segment_ms
-            )
-        )
-
-        if can_merge:
-            merged[-1] = (prev_start, end_ms, speaker)
-            continue
-
-        merged.append((start_ms, end_ms, speaker))
-
-    if len(merged) < len(segments):
-        print(
-            "片段合并: "
-            f"{len(segments)} -> {len(merged)} "
-            f"(gap<={gap_threshold_ms}ms, short<={short_segment_ms}ms, "
-            f"max<={max_merged_duration_ms}ms)"
-        )
-
-    return merged
-
-
 # ========== 工具函数 ==========
 
 def format_time(ms: int) -> str:
@@ -458,12 +303,16 @@ class ModelService:
     """统一的模型加载和推理服务"""
     
     def __init__(self):
-        self.vad_model = None
+        from .services.moss import MossTranscriber
         self.asr_model = None
-        self.upload_asr_model = None
-        self.upload_asr_backend = CONFIG["upload_asr_backend"]
         self.spk_model = None
-        self.diarization_pipeline = None  # pyannote diarization
+        self.moss = MossTranscriber()
+        self.streaming_vad_model = None
+        self.streaming_asr_model = None
+        self._streaming_vad_lock = threading.Lock()
+        self._streaming_asr_lock = threading.Lock()
+        self._embedding_lock = threading.Lock()
+        self._offline_lock = threading.Lock()
         self.registered_embeddings = {}
         self.registered_speakers = {}
         self._emb_names = []
@@ -473,13 +322,14 @@ class ModelService:
         self.is_loaded = False
 
     
-    def load_models(self, device: str = "cpu", load_vad: bool = True):
+    def load_models(self, device: str = "cpu", load_vad: bool = True, *, load_live: bool = True):
         """
         加载所有模型
         
         Args:
             device: 运行设备 ("cpu" 或 "cuda:0")
-            load_vad: 是否加载 VAD 模型（实时场景可以不加载）
+            load_vad: 兼容旧调用；实时链路始终使用 FSMN-VAD
+            load_live: 离线 CLI / 声纹管理可不加载实时 ASR；MOSS 独立懒加载
         """
         print("正在初始化模型...")
 
@@ -499,53 +349,21 @@ class ModelService:
             else:
                 print(f"✅ CUDA 可用: {torch.cuda.get_device_name(0)}")
 
-        # 记录实际使用的设备，供后续 diarization 等组件使用
+        # 记录 CAM++ / 实时 ASR 实际设备；MOSS 不在此环境加载。
         self.device = device
 
-        # 1. VAD 模型
-        if load_vad:
-            print("加载 VAD 模型...")
-            vad_model_kwargs = {
-                "model": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                "max_single_segment_time": 10000,
-                "max_end_silence_time": 400,
-                "device": device,
-                "disable_update": True,
+        if load_live:
+            print("加载实时模型 (FSMN-VAD + Paraformer Streaming + Nano)...")
+            asr_model_kwargs = {
+                "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+                "trust_remote_code": True,
+                "remote_code": os.path.join(PROJECT_ROOT, "Fun-ASR", "model.py"),
+                "device": device, "disable_update": True,
             }
-            vad_model_path = CONFIG.get("vad_model_path")
-            if vad_model_path and os.path.exists(vad_model_path):
-                vad_model_kwargs["model_path"] = vad_model_path
-                print(f"  VAD 模型路径: {vad_model_path}")
-            elif vad_model_path:
-                print(f"  ⚠️ VAD 本地路径不存在: {vad_model_path}，将从网络下载")
-
-            self.vad_model = AutoModel(**vad_model_kwargs)
-        
-        # 2. ASR 模型 (Fun-ASR-Nano) - 实时/兼容链路默认使用
-        print("加载 ASR 模型 (Fun-ASR-Nano)...")
-        model_dir = "FunAudioLLM/Fun-ASR-Nano-2512"
-        fun_asr_dir = os.path.join(PROJECT_ROOT, "Fun-ASR")
-        model_py_path = os.path.join(fun_asr_dir, "model.py")
-
-        asr_model_kwargs = {
-            "model": model_dir,
-            "trust_remote_code": True,
-            "remote_code": model_py_path,
-            "device": device,
-            "disable_update": True,
-        }
-
-        asr_model_path = CONFIG.get("asr_model_path")
-        if asr_model_path and os.path.exists(asr_model_path):
-            asr_model_kwargs["model_path"] = asr_model_path
-            print(f"  ASR 模型路径: {asr_model_path}")
-        elif asr_model_path:
-            print(f"  ⚠️ ASR 本地路径不存在: {asr_model_path}，将从网络下载")
-
-        self.asr_model = AutoModel(**asr_model_kwargs)
-
-        # 2.1 上传链路专用 ASR 后端
-        self._load_upload_asr_model(device=device)
+            if CONFIG.get("asr_model_path"):
+                asr_model_kwargs["model_path"] = CONFIG["asr_model_path"]
+            self.asr_model = AutoModel(**asr_model_kwargs)
+            self._load_streaming_models(device)
         
         # 3. 声纹模型 (CAM++)
         print("加载声纹模型...")
@@ -581,74 +399,53 @@ class ModelService:
         print("🔥 CUDA warmup: 预编译推理 kernel...")
         t0 = time.time()
         dummy = np.zeros(16000, dtype=np.float32)  # 1 秒 16kHz 静音
-        try:
-            self.transcribe_segment(dummy)
-        except Exception:
-            pass
+        if self.asr_model is not None:
+            try:
+                self.transcribe_segment(dummy)
+            except Exception:
+                pass
         try:
             self.extract_embedding(dummy)
         except Exception:
             pass
-        if self.upload_asr_model is not None and self.upload_asr_model is not self.asr_model:
-            try:
-                self.transcribe_full_audio(dummy, backend=self.upload_asr_backend)
-            except Exception:
-                pass
         print(f"🔥 CUDA warmup 完成，耗时 {time.time() - t0:.1f}s")
 
-    def _load_upload_asr_model(self, device: str):
-        """加载上传链路专用 ASR。"""
-        backend = CONFIG["upload_asr_backend"].lower()
-        self.upload_asr_backend = backend
+    def _load_streaming_models(self, device):
+        # FSMN 在 CPU 上运行；每次调用显式传入会话缓存，并隔离 AutoModel 的可变 kwargs。
+        self.streaming_vad_model = AutoModel(
+            model=CONFIG["vad_model_path"] or "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+            device="cpu", disable_update=True, disable_pbar=True,
+            max_single_segment_time=60000,
+        )
+        self.streaming_asr_model = AutoModel(
+            model=CONFIG["streaming_asr_model_path"] or "paraformer-zh-streaming",
+            device=device, disable_update=True, disable_pbar=True,
+        )
 
-        if backend == "nano":
-            self.upload_asr_model = self.asr_model
-            print("上传 ASR 后端: nano (沿用实时链路模型)")
-            return
+    def vad_stream(self, audio, cache, *, is_final, silence_ms):
+        if self.streaming_vad_model is None:
+            raise RuntimeError("streaming VAD model not loaded")
+        with self._streaming_vad_lock:
+            result = self.streaming_vad_model.generate(
+                input=self._normalize_audio_array(audio), cache=cache,
+                chunk_size=200, is_final=is_final,
+                max_end_silence_time=silence_ms,
+            )
+        return result[0].get("value", []) if result else []
 
-        if backend != "paraformer":
-            print(f"⚠️ 未知上传 ASR 后端: {backend}，回退到 nano")
-            self.upload_asr_backend = "nano"
-            self.upload_asr_model = self.asr_model
-            return
+    def transcribe_stream_chunk(self, audio, cache, *, is_final):
+        if self.streaming_asr_model is None:
+            raise RuntimeError("streaming ASR model not loaded")
+        with self._streaming_asr_lock:
+            result = self.streaming_asr_model.generate(
+                input=self._normalize_audio_array(audio), cache=cache,
+                is_final=is_final, chunk_size=[0, 10, 5],
+                encoder_chunk_look_back=4, decoder_chunk_look_back=1,
+            )
+        return result[0].get("text", "") if result else ""
 
-        print("加载上传 ASR 模型 (Paraformer)...")
-        upload_asr_kwargs = {
-            "model": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-            "vad_model": "fsmn-vad",
-            "vad_kwargs": {"max_single_segment_time": 30000},
-            "punc_model": "ct-punc",
-            "device": device,
-            "disable_update": True,
-        }
-        upload_asr_model_path = CONFIG.get("upload_asr_model_path")
-        if upload_asr_model_path and os.path.exists(upload_asr_model_path):
-            upload_asr_kwargs["model_path"] = upload_asr_model_path
-            print(f"  上传 ASR 模型路径: {upload_asr_model_path}")
-        elif upload_asr_model_path:
-            print(f"  ⚠️ 上传 ASR 本地路径不存在: {upload_asr_model_path}，将从网络下载")
-
-        vad_model_path = CONFIG.get("vad_model_path")
-        if vad_model_path and os.path.exists(vad_model_path):
-            upload_asr_kwargs["vad_model"] = vad_model_path
-            print(f"  上传 ASR 复用 VAD 模型目录: {vad_model_path}")
-        elif vad_model_path:
-            print(f"  ⚠️ 上传 ASR 的 VAD 本地路径不存在: {vad_model_path}，将使用默认下载源")
-
-        punc_model_path = CONFIG.get("punc_model_path")
-        if punc_model_path and os.path.exists(punc_model_path):
-            upload_asr_kwargs["punc_model"] = punc_model_path
-            print(f"  上传 ASR 复用 PUNC 模型目录: {punc_model_path}")
-        elif punc_model_path:
-            print(f"  ⚠️ 上传 ASR 的 PUNC 本地路径不存在: {punc_model_path}，将使用默认下载源")
-
-        try:
-            self.upload_asr_model = AutoModel(**upload_asr_kwargs)
-            print("✅ 上传 ASR 模型加载完成")
-        except Exception as e:
-            print(f"⚠️ 上传 ASR 模型加载失败，回退到 nano: {e}")
-            self.upload_asr_backend = "nano"
-            self.upload_asr_model = self.asr_model
+    def close(self):
+        self.moss.close()
 
     def reload_voiceprints(self):
         """重新加载声纹库，并构建预归一化矩阵用于快速匹配"""
@@ -713,13 +510,6 @@ class ModelService:
 
     def _prepare_embedding_input(self, audio_input):
         """声纹模型可直接接受路径或 numpy 音频数组。"""
-        prepared = self._normalize_audio_array(audio_input)
-        if isinstance(prepared, np.ndarray):
-            return np.ascontiguousarray(prepared)
-        return prepared
-
-    def _prepare_upload_asr_input(self, audio_input):
-        """上传链路 ASR 输入预处理。"""
         prepared = self._normalize_audio_array(audio_input)
         if isinstance(prepared, np.ndarray):
             return np.ascontiguousarray(prepared)
@@ -1038,7 +828,7 @@ class ModelService:
         allowed_speaker_ids: Collection[str] | None = None,
     ) -> Tuple[str | None, float]:
         """
-        对同一 pyannote speaker 的多个代表片段做保守判定。
+        对同一匿名说话人的多个代表片段做保守判定。
 
         规则：
         - 先对每个候选片段应用 guarded 匹配
@@ -1119,134 +909,12 @@ class ModelService:
 
         return (best_name, best_stats["best_score"])
     
-    def load_diarization_model(self, device: str = "cpu"):
-        """
-        加载 pyannote 说话人分离模型
-        
-        优先检查本地 models/pyannote/diarization/config.yaml
-        否则尝试从 HuggingFace 远程加载（需要 HF_TOKEN）
-        """
-        try:
-            from dotenv import load_dotenv
-            load_dotenv()
-            
-            # PyTorch 2.6+ 兼容性修复: monkey-patch torch.load 强制 weights_only=False
-            import torch
-            _original_torch_load = torch.load
-            def _patched_torch_load(*args, **kwargs):
-                kwargs['weights_only'] = False
-                return _original_torch_load(*args, **kwargs)
-            torch.load = _patched_torch_load
-            
-            try:
-                from pyannote.audio import Pipeline
-                
-                # 1. 尝试加载本地模型
-                local_config_path = os.path.join(PROJECT_ROOT, "models/pyannote/diarization/config.yaml")
-                if os.path.exists(local_config_path):
-                    print(f"📦 加载本地 Pyannote 模型: {local_config_path}")
-                    self.diarization_pipeline = Pipeline.from_pretrained(local_config_path)
-                
-                # 2. 回退到 HuggingFace 在线加载
-                else:
-                    hf_token = os.environ.get("HF_TOKEN")
-                    if not hf_token:
-                        print("⚠️ 未找到本地模型且未配置 HF_TOKEN，跳过 diarization 模型加载")
-                        print("提示: 请确保 models/pyannote/diarization 已就绪，或配置 HF_TOKEN 在线加载")
-                        return False
-                    
-                    print("加载在线 Pyannote 模型 (pyannote/speaker-diarization-community-1)...")
-                    self.diarization_pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization-community-1",
-                        token=hf_token
-                    )
-                
-                # 3. 将模型移动到指定设备
-                if device.startswith("cuda") or device == "mps":
-                    torch_device = torch.device(device)
-                    self.diarization_pipeline.to(torch_device)
-                
-                print("✅ Diarization 模型加载完成！")
-                return True
-                
-            finally:
-                # 恢复原始的 torch.load
-                torch.load = _original_torch_load
-            
-        except Exception as e:
-            print(f"⚠️ Diarization 模型加载失败: {e}")
-            return False
-    
-    def diarize(self, audio_path: Optional[str], audio_data: np.ndarray = None) -> list:
-        """
-        使用 pyannote 进行说话人分离
-
-        Args:
-            audio_path: 音频文件路径
-            audio_data: 已加载的 16kHz numpy 音频数据（可选，避免重复 librosa.load）
-
-        Returns:
-            分段列表 [(start_ms, end_ms, speaker_id), ...]
-        """
-        if self.diarization_pipeline is None:
-            print("⚠️ Diarization 模型未加载，回退到 VAD 分段")
-            return None
-
-        try:
-            import torch
-            print("正在进行说话人分离...")
-
-            # 优先内存直传，避免临时文件 I/O
-            processed_audio_path = None
-            if audio_data is not None:
-                waveform = torch.from_numpy(audio_data).unsqueeze(0).float()
-                pipeline_input = {"waveform": waveform, "sample_rate": 16000}
-            else:
-                # 兜底：无内存数据时走文件路径（需转为 16kHz WAV）
-                audio, _ = librosa.load(audio_path, sr=16000)
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    sf.write(tmp.name, audio, 16000)
-                    processed_audio_path = tmp.name
-                pipeline_input = processed_audio_path
-
-            try:
-                output = self.diarization_pipeline(pipeline_input)
-
-                # pyannote 4.0 返回 DiarizeOutput 对象，需要访问 .speaker_diarization
-                if hasattr(output, 'speaker_diarization'):
-                    diarization = output.speaker_diarization
-                else:
-                    # 兼容旧版本，直接使用输出
-                    diarization = output
-
-                segments = []
-                for turn, _, speaker in diarization.itertracks(yield_label=True):
-                    start_ms = int(turn.start * 1000)
-                    end_ms = int(turn.end * 1000)
-                    segments.append((start_ms, end_ms, speaker))
-
-                # 统计说话人数量
-                speakers = set(seg[2] for seg in segments)
-                print(f"✅ 说话人分离完成: 检测到 {len(speakers)} 位说话人，{len(segments)} 个片段")
-
-                return segments
-            finally:
-                # 清理临时文件（仅文件路径模式才有）
-                if processed_audio_path and os.path.exists(processed_audio_path):
-                    os.unlink(processed_audio_path)
-            
-        except Exception as e:
-            print(f"说话人分离失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    
     def extract_embedding(self, audio_input) -> Optional[np.ndarray]:
         """从音频输入提取声纹，支持文件路径、PCM bytes 或 numpy 音频数组。"""
         try:
             prepared_input = self._prepare_embedding_input(audio_input)
-            res = self.spk_model.generate(input=prepared_input)
+            with self._embedding_lock:
+                res = self.spk_model.generate(input=prepared_input)
             if res and len(res) > 0:
                 emb = res[0].get("spk_embedding", None)
                 if emb is not None:
@@ -1314,172 +982,6 @@ class ModelService:
                 batch_size=1,
                 max_length=max_length,
             )
-
-    def transcribe_full_audio(self, audio_input, backend: str = None, return_timestamps: bool = False) -> dict:
-        """
-        上传链路整段 ASR。优先使用更快的离线模型；若不支持时间戳则由上层回退。
-        """
-        if backend is None:
-            backend = self.upload_asr_backend
-        backend = backend.lower()
-
-        if return_timestamps and backend != "paraformer":
-            return {"text": "", "sentences": []}
-
-        model = self.upload_asr_model if backend == self.upload_asr_backend else self.asr_model
-        if model is None:
-            return {"text": "", "sentences": []}
-
-        prepared_input = self._prepare_upload_asr_input(audio_input)
-
-        try:
-            if backend == "paraformer":
-                if isinstance(prepared_input, str):
-                    audio_array, _ = librosa.load(prepared_input, sr=16000)
-                    prepared_input = np.ascontiguousarray(audio_array)
-                kwargs = {
-                    "input": prepared_input,
-                    "batch_size_s": CONFIG["upload_asr_batch_size_s"],
-                }
-                if return_timestamps:
-                    kwargs["sentence_timestamp"] = True
-                res = model.generate(**kwargs)
-            else:
-                res = self._generate_nano(
-                    prepared_input,
-                    language=CONFIG["asr_language"],
-                    max_length=200,
-                    hotwords=None,
-                )
-            return self._normalize_asr_result(res)
-        except Exception as e:
-            print(f"整段 ASR 失败({backend}): {e}")
-            return {"text": "", "sentences": []}
-
-    def _normalize_asr_result(self, result) -> dict:
-        """兼容不同 ASR 后端的返回结构。"""
-        normalized = {"text": "", "sentences": []}
-        if not result:
-            return normalized
-
-        first = result[0] if isinstance(result, list) else result
-        if not isinstance(first, dict):
-            return normalized
-
-        normalized["text"] = first.get("text", "") or ""
-
-        sentence_candidates = None
-        for key in ("sentence_info", "sentences", "sentence_timestamp", "sentence_timestamps"):
-            value = first.get(key)
-            if isinstance(value, list) and value:
-                sentence_candidates = value
-                break
-
-        if sentence_candidates is None and isinstance(result, list):
-            if result and all(isinstance(item, dict) and "text" in item for item in result):
-                if any(("start" in item and "end" in item) for item in result):
-                    sentence_candidates = result
-
-        if not sentence_candidates:
-            return normalized
-
-        sentences = []
-        for item in sentence_candidates:
-            if not isinstance(item, dict):
-                continue
-            text = item.get("text", "") or item.get("sentence", "") or ""
-            start = item.get("start")
-            end = item.get("end")
-            token_timestamps = item.get("timestamp")
-            if start is None or end is None:
-                if isinstance(token_timestamps, (list, tuple)) and len(token_timestamps) >= 2:
-                    start = token_timestamps[0][0] if isinstance(token_timestamps[0], (list, tuple)) else token_timestamps[0]
-                    end = token_timestamps[-1][1] if isinstance(token_timestamps[-1], (list, tuple)) else token_timestamps[-1]
-            if start is None or end is None:
-                continue
-            normalized_item = {
-                "text": text,
-                "start_ms": int(round(float(start))),
-                "end_ms": int(round(float(end))),
-            }
-            if isinstance(token_timestamps, list) and token_timestamps:
-                normalized_item["token_timestamps"] = [
-                    [int(round(float(ts[0]))), int(round(float(ts[1])))]
-                    for ts in token_timestamps
-                    if isinstance(ts, (list, tuple)) and len(ts) >= 2
-                ]
-            sentences.append(normalized_item)
-
-        normalized["sentences"] = sentences
-        return normalized
-    
-    def vad_segment(self, audio_input) -> List[List[int]]:
-        """
-        对音频进行 VAD 切分
-
-        Args:
-            audio_input: 音频文件路径(str)或 numpy 音频数组
-
-        Returns:
-            [[start_ms, end_ms], ...] 列表
-        """
-        if self.vad_model is None:
-            raise RuntimeError("VAD 模型未加载")
-
-        prepared = self._normalize_audio_array(audio_input)
-        vad_res = self.vad_model.generate(input=prepared)
-        
-        if vad_res and len(vad_res) > 0 and 'value' in vad_res[0]:
-            return vad_res[0]['value']
-        
-        return []
-
-
-# ========== 说话人状态追踪（用于继承逻辑）==========
-
-class SpeakerTracker:
-    """说话人状态追踪器，用于实现说话人继承逻辑"""
-    
-    def __init__(self, timeout: float = None):
-        self.last_speaker = UNKNOWN_SPEAKER_ID
-        self.last_speech_time = 0
-        self.timeout = timeout or CONFIG["inheritance_timeout"]
-    
-    def update(self, speaker: str | None, score: float, registered_embeddings: Dict[str, np.ndarray]) -> Tuple[str | None, float]:
-        """
-        更新说话人状态，必要时执行继承逻辑
-        
-        Args:
-            speaker: 当前识别的声纹 id
-            score: 当前的置信度
-            registered_embeddings: 已注册的声纹字典
-        
-        Returns:
-            (final_speaker_id, final_score) 元组
-        """
-        current_time = time.time()
-        
-        # 说话人继承策略：只有识别为未知时才考虑继承
-        if speaker is None and \
-           (current_time - self.last_speech_time < self.timeout) and \
-           self.last_speaker is not None:
-            
-            speaker = self.last_speaker
-            score = 0.99  # 标记为继承
-            print(f"🔄 继承说话人: {self.last_speaker} (因间隔短且本句识别为未知)")
-        
-        # 更新状态
-        if speaker is not None:
-            self.last_speaker = speaker
-            self.last_speech_time = current_time
-        
-        return speaker, score
-    
-    def reset(self):
-        """重置状态"""
-        self.last_speaker = UNKNOWN_SPEAKER_ID
-        self.last_speech_time = 0
-
 
 # ========== 全局单例 ==========
 

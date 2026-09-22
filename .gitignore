@@ -25,6 +25,7 @@ venv/
 venv_docker/
 env/
 .venv/
+.venv-*/
 
 # IDE
 .idea/
@@ -42,10 +43,21 @@ env/
 # 声纹数据库 (用户私有数据)
 voiceprint_db/
 recordings/
+output/
 
 # 临时文件
 *.tmp
 *.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+*.wma
+*.mp4
+*.mov
+*.npy
 *.log
 live_meeting.md
 *_notes.md
@@ -65,8 +77,9 @@ samples/
 # 环境变量 (包含敏感 token)
 .env
 
-# 允许提交 Pyannote 模型 (尽管包含 .bin 文件)
-!models/pyannote/**/*.bin
+# 模型仅作为运行时挂载，不再将历史 Pyannote 或 MOSS 权重加入版本库。
+models/
+*.safetensors
 
 modelscope/
 /VoiceprintRecognition.iml

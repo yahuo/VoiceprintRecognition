@@ -1,0 +1,6 @@
+# 仅供独立的 MOSS CUDA 环境；不要安装到 FunASR 业务 venv。
+# 已验证：Linux ARM64 / Python 3.11 / GB10 / Torch 2.13.0+cu130。
+vllm[audio]==0.27.1
+transformers==5.17.0
+librosa==0.11.0
+# FlashInfer post4 的显式覆盖由 scripts/setup_moss.sh 执行，见迁移文档。

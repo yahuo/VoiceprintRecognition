@@ -25,7 +25,7 @@ COPY tests/ ./tests/
 COPY Fun-ASR/ ./Fun-ASR/
 COPY entrypoint.sh /entrypoint.sh
 COPY requirements.txt .
-COPY .env* ./
+# 凭据由 env_file / 运行时环境注入，不写入镜像。
 RUN chmod +x /entrypoint.sh
 
 # venv 由外部挂载到 /opt/venv

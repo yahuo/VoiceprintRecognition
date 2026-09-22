@@ -15,6 +15,8 @@ services:
     volumes:
       - "${VOICEPRINT_DB_PATH:-./voiceprint_db}:/app/voiceprint_db"
       - "${RECORDINGS_PATH:-./recordings}:/app/recordings"
+      - "${MODELS_PATH:-./models}:/app/models:ro"
+      - "${MOSS_VENV_PATH:-./venv_moss}:/opt/moss:ro"
 
     env_file:
       - .env
@@ -23,7 +25,8 @@ services:
       DEVICE: "${DEVICE:-cuda:0}"
       HOST: "0.0.0.0"
       PORT: "8000"
-      UPLOAD_ASR_BACKEND: "${UPLOAD_ASR_BACKEND:-paraformer}"
+      MOSS_PYTHON: "${MOSS_PYTHON:-}"
+      MOSS_MODEL_PATH: "${MOSS_MODEL_PATH:-/app/models/moss/MOSS-Transcribe-Diarize}"
       PYTHONUNBUFFERED: "1"                       # 禁用输出缓冲，加速 SSE/WebSocket
       CUDA_MODULE_LOADING: "LAZY"                 # 按需加载 CUDA kernel，加速启动
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"  # 减少 CUDA 内存碎片
@@ -69,6 +72,7 @@ services:
       - "${VOICEPRINT_DB_PATH:-./voiceprint_db}:/app/voiceprint_db"
       - "${RECORDINGS_PATH:-./recordings}:/app/recordings"
       - "${MODELS_PATH:-./models}:/app/models:ro"
+      - "${MOSS_VENV_PATH:-./venv_moss}:/opt/moss:ro"
 
     env_file:
       - .env
@@ -77,15 +81,15 @@ services:
       DEVICE: "${DEVICE:-cuda:0}"
       HOST: "0.0.0.0"
       PORT: "8000"
-      UPLOAD_ASR_BACKEND: "${UPLOAD_ASR_BACKEND:-paraformer}"
+      MOSS_PYTHON: "${MOSS_PYTHON:-}"
+      MOSS_MODEL_PATH: "${MOSS_MODEL_PATH:-/app/models/moss/MOSS-Transcribe-Diarize}"
       PYTHONUNBUFFERED: "1"
       CUDA_MODULE_LOADING: "LAZY"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       # slim 模型路径：与 scripts/download_all_models.py 的 subdir 约定一致
       VAD_MODEL_PATH: "${VAD_MODEL_PATH:-/app/models/vad/speech_fsmn_vad_zh-cn-16k-common-pytorch}"
       ASR_MODEL_PATH: "${ASR_MODEL_PATH:-/app/models/asr/Fun-ASR-Nano-2512}"
-      UPLOAD_ASR_MODEL_PATH: "${UPLOAD_ASR_MODEL_PATH:-/app/models/asr/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch}"
-      PUNC_MODEL_PATH: "${PUNC_MODEL_PATH:-/app/models/punc/punc_ct-transformer_zh-cn-common-vocab272727-pytorch}"
+      STREAMING_ASR_MODEL_PATH: "${STREAMING_ASR_MODEL_PATH:-/app/models/asr/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online}"
       SPK_MODEL_PATH: "${SPK_MODEL_PATH:-/app/models/spk/speech_campplus_sv_zh-cn_16k-common}"
 
     deploy:
