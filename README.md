@@ -46,7 +46,9 @@ python -m app.server --device cuda:0
 
 worker 在本机懒加载、常驻、单请求串行；不暴露网络端口，不上传第三方语音服务。默认完整音频上限 2600 秒，覆盖已验证的43分钟录音；超过上限、输出截断或解析异常均报错，不偷偷切块或降级。
 
-详见 **[MOSS 迁移与运行说明](docs/moss-migration.md)**，包括缓存、CUDA_HOME、超时、资源预算、API 兼容边界和生产切换门禁。
+旧 FunASR/Pyannote 镜像升级见 **[简明升级指南](docs/upgrade-to-moss.md)**：准备资源 → 备份 → 改配置 → 启动验收 → 回滚。
+
+运行边界详见 **[MOSS 迁移与运行说明](docs/moss-migration.md)**，包括缓存、CUDA_HOME、超时、资源预算、API 兼容边界和生产切换门禁。
 
 ## 运行时配置
 
