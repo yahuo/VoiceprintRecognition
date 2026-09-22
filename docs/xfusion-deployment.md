@@ -37,14 +37,14 @@ MOSS 运行环境与模型按文件哈希核对后复制进 PVC 的独立版本�
 
 `docker save` 离线导入可能使 Pod 的 imageID 指向外层 archive index。必须验证该 index **唯一指向本次 release index**，再核对唯一 ARM64 manifest 及 config；不把未知摘要直接放行，也不将外层 index 误报为平台子清单。
 
-当前发布为 `20260922-xfusion-refresh`。证据、前一版 Deployment 和带当前 spec/UID 守卫的回滚 patch 位于 `~/.local/share/voiceprint-refresh-20260922/`。对应本地报告为 `output/xfusion-refresh-20260922/`（不进入 Git/镜像）。回滚恢复上一 SSE 发布，不还原用户数据。
+当前发布为 `20260922-xfusion-cleanup`（应用代码 `3c64653`）。证据、前一版 Deployment、数据备份和带当前 spec/UID 守卫的回滚 patch 位于 `~/.local/share/voiceprint-cleanup-20260922/`。对应本地报告为 `output/xfusion-cleanup-20260922/`（不进入 Git/镜像）。本轮回滚恢复前一版 `20260922-xfusion-refresh`，不还原用户数据。
 
 原迁移数据备份/证据仍保留在 `~/.local/share/voiceprint-deploy-20260921/`，中间 UI 发布位于 `~/.local/share/voiceprint-ui-20260921/`；不要把旧发布的回滚守卫直接用于当前镜像。旧镜像仍在 containerd 中，回滚不自动还原数据备份，以免覆盖更新后用户新增的录音/声纹。
 
-确认目标身份及当前发布仍匹配后，可使用本次生成的带 UID/发布守卫的回滚 patch：
+确认目标身份及当前发布仍匹配，并检查没有上传、转写或录音后，可使用本次生成的带 UID/发布守卫的回滚 patch：
 
 ```bash
-ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-refresh-20260922/rollback.patch.json"'
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-cleanup-20260922/rollback.patch.json"'
 ```
 
 该命令会重建应用 Pod，仅在明确要求回滚时执行。其他应用与 Nginx 不需要重启。
@@ -64,6 +64,18 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 - 只变更镜像与两个发布/源清单注解；原声纹哈希、切换前两份录音的元数据及六个其他服务启动/重启计数不变。验收期间另有一份新增录音，保留且未读取内容，不以目录新增误判为数据丢失。
 
 证据位于本地 `output/xfusion-refresh-20260922/`、远端 `~/.local/share/voiceprint-refresh-20260922/`。本次未再跑完整 MDT、物理麦克风或重复并发 SLA 验收；不与既有 SSE 发布证据混同。任务恢复受缓存保留期限制，不支持服务进程重启后的推理续跑，详见 [任务接口](api.md#后台任务与刷新恢复)。
+
+## 2026-09-22 声纹与工具边界修复（已上线）
+
+按用户授权于 14:02:13～14:02:44（UTC+08）更新为 `20260922-xfusion-cleanup`，Pod 为 `voiceprint-ab-6985875ccd-nmjl8`，Ready/restart0。Pod 创建至 Ready 为 30 秒，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20260922-xfusion-cleanup-r1`，发布 index `sha256:b84f8a818b6238eee9175af0eb971ed1b67004cdf39914ec8c2902bd76a982d7`；本地构建、离线导入，未推送 registry。
+- 基于前一 refresh 镜像，仅更新 `app/core.py`、`app/server.py`、`app/services/summarizer.py`、`app/utils/voiceprint.py` 和源清单。镜像中本来就没有已删除的旧离线示例；CLI 包装脚本作为测试挂载验证，不额外打进业务镜像。
+- 部署配置只修改镜像及两个发布/源清单注解；模型、MOSS 环境、GPU 参数、PVC、资源及安全配置不变。继续使用已部署的 Fun-ASR `3d49f7b` 快照，不将其等同于仓库 gitlink。
+- ARM64 镜像内 Python 123 项：122 通过、1 外部服务条件跳过。首次测试仅因新增 shell 夹具位于 noexec 临时目录失败；改为仅测试容器的可执行临时目录后通过，没有修改业务镜像或部署的安全配置。
+- 隔离 CPU 实例完成真实 CAM++ 注册/删除和双音频比对，覆盖空文件 422、超限 413、正常注册 200；测试上传上限临时设为 1,000,000 字节，生产仍使用默认 256 MiB。完整 19.968 秒实时输入得到 9 个最终片段，无 error/degraded，保存 PCM 逐字节一致；仅删除隔离实例自己的测试记录。不是物理麦克风或身份准确率验收，也未创建第二套 GPU/MOSS 模型。
+- 生产 HTTPS 验证新注册空文件返回 422；完整同一短录音 MOSS 首段约 39.85 秒、完成约 40.08 秒，包含首次冷加载，2 段正常 done，终稿字段与上一版一致。未调用摘要服务；未重跑完整 MDT 或浏览器验收，未变的 MOSS/前端证据与本轮回归分开保留。
+- 切换前再次检查连接/任务/录音均空闲并备份数据。声纹文件哈希和原有 3 份录音的大小/mtime_ns 未变，六个其他服务启动时间/重启次数未变，Nginx 未重载。已核验实际 archive→release→ARM64 镜像链及 20 个运行源文件哈希。隔离测试容器已停止。
 
 ## 尚未由部署验收证明的事项
 
