@@ -5,7 +5,6 @@ import asyncio
 from datetime import datetime
 import math
 import os
-import shutil
 import tempfile
 import threading
 from typing import Annotated
@@ -276,10 +275,8 @@ async def summarize_meeting_api(request: Request):
 async def register_speaker(name: str = Form(...), file: UploadFile = File(...),
                            voiceprint_id: str | None = Form(default=None, alias="id")):
     speaker_id, speaker_name = _normalize_voiceprint_id(voiceprint_id), _normalize_speaker_name(name)
-    # 保持 UploadFile.file 协议，兼容既有声纹客户端。
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        audio_path = tmp.name
+    # 与会议上传复用大小限制和异常清理，避免读入失败后遗留半写文件。
+    audio_path = await _save_upload(file)
     try:
         embedding = await asyncio.to_thread(service.extract_embedding, audio_path)
         if embedding is None:

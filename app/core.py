@@ -244,11 +244,14 @@ def load_voiceprint_embeddings() -> Dict[str, np.ndarray]:
 # ========== 声纹匹配 ==========
 
 def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
-    """计算余弦相似度"""
+    """计算余弦相似度；无效向量明确报错，不返回 NaN 或伪造匹配分数。"""
     emb1 = emb1.flatten()
     emb2 = emb2.flatten()
-    emb1_norm = emb1 / np.linalg.norm(emb1)
-    emb2_norm = emb2 / np.linalg.norm(emb2)
+    norm1, norm2 = np.linalg.norm(emb1), np.linalg.norm(emb2)
+    if not np.isfinite(norm1) or not np.isfinite(norm2) or norm1 == 0 or norm2 == 0:
+        raise ValueError("声纹向量必须非空、有限且范数大于零")
+    emb1_norm = emb1 / norm1
+    emb2_norm = emb2 / norm2
     return float(np.dot(emb1_norm, emb2_norm))
 
 
