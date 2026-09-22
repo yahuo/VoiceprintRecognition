@@ -4,66 +4,19 @@
 比对两段音频是否来自同一说话人
 
 使用方法:
-    python verification.py --audio1 speaker1.wav --audio2 speaker2.wav
+    python scripts/verification.py --audio1 speaker1.wav --audio2 speaker2.wav
 """
 
 import argparse
 import os
 import sys
-import numpy as np
 
-# 添加 Fun-ASR 目录到 Python 路径
+# 复用声纹 CLI 的 CAM++ 加载/提取和核心相似度计算，不维护另一套实现。
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "Fun-ASR"))
+sys.path.insert(0, PROJECT_ROOT)
 
-from funasr import AutoModel
-
-
-def create_model(device: str = "cpu"):
-    """创建说话人验证模型"""
-    print("正在加载说话人验证模型...")
-    
-    # 使用 CAM++ 说话人验证模型
-    model = AutoModel(
-        model="iic/speech_campplus_sv_zh-cn_16k-common",
-        device=device,
-        disable_update=True,
-    )
-    
-    print("模型加载完成！")
-    return model
-
-
-def extract_embedding(model, audio_path: str):
-    """从音频中提取说话人嵌入向量（声纹特征）"""
-    
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"音频文件不存在: {audio_path}")
-    
-    print(f"提取声纹特征: {audio_path}")
-    
-    # 提取嵌入向量
-    result = model.generate(input=audio_path)
-    
-    if result and len(result) > 0:
-        embedding = result[0].get("spk_embedding", None)
-        if embedding is not None:
-            return np.array(embedding)
-    
-    raise ValueError(f"无法从音频提取声纹特征: {audio_path}")
-
-
-def cosine_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
-    """计算两个嵌入向量的余弦相似度"""
-    
-    # 归一化
-    emb1_norm = emb1 / np.linalg.norm(emb1)
-    emb2_norm = emb2 / np.linalg.norm(emb2)
-    
-    # 计算余弦相似度
-    similarity = np.dot(emb1_norm, emb2_norm)
-    
-    return float(similarity)
+from app.core import cosine_similarity
+from app.utils.voiceprint import create_model, extract_embedding
 
 
 def verify_speakers(model, audio1: str, audio2: str, threshold: float = 0.5):
@@ -130,16 +83,7 @@ def main():
     else:
         print("❌ 判定结果: 不同说话人")
     
-    # 置信度说明
-    print("\n【置信度参考】")
-    if score >= 0.8:
-        print("🟢 高置信度: 非常可能是同一人")
-    elif score >= 0.6:
-        print("🟡 中等置信度: 较可能是同一人")
-    elif score >= 0.4:
-        print("🟠 低置信度: 不太确定")
-    else:
-        print("🔴 很低置信度: 很可能不是同一人")
+    print("\n分数是余弦相似度，不是身份准确率或概率；阈值须按实际场景校准。")
 
 
 if __name__ == "__main__":

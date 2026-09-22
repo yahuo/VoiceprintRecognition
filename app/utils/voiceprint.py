@@ -19,12 +19,12 @@
 
 import argparse
 import os
-import sys
 import numpy as np
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 # 导入核心模块 (自动配置 Fun-ASR 路径)
 from app.core import (
+    CONFIG,
     delete_voiceprint_by_id,
     generate_voiceprint_id,
     load_voiceprint_index,
@@ -39,11 +39,14 @@ def create_model(device: str = "cpu"):
     """创建说话人验证模型 (仅加载 CAM++)"""
     print("正在加载声纹模型...")
     
-    model = AutoModel(
-        model="iic/speech_campplus_sv_zh-cn_16k-common",
-        device=device,
-        disable_update=True,
-    )
+    model_kwargs = {
+        "model": "iic/speech_campplus_sv_zh-cn_16k-common",
+        "device": device,
+        "disable_update": True,
+    }
+    if CONFIG.get("spk_model_path"):
+        model_kwargs["model_path"] = CONFIG["spk_model_path"]
+    model = AutoModel(**model_kwargs)
     
     print("模型加载完成！")
     return model
@@ -60,7 +63,10 @@ def extract_embedding(model, audio_path: str) -> np.ndarray:
     if result and len(result) > 0:
         embedding = result[0].get("spk_embedding", None)
         if embedding is not None:
-            return np.array(embedding)
+            import torch
+            if isinstance(embedding, torch.Tensor):
+                embedding = embedding.detach().cpu().numpy()
+            return np.asarray(embedding).reshape(-1)
     
     raise ValueError(f"无法从音频提取声纹特征: {audio_path}")
 

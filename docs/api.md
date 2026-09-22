@@ -22,7 +22,7 @@
 | `file` | 是 | 注册音频，推荐安静环境单人 10–30 秒 |
 | `id` | 否 | 不透明外部 id；不传生成 24 位随机 id。同 id 覆盖原记录，同名可有多个 id |
 
-成功返回 `status/id/name/message/embedding_shape`。提取失败返回 400。声纹向量不通过 API 返回。
+成功返回 `status/id/name/message/embedding_shape`。提取失败返回 400；空音频返回 422，超过 `MAX_UPLOAD_BYTES`（默认 256 MiB）返回 413，与会议上传共用限制及临时文件清理。声纹向量不通过 API 返回。
 
 ```bash
 curl -X POST http://localhost:8000/v1/voiceprint/register \

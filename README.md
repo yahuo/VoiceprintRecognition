@@ -88,7 +88,9 @@ python -m app.utils.voiceprint list
 python -m app.utils.voiceprint identify --audio unknown.wav
 ```
 
-原 `run.sh register/list/identify/meeting/live` 入口仍可用。需要指定会议候选时使用模块入口：
+`run.sh register/list/identify/meeting/live` 入口仍可用；`./run.sh delete <声纹ID>` 按 ID 删除声纹，不接受姓名代替 ID。脚本固定使用项目的 `venv`，输入/输出相对路径仍相对于调用目录。已移除会通配删除音频的 `clean` 命令，原始录音不作为临时文件清理。
+
+旧 `scripts/diarization.py`、`scripts/interactive.py` Nano 离线示例已移除；会议转写统一使用以下模块入口。需要指定会议候选时：
 
 ```bash
 python -m app.services.meeting --audio meeting.wav --output review.md \
@@ -97,6 +99,8 @@ python -m app.services.live --device cuda:0 --output live.md --speaker-id doctor
 ```
 
 麦克风 CLI 复用 WebSocket 的流式会话实现，Ctrl+C 排空尾段并保存原始录音。会后对保存的 WAV 运行会议 CLI，输出到新文件。两个 CLI 都拒绝覆盖已有输出，保护实时稿和人工修改。
+
+双音频声纹比对工具仍保留：`python scripts/verification.py --audio1 a.wav --audio2 b.wav`，复用声纹 CLI 的 CAM++ 加载与特征提取，并使用 `SPK_MODEL_PATH` 本地配置。相似度不是身份准确率或概率，阈值需按实际场景校准。
 
 ## API
 
