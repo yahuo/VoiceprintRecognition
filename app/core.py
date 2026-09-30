@@ -64,6 +64,7 @@ CONFIG = {
     "min_confidence": 0.15,         # 低分仅拒绝身份，仍保留文字与未知说话人
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "live_vad_cpu_threads": int(os.environ.get("LIVE_VAD_CPU_THREADS", "1")),  # 实时 FSMN-VAD 线程的 torch 线程数
+    "nano_llm_dtype": os.environ.get("NANO_LLM_DTYPE", "auto").strip().lower(),  # Nano LLM 解码精度：auto/bf16/fp32
     # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
@@ -293,6 +294,15 @@ def match_speaker(embedding: np.ndarray,
 
 # ========== 工具函数 ==========
 
+def resolve_nano_llm_dtype(setting: str, device: str) -> str:
+    """auto 在 CUDA 上用 bf16，其余设备保持 fp32；Fun-ASR 推理默认 fp32，需显式传入。"""
+    if setting == "auto":
+        return "bf16" if device.startswith("cuda") else "fp32"
+    if setting in ("bf16", "fp32"):
+        return setting
+    raise ValueError(f"NANO_LLM_DTYPE 仅支持 auto/bf16/fp32，当前为 {setting!r}")
+
+
 def format_time(ms: int) -> str:
     """将毫秒转换为 MM:SS 格式"""
     seconds = ms // 1000
@@ -323,6 +333,7 @@ class ModelService:
         self._emb_name_to_idx = {}
         self._emb_matrix = None
         self._asr_inference_lock = threading.Lock()
+        self.nano_llm_dtype = "fp32"
         self.is_loaded = False
 
     
@@ -355,6 +366,7 @@ class ModelService:
 
         # 记录 CAM++ / 实时 ASR 实际设备；MOSS 不在此环境加载。
         self.device = device
+        self.nano_llm_dtype = resolve_nano_llm_dtype(CONFIG["nano_llm_dtype"], device)
 
         if load_live:
             print("加载实时模型 (FSMN-VAD + Paraformer Streaming + Nano)...")
@@ -985,6 +997,7 @@ class ModelService:
                 hotwords=list(hotwords or ()),
                 batch_size=1,
                 max_length=max_length,
+                llm_dtype=self.nano_llm_dtype,
             )
 
 # ========== 全局单例 ==========

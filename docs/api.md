@@ -6,7 +6,7 @@
 
 ## 健康状态
 
-`GET /` 返回 `models_loaded`、注册声纹数、固定的实时/离线链路名称和 `offline_configured`。
+`GET /` 返回 `models_loaded`、注册声纹数、固定的实时/离线链路名称和 `offline_configured`；`config.nano_llm_dtype` 为 Nano 句末精修实际使用的 LLM 解码精度（`bf16` 或 `fp32`）。
 
 `offline_configured` 仅表示已提供 MOSS 配置，不代表 worker 已热启动、CUDA 可用或已通过真实音频验收。健康接口不返回 API key、LLM 地址、模型路径等私有配置。
 

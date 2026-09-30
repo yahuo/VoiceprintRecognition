@@ -309,6 +309,7 @@ class SafetyTest(unittest.TestCase):
         self.assertNotIn("llm_api_key", response["config"])
         self.assertNotIn("secret-test-value", str(response))
         self.assertNotIn("private-url", str(response))
+        self.assertEqual(response["config"]["nano_llm_dtype"], "fp32")
 
 
 if __name__ == "__main__":

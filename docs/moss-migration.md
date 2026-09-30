@@ -70,7 +70,9 @@ Compose 提供 `/opt/moss` 与模型只读挂载，但 **必须先准备兼容�
 - VAD 线程只用 1 个 torch 线程。在 macOS 开发机（funasr 1.3.0）上，单次 200 ms 调用从约 9.5 ms（4 线程）降到约 2.5 ms；GB10 上未测。
 - 新增 `/v1/live/metrics`。
 
-以上调整在目标机上的收益尚未复测。Nano 仍是 batch=1 且串行，默认 fp32；改用 bf16 或批处理需要先做准确率 A/B。准确率模式的段更长并带热词，负载高于本次压测。
+以上调整在目标机上的收益尚未复测。准确率模式的段更长并带热词，负载高于本次压测。
+
+Nano 仍是 batch=1 且串行；批处理需要修改固定版本的 Fun-ASR。Fun-ASR 加载时已按模型配置将 LLM 权重存为 bf16，但推理默认又转回 fp32 解码。`NANO_LLM_DTYPE=auto` 在 CUDA 上直接以 bf16 解码，只改变解码计算精度；可设 `fp32` 回退，健康接口的 `config.nano_llm_dtype` 显示实际值。
 
 vLLM 固定 BF16、greedy、65,536 最大输出 token、100,000 上下文、单请求、4096-token chunked prefill、禁用 prefix/processor cache、CUDA Graph。chunked prefill 不切断整段音频上下文。增加时长上限不能绕过 token/显存限制，应重新做完整录音验证。
 

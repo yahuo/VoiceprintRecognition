@@ -171,6 +171,20 @@ class TranscriptionPriorityTest(unittest.TestCase):
         self.assertEqual(second["max_length"], 200)
         self.assertTrue(first["itn"])
         self.assertNotIn("use_itn", first)
+        self.assertEqual(first["llm_dtype"], "fp32")
+        service.nano_llm_dtype = "bf16"
+        service.transcribe_segment(b"audio")
+        self.assertEqual(service.asr_model.calls[-1]["llm_dtype"], "bf16")
+
+    def test_nano_llm_dtype_defaults_to_bf16_only_on_cuda(self):
+        from app.core import resolve_nano_llm_dtype
+        self.assertEqual(resolve_nano_llm_dtype("auto", "cuda:0"), "bf16")
+        self.assertEqual(resolve_nano_llm_dtype("auto", "cpu"), "fp32")
+        self.assertEqual(resolve_nano_llm_dtype("auto", "mps"), "fp32")
+        self.assertEqual(resolve_nano_llm_dtype("fp32", "cuda:0"), "fp32")
+        self.assertEqual(resolve_nano_llm_dtype("bf16", "cpu"), "bf16")
+        with self.assertRaises(ValueError):
+            resolve_nano_llm_dtype("fp16", "cuda:0")
 
     def test_model_service_serializes_nano_requests_to_isolate_hotwords(self):
         class Model:
