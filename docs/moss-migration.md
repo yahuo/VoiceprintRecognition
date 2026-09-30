@@ -59,7 +59,18 @@ Compose 提供 `/opt/moss` 与模型只读挂载，但 **必须先准备兼容�
 | `MOSS_GPU_MEMORY_UTILIZATION` | 0.25 | vLLM 配置预算，不是实际峰值或硬隔离 |
 | `MOSS_CPU_THREADS` | 4 | worker Torch CPU 线程数 |
 
-使用 **单个业务进程**。每个业务进程一个懒加载常驻 MOSS worker，离线只允许一个处理中请求，其余返回 busy；不要用多个 Uvicorn worker 隐式创建多个大模型副本。实时模型的会话缓存独立，模型调用串行保护，可与离线 worker 共存，但同设备并发时的延迟/SLA 尚需压测。
+使用 **单个业务进程**。每个业务进程一个懒加载常驻 MOSS worker，离线只允许一个处理中请求，其余返回 busy；不要用多个 Uvicorn worker 隐式创建多个大模型副本。实时模型的会话缓存独立，模型调用串行保护，可与离线 worker 共存。
+
+2026-09-30 在 xfusion（GB10、8 CPU）上以实时速率输入约 20 秒音频（speed 模式、不选参会人），最终片段 P95 为：4 路 4.8 秒，8 路 6.3 秒，16 路 25.1 秒。16 路时延迟随时间线性增长，说明处理能力低于到达速率，上限约为 7～8 倍实时。同期进程 CPU 约 2 核、GPU 利用率 15%～75%，瓶颈在串行调度而不在算力。随后的调整：
+
+- 每个模型改用独立的单线程 FIFO 阶段，等待中的调用不再占用默认线程池。
+- 句末不再排空 Paraformer 首遍。
+- 积压时合并过期的 interim；句末到达后作废本段首遍。
+- 不足一帧的 VAD 输入不再切换线程。
+- VAD 线程只用 1 个 torch 线程。在 macOS 开发机（funasr 1.3.0）上，单次 200 ms 调用从约 9.5 ms（4 线程）降到约 2.5 ms；GB10 上未测。
+- 新增 `/v1/live/metrics`。
+
+以上调整在目标机上的收益尚未复测。Nano 仍是 batch=1 且串行，默认 fp32；改用 bf16 或批处理需要先做准确率 A/B。准确率模式的段更长并带热词，负载高于本次压测。
 
 vLLM 固定 BF16、greedy、65,536 最大输出 token、100,000 上下文、单请求、4096-token chunked prefill、禁用 prefix/processor cache、CUDA Graph。chunked prefill 不切断整段音频上下文。增加时长上限不能绕过 token/显存限制，应重新做完整录音验证。
 

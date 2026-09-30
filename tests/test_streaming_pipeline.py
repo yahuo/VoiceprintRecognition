@@ -232,7 +232,11 @@ class StreamingWebSocketTest(unittest.TestCase):
         self.assertTrue(any(not e["isFinal"] for e in transcripts))
         self.assertEqual(len(self.service.refinements), 1)
         self.assertEqual(self.service.refinements[0][1]["hotwords"], None)
-        self.assertEqual(b"".join(c[0] for c in self.service.stream_chunks), pcm(2.1))
+        # 精修成功时不再排空首遍尾部：首遍只处理 interim 已覆盖的整块前缀。
+        streamed = b"".join(c[0] for c in self.service.stream_chunks)
+        self.assertTrue(streamed and pcm(2.1).startswith(streamed))
+        self.assertEqual(len(streamed) % (9600 * 2), 0)
+        self.assertFalse(any(c[2] for c in self.service.stream_chunks))
         self.assertEqual(len({e["segmentId"] for e in transcripts}), 1)
         self.assertEqual(transcripts[-1]["text"], "句末精修结果")
         self.assertTrue(transcripts[-1]["isFinal"])
@@ -258,6 +262,9 @@ class StreamingWebSocketTest(unittest.TestCase):
         finals = [e for e in events if e.get("isFinal") and e["type"] == "transcript"]
         self.assertTrue(finals[-1]["degraded"])
         self.assertIn("首遍", finals[-1]["text"])
+        # 降级时才补完首遍尾部，覆盖整段且不重复。
+        self.assertEqual(b"".join(c[0] for c in self.service.stream_chunks), pcm(2.1))
+        self.assertTrue(self.service.stream_chunks[-1][2])
         self.assertEqual(events[-1]["transcriptionStatus"], "failed")
 
     def test_cancelling_during_stop_does_not_leave_partial_recording(self):

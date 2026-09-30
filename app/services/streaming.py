@@ -54,6 +54,10 @@ class FsmnVadSegmenter:
         ])
 
     @property
+    def pending_bytes(self):
+        return len(self._pending)
+
+    @property
     def current_segment_size(self):
         if self._start_sample is None:
             return 0

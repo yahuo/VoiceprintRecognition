@@ -63,6 +63,7 @@ CONFIG = {
     "offline_registered_match_min_share": float(os.environ.get("OFFLINE_REGISTERED_MATCH_MIN_SHARE", "0.60")),
     "min_confidence": 0.15,         # 低分仅拒绝身份，仍保留文字与未知说话人
     "silence_duration": 0.5,        # 静音切分阈值（秒）
+    "live_vad_cpu_threads": int(os.environ.get("LIVE_VAD_CPU_THREADS", "1")),  # 实时 FSMN-VAD 线程的 torch 线程数
     # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),

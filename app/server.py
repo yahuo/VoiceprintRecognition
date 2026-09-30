@@ -21,7 +21,7 @@ from .core import (
     CONFIG, ModelService, delete_voiceprint_by_id, generate_voiceprint_id,
     load_voiceprint_index, save_voiceprint_embedding,
 )
-from .services.live_session import ACCURACY_HOTWORDS, final_token_budget, run_live_session
+from .services.live_session import ACCURACY_HOTWORDS, final_token_budget, live_metrics, run_live_session
 from .services.meeting_jobs import MeetingJobStore, normalize_job_id
 from .services.moss import MossError, max_audio_seconds
 from .services.recording_store import recording_store
@@ -440,6 +440,12 @@ async def transcribe_meeting_recording_stream(
 async def download_meeting_recording(file_id: str):
     recording = _resolve_recording(file_id)
     return FileResponse(recording.path, media_type="audio/wav", filename=recording.filename)
+
+
+@app.get("/v1/live/metrics")
+async def get_live_metrics():
+    """实时各推理阶段的积压、排队和执行耗时；不含音频、文本或身份信息。"""
+    return live_metrics()
 
 
 @app.websocket("/ws/meeting/live")
