@@ -256,3 +256,17 @@ test('summary requires confirmation and renders model text as data, not HTML', a
     assert.ok(container.innerHTML.includes('&lt;img src=x&gt;'));
     assert.ok(!container.innerHTML.includes('<img'));
 });
+
+test('recording-only admission shows a notice instead of transcripts and ignores other status phases', () => {
+    const c = client();
+    c.scope.handleLiveStatus({ type:'status', phase:'fallback', message:'流式首遍识别失败，继续句末精修' });
+    assert.equal(c.get('liveRecordingOnly'), false);
+    assert.equal(c.get('liveRecordingStatusText()'), '录音中...');
+    c.scope.handleLiveStatus({ type:'status', phase:'recording_only', message:'<b>忙</b>' });
+    assert.equal(c.get('liveRecordingOnly'), true);
+    assert.match(c.elements.get('statusText').textContent, /仅录音/);
+    const notice = c.elements.get('transcriptBox').innerHTML;
+    assert.match(notice, /MOSS 会后复核/);
+    assert.ok(!notice.includes('<b>'));
+    assert.equal(c.get('liveTranscriptItems.length'), 0);
+});

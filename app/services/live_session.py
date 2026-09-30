@@ -2,6 +2,7 @@
 
 复用已验证的 streaming 缓存/收敛协议；没有 legacy 能量切分或重复整段 interim。
 各模型在独立的单线程 FIFO 阶段执行；积压时只合并/作废首遍，最终片段不丢弃。
+新会话开始时由 live_admission 判定一次；enforce 模式下超限的会话只录音。
 """
 
 import asyncio
@@ -17,10 +18,12 @@ import anyio
 import torch
 
 from app.core import CONFIG
+from .live_admission import LiveAdmission
 from .recording_store import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH_BYTES
 from .streaming import FsmnVadSegmenter, IncrementalParaformer
 
 ACCURACY_HOTWORDS = ("生命体征",)
+RECORDING_ONLY_MESSAGE = "实时转写繁忙，本次仅保存录音；停止后可生成 MOSS 会后复核稿"
 
 
 def final_token_budget(duration):
@@ -53,7 +56,7 @@ class InferenceStage:
         self._calls = 0
         self._wait_total = 0.0
         self._run_total = 0.0
-        self._recent = deque(maxlen=recent)
+        self._recent = deque(maxlen=recent)  # (完成时刻, 排队, 执行)，perf_counter 秒
 
     def _init_thread(self):
         if self._torch_threads is None:
@@ -80,12 +83,13 @@ class InferenceStage:
             try:
                 return fn(*args, **kwargs)
             finally:
-                wait, elapsed = started - submitted, time.perf_counter() - started
+                finished = time.perf_counter()
+                wait, elapsed = started - submitted, finished - started
                 with self._stats_lock:
                     self._calls += 1
                     self._wait_total += wait
                     self._run_total += elapsed
-                    self._recent.append((wait, elapsed))
+                    self._recent.append((finished, wait, elapsed))
 
         with self._stats_lock:
             self._pending += 1
@@ -103,10 +107,25 @@ class InferenceStage:
             }
         data["recent"] = {
             "samples": len(recent),
-            "wait_ms": _percentiles_ms([wait for wait, _ in recent]),
-            "run_ms": _percentiles_ms([run for _, run in recent]),
+            "wait_ms": _percentiles_ms([wait for _, wait, _ in recent]),
+            "run_ms": _percentiles_ms([run for _, _, run in recent]),
         }
         return data
+
+    def window(self, seconds, now=None):
+        """最近 seconds 秒内完成的调用：次数、执行时间占比（利用率）与排队 p95。
+
+        只统计 recent 环形缓冲；Nano 满载约每秒 10 次，512 条足够覆盖 30 秒窗口。
+        """
+        start = (time.perf_counter() if now is None else now) - seconds
+        with self._stats_lock:
+            recent = [(wait, run) for finished, wait, run in self._recent if finished > start]
+        waits = _percentiles_ms([wait for wait, _ in recent])
+        return {
+            "calls": len(recent),
+            "utilization": round(min(1.0, sum(run for _, run in recent) / seconds), 3),
+            "wait_p95_seconds": None if waits is None else round(waits["p95"] / 1000, 3),
+        }
 
 
 # FSMN-VAD 固定在 CPU，每 200ms 一次小算子，多线程调度开销大于计算本身；
@@ -116,8 +135,16 @@ PARAFORMER_STAGE = InferenceStage("paraformer")
 NANO_STAGE = InferenceStage("nano")
 CAMPP_STAGE = InferenceStage("campp")
 STAGES = {stage.name: stage for stage in (VAD_STAGE, PARAFORMER_STAGE, NANO_STAGE, CAMPP_STAGE)}
+ADMISSION = LiveAdmission(
+    mode=CONFIG["live_admission_mode"],
+    max_sessions=CONFIG["live_admission_max_sessions"],
+    nano_utilization=CONFIG["live_admission_nano_utilization"],
+    nano_wait_p95_seconds=CONFIG["live_admission_nano_wait_p95_seconds"],
+    window_seconds=CONFIG["live_admission_window_seconds"],
+)
 _stages_started = False
 _active_sessions = 0
+_recording_only_sessions = 0
 
 
 def _start_stages():
@@ -131,7 +158,9 @@ def _start_stages():
 def live_metrics():
     return {
         "active_sessions": _active_sessions,
+        "recording_only_sessions": _recording_only_sessions,
         "stages": {name: stage.snapshot() for name, stage in STAGES.items()},
+        "admission": ADMISSION.snapshot(_active_sessions - _recording_only_sessions, NANO_STAGE),
     }
 
 
@@ -166,20 +195,27 @@ class SegmentWorkQueue:
 
 
 async def run_live_session(websocket, service, recording_store, *, priority, allowed_speaker_ids):
-    global _active_sessions
+    global _active_sessions, _recording_only_sessions
     _start_stages()
+    # 判定与计数之间没有 await：同时加入的会话在事件循环里依次计数，硬上限不会被突发穿透。
+    transcribe = ADMISSION.decide(_active_sessions - _recording_only_sessions, NANO_STAGE)
     _active_sessions += 1
+    if not transcribe:
+        _recording_only_sessions += 1
     try:
         await _run_live_session(
             websocket, service, recording_store,
-            priority=priority, allowed_speaker_ids=allowed_speaker_ids,
+            priority=priority, allowed_speaker_ids=allowed_speaker_ids, transcribe=transcribe,
         )
     finally:
         _active_sessions -= 1
+        if not transcribe:
+            _recording_only_sessions -= 1
 
 
-async def _run_live_session(websocket, service, recording_store, *, priority, allowed_speaker_ids):
-    matching = bool(allowed_speaker_ids)
+async def _run_live_session(websocket, service, recording_store, *, priority, allowed_speaker_ids, transcribe=True):
+    """transcribe=False 为只录音会话：控制消息与录音提交不变，不送任何模型。"""
+    matching = transcribe and bool(allowed_speaker_ids)
     scope = service.build_matching_scope(allowed_speaker_ids) if matching else None
     vad = FsmnVadSegmenter(
         service.vad_stream,
@@ -326,6 +362,8 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
 
     worker_task = asyncio.create_task(worker())
     try:
+        if not transcribe:
+            await send({"type": "status", "phase": "recording_only", "message": RECORDING_ONLY_MESSAGE})
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
@@ -344,7 +382,7 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
                     stop_requested = True
                     break
                 if kind == "pause_recording":
-                    if not paused:
+                    if not paused and transcribe:
                         await flush()
                     paused = True
                     await send({"type": "recording_paused"})
@@ -361,6 +399,8 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
             if len(data) > 2 * 1024 * 1024:
                 raise ValueError("单个 PCM 包超过限制")
             writer.write_pcm(data)
+            if not transcribe:
+                continue
             if vad.pending_bytes + len(data) < vad.chunk_bytes:
                 vad.feed(data)  # 不足一帧只缓存，不调用模型也不切换线程
             else:
@@ -372,7 +412,7 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
         await send({"type": "error", "message": "实时音频处理失败"})
     finally:
         try:
-            if stop_requested and not paused:
+            if stop_requested and not paused and transcribe:
                 try:
                     await flush()
                 except Exception:
@@ -388,7 +428,10 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
                     await send({
                         "type": "recording_saved", "fileId": file_id,
                         "format": "wav", "sampleRate": SAMPLE_RATE, "channels": CHANNELS,
-                        "transcriptionStatus": "failed" if transcription_failed else "complete",
+                        "transcriptionStatus": (
+                            "recording_only" if not transcribe
+                            else "failed" if transcription_failed else "complete"
+                        ),
                     })
                 except Exception:
                     writer.abort()

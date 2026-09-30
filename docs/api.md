@@ -12,6 +12,29 @@
 
 `GET /v1/live/metrics` 返回实时会话数和各推理阶段（`vad`、`paraformer`、`nano`、`campp`）的积压数 `pending`、累计调用/排队/执行时间，以及最近 512 次调用的排队 `wait_ms` 与执行 `run_ms`（p50/p95/max）。用于压测定位瓶颈，不含音频、文本或身份；进程重启后清零。
 
+同一接口还返回 `recording_only_sessions`（`active_sessions` 中只录音的会话数）和 `admission` 准入块：
+
+- `mode`：`off` / `observe` / `enforce`。
+- `limits`：当前阈值。
+- `counts`：已判定次数，按 `within_limits` / `would_degrade` / `degraded` 分类。
+- `reasons`：各原因的累计次数，原因为 `max_sessions` / `nano_utilization` / `nano_wait_p95`。
+- `recent`：最近 32 次判定。每条记录判定时刻的实时转写会话数、Nano 窗口调用数、利用率与排队 p95，以及原因。
+- `current`：此刻若有新会话加入会得到的判定，只看不计数；`off` 模式下没有该字段。
+
+准入规则：每个新会话开始时判定一次，整场不变。满足任一条件即为超限：
+
+- 正在实时转写的会话数达到 `LIVE_ADMISSION_MAX_SESSIONS`（默认 16）；
+- 最近 `LIVE_ADMISSION_WINDOW_SECONDS`（默认 30）秒内，Nano 执行时间占比达到 `LIVE_ADMISSION_NANO_UTILIZATION`（默认 0.85）；
+- 同一窗口内 Nano 排队 p95 达到 `LIVE_ADMISSION_NANO_WAIT_P95_SECONDS`（默认 3 秒）。
+
+`LIVE_ADMISSION_MODE` 控制超限后的处理：
+
+- 默认 `observe`：照常实时转写，只计数并写 WARNING 日志，用于校准阈值；
+- `enforce`：超限的新会话降级为只录音；
+- `off`：不评估。
+
+窗口信号来自已完成的调用，多人同时加入时仍接近 0，这类突发由会话数硬上限兜底。只录音会话不占用模型，不计入上限。阈值取自 GB10 fp32 压测初值：16 路时 P95 约 7 秒，利用率 0.85 约对应 13～14 路。排队 p95 阈值尚未按单轮数据校准。
+
 ## 声纹管理
 
 ### 注册
@@ -170,6 +193,14 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 
 若首遍失败，发送 `type=status, phase=fallback` 并继续句末精修。若句末失败但有首遍文字，发送 `degraded=true` 的 final 保留首遍稿，再发送带段 id 的 `error`；没有首遍也发送最终错误，不假称成功。
 
+`enforce` 准入超限时（见[健康状态](#健康状态)），连接后先收到 `{"type":"status","phase":"recording_only","message":"..."}`。此后本场只录音：
+
+- 不发送任何 `transcript`，不调用 VAD/ASR/声纹模型；
+- 暂停、继续、停止与录音保存不变；
+- 停止后 `transcriptionStatus` 为 `recording_only`，可按 fileId 生成 MOSS 会后复核稿。
+
+降级在会话开始时决定，负载下降后不会在同一场中恢复实时转写。
+
 ### 控制与录音保存
 
 客户端发送 JSON 文本消息：
@@ -189,7 +220,13 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 }
 ```
 
-`transcriptionStatus` **所有模式都会返回**；句末失败时为 `failed`，原始录音仍可用于会后 MOSS 重试。异常断连不会提交录音；客户端应等待 `recording_saved` 再关闭连接。保存的只是原始录音，转写稿由调用方保存；网页保留实时稿与复核稿的独立状态，不实现病历持久化/人工稿编辑。
+`transcriptionStatus` **所有模式都会返回**。取值：
+
+- `complete`：正常完成。
+- `failed`：句末识别失败，原始录音仍可用于会后 MOSS 重试。
+- `recording_only`：准入降级为只录音。
+
+异常断连不会提交录音；客户端应等待 `recording_saved` 再关闭连接。保存的只是原始录音，转写稿由调用方保存；网页保留实时稿与复核稿的独立状态，不实现病历持久化/人工稿编辑。
 
 ### 原始录音管理
 

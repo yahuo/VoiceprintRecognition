@@ -1064,6 +1064,7 @@
         let meetingMarkdown = '';
         let liveTranscriptItems = [];  // 收集实时录音转写数据
         let liveRecordingFileId = '';
+        let liveRecordingOnly = false;  // 服务端准入降级：本场只录音、不实时转写
         let liveSessionServerUrl = '';
         let liveSessionParticipants = [];
         let meetingRequestInProgress = false;
@@ -1540,6 +1541,17 @@
             statusText.textContent = text;
         }
 
+        function liveRecordingStatusText() {
+            return liveRecordingOnly ? '仅录音中（实时转写繁忙）' : '录音中...';
+        }
+
+        function handleLiveStatus(data) {
+            if (data.phase !== 'recording_only') return;
+            liveRecordingOnly = true;
+            transcriptBox.innerHTML = '<div class="empty-state">实时转写繁忙，本次只保存录音，不显示实时文字。停止后可在录音卡片点击"MOSS 会后复核"生成文字稿。</div>';
+            updateStatus(isRecording ? 'recording' : 'connected', liveRecordingStatusText());
+        }
+
         function clearPauseAckTimer() {
             if (pauseAckTimer) {
                 clearTimeout(pauseAckTimer);
@@ -1739,6 +1751,7 @@
                 await ensureVoiceprintsSynced();
                 // 重置上次的数据
                 liveTranscriptItems = [];
+                liveRecordingOnly = false;
                 transcriptBox.innerHTML = '<div class="empty-state">点击"开始录音"后，对话内容将在这里实时显示...</div>';
                 isRecordingPaused = false;
                 scriptResampleRemainder = new Float32Array(0);
@@ -1770,7 +1783,9 @@
                             transcriptionFailed ? '' : 'connected',
                             transcriptionFailed
                                 ? '录音已保存，但最终识别失败'
-                                : (liveRecordingFileId ? '录音已保存' : '已停止')
+                                : data.transcriptionStatus === 'recording_only'
+                                    ? '录音已保存（未实时转写），可生成 MOSS 会后复核稿'
+                                    : (liveRecordingFileId ? '录音已保存' : '已停止')
                         );
                         if (websocket && websocket.readyState === WebSocket.OPEN) websocket.close();
                         return;
@@ -1788,7 +1803,11 @@
                         isRecordingPaused = false;
                         btnPause.textContent = '暂停录音';
                         btnPause.disabled = false;
-                        updateStatus('recording', '录音中...');
+                        updateStatus('recording', liveRecordingStatusText());
+                        return;
+                    }
+                    if (data.type === 'status') {
+                        handleLiveStatus(data);
                         return;
                     }
                     addTranscript(data);
@@ -1840,7 +1859,7 @@
 
                 isRecording = true;
                 isRecordingPaused = false;
-                updateStatus('recording', '录音中...');
+                updateStatus('recording', liveRecordingStatusText());
                 btnStart.disabled = true;
                 btnPause.disabled = false;
                 btnPause.textContent = '暂停录音';

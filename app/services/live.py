@@ -34,6 +34,8 @@ class MicrophoneSession:
                 with open(self.output_file, "a", encoding="utf-8") as output:
                     note = "（精修失败，保留首遍稿）" if payload.get("degraded") else ""
                     output.write(f"**[{payload['time']}] {payload['speaker']}**{note}:\n> {payload['text']}\n\n")
+        elif kind == "status":
+            print(f"\n提示: {payload['message']}")
         elif kind == "recording_saved":
             self.file_id = payload["fileId"]
             print(f"\n原始录音 fileId: {self.file_id}")

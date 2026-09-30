@@ -65,6 +65,12 @@ CONFIG = {
     "silence_duration": 0.5,        # 静音切分阈值（秒）
     "live_vad_cpu_threads": int(os.environ.get("LIVE_VAD_CPU_THREADS", "1")),  # 实时 FSMN-VAD 线程的 torch 线程数
     "nano_llm_dtype": os.environ.get("NANO_LLM_DTYPE", "auto").strip().lower(),  # Nano LLM 解码精度：auto/bf16/fp32
+    # 实时准入：off 不评估；observe 只记录"本应降级"；enforce 超限的新会话只录音、不实时转写。
+    "live_admission_mode": os.environ.get("LIVE_ADMISSION_MODE", "observe").strip().lower(),
+    "live_admission_max_sessions": int(os.environ.get("LIVE_ADMISSION_MAX_SESSIONS", "16")),
+    "live_admission_nano_utilization": float(os.environ.get("LIVE_ADMISSION_NANO_UTILIZATION", "0.85")),
+    "live_admission_nano_wait_p95_seconds": float(os.environ.get("LIVE_ADMISSION_NANO_WAIT_P95_SECONDS", "3.0")),
+    "live_admission_window_seconds": float(os.environ.get("LIVE_ADMISSION_WINDOW_SECONDS", "30")),
     # LLM 会议总结配置 (兼容 OpenAI / DeepSeek / GLM / Kimi 等所有 OpenAI 兼容接口)
     "llm_base_url": os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
     "llm_api_key": os.environ.get("LLM_API_KEY", ""),
