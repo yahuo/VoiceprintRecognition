@@ -3,2376 +3,919 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>实时 KWS 事件交互场景 · 可玩设计文档</title>
+<title>实时 KWS 事件 · 混合方案 · 可玩设计文档</title>
 <style>
-/* ============ Reset ============ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
-body, button, input { font: inherit; color: inherit; }
+body, button, input, textarea { font: inherit; color: inherit; }
 button { background: none; border: 0; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .4; }
 a { color: inherit; text-decoration: none; }
 ul { list-style: none; }
 
-/* ============ Theme ============ */
 :root {
-  --bg: #0a0e1a;
-  --bg-2: #131826;
-  --bg-3: #1c2235;
-  --bg-4: #252b40;
-  --border: #2a3145;
-  --border-strong: #3a4262;
-  --text: #e2e8f0;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
-  --cyan: #06b6d4;
-  --cyan-bg: rgba(6, 182, 212, 0.12);
-  --purple: #a855f7;
-  --purple-bg: rgba(168, 85, 247, 0.12);
-  --green: #10b981;
-  --green-bg: rgba(16, 185, 129, 0.12);
-  --amber: #f59e0b;
-  --amber-bg: rgba(245, 158, 11, 0.12);
-  --red: #ef4444;
-  --red-bg: rgba(239, 68, 68, 0.12);
-  --pink: #ec4899;
+  --bg: #0a0e1a; --bg-2: #131826; --bg-3: #1c2235; --bg-4: #252b40;
+  --border: #2a3145; --border-strong: #3a4262;
+  --text: #e2e8f0; --muted: #94a3b8; --dim: #64748b;
+  --cyan: #06b6d4; --purple: #a855f7; --green: #10b981; --amber: #f59e0b; --red: #ef4444; --pink: #ec4899;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
-
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.65;
-  font-size: 15px;
+  background: var(--bg); color: var(--text); line-height: 1.65; font-size: 15px;
   -webkit-font-smoothing: antialiased;
   background-image:
-    radial-gradient(circle at 15% 0%, rgba(6, 182, 212, 0.07), transparent 45%),
-    radial-gradient(circle at 85% 30%, rgba(168, 85, 247, 0.06), transparent 45%),
-    radial-gradient(circle at 50% 100%, rgba(236, 72, 153, 0.04), transparent 50%);
+    radial-gradient(circle at 15% 0%, rgba(6,182,212,.07), transparent 45%),
+    radial-gradient(circle at 85% 30%, rgba(168,85,247,.06), transparent 45%);
   background-attachment: fixed;
 }
-
-/* ============ Layout ============ */
-.container {
-  width: 100%;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
-
-.section {
-  padding: 88px 0;
-  position: relative;
-}
-
-.section + .section { border-top: 1px solid var(--border); }
-
-.section-head {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  margin-bottom: 48px;
-}
-
-.section-num {
-  font-family: var(--mono);
-  font-size: 13px;
-  letter-spacing: 0.1em;
-  color: var(--cyan);
-  padding: 4px 10px;
-  border: 1px solid var(--cyan);
-  border-radius: 4px;
-  background: var(--cyan-bg);
-}
-
-.section-head h2 {
-  font-size: 32px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.section-sub {
-  color: var(--text-muted);
-  font-size: 16px;
-  margin-top: -32px;
-  margin-bottom: 48px;
-  max-width: 640px;
-}
-
-/* ============ Top Nav ============ */
-.nav {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  background: rgba(10, 14, 26, 0.85);
-  backdrop-filter: saturate(180%) blur(12px);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
-  border-bottom: 1px solid var(--border);
-}
-
-.nav-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 14px 24px;
-  display: flex;
-  align-items: center;
-  gap: 28px;
-}
-
-.nav-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-}
-
-.nav-brand .dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--cyan);
-  box-shadow: 0 0 12px var(--cyan);
-  animation: pulse 2s infinite;
-}
-
-.nav-links {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-
-.nav-links a {
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-  color: var(--text-muted);
-  transition: all 0.15s;
-}
-
-.nav-links a:hover { color: var(--text); background: var(--bg-3); }
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(1.3); }
-}
-
-/* ============ Hero ============ */
-.hero {
-  padding: 96px 0 64px;
-  text-align: center;
-  position: relative;
-}
-
-.hero-tag {
-  display: inline-block;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  color: var(--cyan);
-  padding: 6px 14px;
-  border: 1px solid var(--cyan);
-  border-radius: 100px;
-  background: var(--cyan-bg);
-  margin-bottom: 28px;
-}
-
-.hero h1 {
-  font-size: 56px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  margin-bottom: 24px;
-  background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-.hero p.lead {
-  font-size: 19px;
-  color: var(--text-muted);
-  max-width: 620px;
-  margin: 0 auto 40px;
-  line-height: 1.6;
-}
-
-.hero-actions {
-  display: flex;
-  gap: 14px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.btn {
-  padding: 12px 24px;
-  border-radius: 10px;
-  font-weight: 600;
-  font-size: 15px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  transition: all 0.18s;
-  border: 1px solid transparent;
-}
-
-.btn-primary {
-  background: var(--cyan);
-  color: #0a0e1a;
-}
-.btn-primary:hover { background: #22d3ee; transform: translateY(-1px); box-shadow: 0 8px 24px rgba(6, 182, 212, 0.3); }
-
-.btn-ghost {
-  background: var(--bg-3);
-  border-color: var(--border);
-  color: var(--text);
-}
-.btn-ghost:hover { background: var(--bg-4); border-color: var(--border-strong); }
-
-/* Hero waveform decoration */
-.hero-wave {
-  display: flex;
-  justify-content: center;
-  align-items: end;
-  gap: 4px;
-  height: 50px;
-  margin: 56px auto 0;
-  max-width: 320px;
-}
-
-.hero-wave span {
-  width: 4px;
-  background: linear-gradient(to top, var(--cyan), var(--purple));
-  border-radius: 2px;
-  animation: wave 1.4s ease-in-out infinite;
-  opacity: 0.6;
-}
-.hero-wave span:nth-child(1) { height: 30%; animation-delay: 0.0s; }
-.hero-wave span:nth-child(2) { height: 60%; animation-delay: 0.1s; }
-.hero-wave span:nth-child(3) { height: 90%; animation-delay: 0.2s; }
-.hero-wave span:nth-child(4) { height: 50%; animation-delay: 0.3s; }
-.hero-wave span:nth-child(5) { height: 80%; animation-delay: 0.4s; }
-.hero-wave span:nth-child(6) { height: 40%; animation-delay: 0.5s; }
-.hero-wave span:nth-child(7) { height: 70%; animation-delay: 0.6s; }
-.hero-wave span:nth-child(8) { height: 100%; animation-delay: 0.5s; }
-.hero-wave span:nth-child(9) { height: 60%; animation-delay: 0.4s; }
-.hero-wave span:nth-child(10) { height: 30%; animation-delay: 0.3s; }
-.hero-wave span:nth-child(11) { height: 80%; animation-delay: 0.2s; }
-.hero-wave span:nth-child(12) { height: 50%; animation-delay: 0.1s; }
-.hero-wave span:nth-child(13) { height: 90%; animation-delay: 0.0s; }
-.hero-wave span:nth-child(14) { height: 40%; animation-delay: 0.1s; }
-.hero-wave span:nth-child(15) { height: 70%; animation-delay: 0.2s; }
-
-@keyframes wave {
-  0%, 100% { transform: scaleY(0.4); opacity: 0.4; }
-  50% { transform: scaleY(1); opacity: 1; }
-}
-
-/* ============ Cards ============ */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
-}
-
-.card {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 28px;
-  transition: all 0.2s;
-}
-
-.card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
-
-.card-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  margin-bottom: 18px;
-}
-
-.card-icon.cyan { background: var(--cyan-bg); color: var(--cyan); }
-.card-icon.purple { background: var(--purple-bg); color: var(--purple); }
-.card-icon.green { background: var(--green-bg); color: var(--green); }
-.card-icon.amber { background: var(--amber-bg); color: var(--amber); }
-
-.card h3 {
-  font-size: 18px;
-  margin-bottom: 8px;
-  letter-spacing: -0.01em;
-}
-
-.card p {
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.card-demo {
-  margin-top: 18px;
-  padding: 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-/* Mini demos in cards */
-.mini-wave {
-  display: flex;
-  align-items: end;
-  gap: 2px;
-  height: 32px;
-  position: relative;
-}
-.mini-wave span {
-  flex: 1;
-  background: var(--text-dim);
-  border-radius: 1px;
-  transition: background 0.3s;
-}
-.mini-wave span.hot { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
-
-.mini-event {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-3);
-  border-radius: 6px;
-  margin-top: 8px;
-  font-size: 11px;
-}
-.mini-event .tag {
-  padding: 2px 6px;
-  background: var(--cyan-bg);
-  color: var(--cyan);
-  border-radius: 4px;
-  font-weight: 600;
-}
-
-.gate-flow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-}
-.gate-flow .gate-block {
-  flex: 1;
-  padding: 8px;
-  border-radius: 6px;
-  text-align: center;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-}
-.gate-flow .gate-block.in { color: var(--cyan); border-color: var(--cyan-bg); }
-.gate-flow .gate-block.out { color: var(--green); border-color: var(--green-bg); }
-.gate-flow .arrow { color: var(--text-dim); }
-
-/* ============ Event JSON Inspector ============ */
-.json-inspect {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 24px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 28px;
-}
-
-@media (max-width: 800px) {
-  .json-inspect { grid-template-columns: 1fr; }
-}
-
-.json-block {
-  font-family: var(--mono);
-  font-size: 13.5px;
-  line-height: 1.75;
-  background: var(--bg);
-  border-radius: 10px;
-  padding: 20px;
-  overflow-x: auto;
-}
-
-.json-block .punct { color: var(--text-dim); }
-.json-block .key { color: var(--cyan); }
-.json-block .str { color: var(--green); }
-.json-block .num { color: var(--amber); }
-.json-block .field {
-  cursor: pointer;
-  padding: 1px 4px;
-  border-radius: 4px;
-  margin: -1px -4px;
-  transition: background 0.15s;
-}
-.json-block .field:hover { background: var(--bg-4); }
-.json-block .field.active { background: var(--cyan-bg); outline: 1px solid var(--cyan); }
-
-.field-info {
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px;
-  position: relative;
-  min-height: 200px;
-}
-
-.field-info-default {
-  color: var(--text-dim);
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  text-align: center;
-  padding: 20px;
-}
-
-.field-info h4 {
-  color: var(--cyan);
-  font-family: var(--mono);
-  font-size: 14px;
-  margin-bottom: 8px;
-}
-
-.field-info p {
-  font-size: 13.5px;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-
-.field-info .example {
-  margin-top: 10px;
-  padding: 8px 10px;
-  background: var(--bg);
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--green);
-}
-
-/* ============ Simulator ============ */
-.sim {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-}
-
-.sim-tabs {
-  display: flex;
-  background: var(--bg-3);
-  border-bottom: 1px solid var(--border);
-  padding: 0 12px;
-}
-
-.sim-tab {
-  padding: 14px 20px;
-  font-size: 14px;
-  color: var(--text-muted);
-  font-weight: 600;
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sim-tab .badge {
-  font-family: var(--mono);
-  font-size: 10px;
-  padding: 2px 6px;
-  background: var(--bg-4);
-  border-radius: 4px;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
-}
-
-.sim-tab.active {
-  color: var(--text);
-  border-bottom-color: var(--cyan);
-}
-.sim-tab.active .badge { background: var(--cyan-bg); color: var(--cyan); }
-.sim-tab:hover:not(.active) { color: var(--text); }
-
-.sim-tab-info {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  font-size: 12px;
-  color: var(--text-dim);
-  gap: 8px;
-}
-
-.sim-grid {
-  display: grid;
-  grid-template-columns: 280px 1fr 380px;
-  min-height: 580px;
-}
-
-@media (max-width: 1024px) {
-  .sim-grid { grid-template-columns: 1fr; min-height: auto; }
-}
-
-.sim-col {
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-}
-.sim-col:last-child { border-right: 0; }
-
-@media (max-width: 1024px) {
-  .sim-col { border-right: 0; border-bottom: 1px solid var(--border); }
-}
-
-.sim-col-head {
-  padding: 14px 18px;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--text-dim);
-  font-family: var(--mono);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--bg-3);
-}
-
-.sim-col-body {
-  padding: 18px;
-  flex: 1;
-  overflow-y: auto;
-  max-height: 540px;
-}
-
-/* Left: Speak controls */
-.speak-section h4 {
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin: 16px 0 8px;
-}
-.speak-section h4:first-child { margin-top: 0; }
-
-.speak-btn {
-  width: 100%;
-  text-align: left;
-  padding: 10px 14px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 14px;
-  margin-bottom: 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  transition: all 0.15s;
-  position: relative;
-}
-
-.speak-btn:hover:not(:disabled) {
-  background: var(--bg-4);
-  border-color: var(--cyan);
-  color: var(--cyan);
-}
-
-.speak-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.speak-btn.danger:hover:not(:disabled) {
-  border-color: var(--red);
-  color: var(--red);
-}
-
-.speak-btn .mic-icon {
-  width: 16px; height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--text-dim);
-}
-
-.speak-btn.b-only::after {
-  content: 'B';
-  position: absolute;
-  right: 10px;
-  font-family: var(--mono);
-  font-size: 10px;
-  padding: 1px 5px;
-  background: var(--purple-bg);
-  color: var(--purple);
-  border-radius: 3px;
-}
-
-.scenario-script {
-  margin-top: 8px;
-  padding: 10px 14px;
-  background: linear-gradient(135deg, var(--cyan-bg), var(--purple-bg));
-  border: 1px solid var(--cyan);
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text);
-  width: 100%;
-  transition: all 0.15s;
-}
-.scenario-script:hover { transform: translateY(-1px); }
-.scenario-script:disabled { opacity: 0.5; }
-
-.reset-btn {
-  margin-top: 12px;
-  padding: 8px 14px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--text-muted);
-  width: 100%;
-  transition: all 0.15s;
-}
-.reset-btn:hover { color: var(--red); border-color: var(--red); }
-
-/* Middle: Business UI */
-.biz-status-bar {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.status-pill {
-  flex: 1;
-  padding: 14px 16px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.status-pill .label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 6px;
-}
-
-.status-pill .value {
-  font-size: 18px;
-  font-weight: 700;
-  font-family: var(--mono);
-}
-
-.status-pill.bed.active {
-  border-color: var(--cyan);
-  background: var(--cyan-bg);
-}
-.status-pill.bed.active .value { color: var(--cyan); }
-
-.status-pill .rec-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.rec-dot {
-  width: 10px; height: 10px;
-  border-radius: 50%;
-  background: var(--text-dim);
-}
-.rec-dot.recording { background: var(--red); animation: pulse 1.4s infinite; }
-.rec-dot.paused { background: var(--amber); }
-
-.beds-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-bottom: 18px;
-}
-
-.bed-card {
-  padding: 12px 10px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  text-align: center;
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-muted);
-  transition: all 0.25s;
-  cursor: default;
-}
-
-.bed-card.active {
-  background: var(--cyan-bg);
-  border-color: var(--cyan);
-  color: var(--cyan);
-  transform: scale(1.04);
-  box-shadow: 0 4px 16px rgba(6, 182, 212, 0.25);
-}
-
-.bed-card.queued {
-  border-style: dashed;
-  opacity: 0.7;
-}
-
-.records-section {
-  border-top: 1px solid var(--border);
-  padding-top: 16px;
-}
-
-.records-section .label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 10px;
-}
-
-.record-item {
-  padding: 10px 12px;
-  background: var(--bg-3);
-  border-left: 3px solid var(--cyan);
-  border-radius: 0 8px 8px 0;
-  margin-bottom: 6px;
-  font-size: 13.5px;
-  line-height: 1.5;
-  animation: slideIn 0.3s ease-out;
-}
-
-.record-item.partial {
-  border-left-color: var(--amber);
-  color: var(--text-muted);
-  font-style: italic;
-  opacity: 0.8;
-}
-
-.record-item.partial::after {
-  content: '▍';
-  color: var(--amber);
-  margin-left: 4px;
-  animation: blink 1s infinite;
-}
-
-@keyframes slideIn {
-  from { opacity: 0; transform: translateX(-8px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-.record-bed-tag {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--cyan);
-  margin-right: 8px;
-}
-
-.records-empty {
-  color: var(--text-dim);
-  font-size: 13px;
-  text-align: center;
-  padding: 24px;
-  font-style: italic;
-}
-
-/* Right: Event stream */
-.event-stream {
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.event-card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--cyan);
-  border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  animation: eventSlide 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes eventSlide {
-  from { opacity: 0; transform: translateX(20px) scale(0.96); }
-  to { opacity: 1; transform: translateX(0) scale(1); }
-}
-
-.event-card.kws { border-left-color: var(--cyan); }
-.event-card.state { border-left-color: var(--purple); }
-.event-card.asr { border-left-color: var(--green); }
-.event-card.blocked { border-left-color: var(--red); opacity: 0.85; }
-
-.event-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.event-type {
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.event-card.kws .event-type { color: var(--cyan); }
-.event-card.state .event-type { color: var(--purple); }
-.event-card.asr .event-type { color: var(--green); }
-.event-card.blocked .event-type { color: var(--red); text-decoration: line-through; }
-
-.event-meta {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--text-dim);
-}
-
-.event-body {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 12px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  padding-left: 4px;
-}
-
-.event-body .k { color: var(--text-dim); }
-.event-body .v { color: var(--text); word-break: break-all; }
-
-.event-block-reason {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: var(--red-bg);
-  border-radius: 4px;
-  font-size: 11px;
-  color: var(--red);
-  font-family: var(--mono);
-}
-
-.stream-empty {
-  color: var(--text-dim);
-  font-size: 13px;
-  font-family: -apple-system, sans-serif;
-  text-align: center;
-  padding: 60px 20px;
-  font-style: italic;
-}
-
-.stream-empty::before {
-  content: '⏸';
-  display: block;
-  font-size: 36px;
-  margin-bottom: 12px;
-  opacity: 0.4;
-  font-style: normal;
-}
-
-/* ============ Comparison table ============ */
-.compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-
-@media (max-width: 720px) {
-  .compare { grid-template-columns: 1fr; }
-}
-
-.compare-col {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.compare-col.a { border-top: 3px solid var(--cyan); }
-.compare-col.b { border-top: 3px solid var(--purple); }
-
-.compare-head {
-  padding: 20px 22px;
-  border-bottom: 1px solid var(--border);
-}
-
-.compare-head .badge {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  padding: 3px 8px;
-  border-radius: 4px;
-  margin-bottom: 10px;
-  display: inline-block;
-}
-
-.compare-col.a .compare-head .badge { background: var(--cyan-bg); color: var(--cyan); }
-.compare-col.b .compare-head .badge { background: var(--purple-bg); color: var(--purple); }
-
-.compare-head h3 {
-  font-size: 19px;
-  margin-bottom: 6px;
-}
-
-.compare-head p {
-  color: var(--text-muted);
-  font-size: 14px;
-}
-
-.compare-body {
-  padding: 20px 22px;
-}
-
-.compare-body h4 {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  margin-bottom: 10px;
-}
-
-.compare-body h4:not(:first-child) { margin-top: 18px; }
-
-.compare-body ul li {
-  padding: 4px 0 4px 22px;
-  font-size: 14px;
-  position: relative;
-  color: var(--text-muted);
-}
-
-.compare-body ul li::before {
-  position: absolute;
-  left: 0;
-  top: 4px;
-}
-
-.compare-body ul.pros li::before { content: '✓'; color: var(--green); font-weight: 700; }
-.compare-body ul.cons li::before { content: '−'; color: var(--amber); font-weight: 700; }
-
-/* ============ State machine rules ============ */
-.rules {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-@media (max-width: 720px) {
-  .rules { grid-template-columns: 1fr; }
-}
-
-.rule-card {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-}
-
-.rule-card h4 {
-  font-size: 15px;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.rule-num {
-  display: inline-flex;
-  width: 24px; height: 24px;
-  align-items: center;
-  justify-content: center;
-  background: var(--amber-bg);
-  color: var(--amber);
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.rule-card p {
-  font-size: 14px;
-  color: var(--text-muted);
-  margin-bottom: 14px;
-}
-
-.rule-try {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.rule-try-btn {
-  margin-left: auto;
-  padding: 5px 12px;
-  background: var(--amber-bg);
-  color: var(--amber);
-  border: 1px solid var(--amber);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  transition: all 0.15s;
-  flex-shrink: 0;
-}
-.rule-try-btn:hover { background: var(--amber); color: var(--bg); }
-
-.rule-result {
-  margin-top: 10px;
-  padding: 10px 12px;
-  background: var(--bg);
-  border-radius: 8px;
-  font-family: var(--mono);
-  font-size: 12px;
-  display: none;
-  animation: slideIn 0.3s;
-}
-.rule-result.show { display: block; }
-.rule-result.allow { border-left: 3px solid var(--green); color: var(--green); }
-.rule-result.block { border-left: 3px solid var(--red); color: var(--red); }
-.rule-result .desc { color: var(--text-muted); margin-top: 4px; font-family: -apple-system, sans-serif; font-size: 12px; }
-
-/* ============ Communication ============ */
-.comm-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 24px;
-  flex-wrap: wrap;
-}
-
-.comm-tab {
-  padding: 10px 18px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 14px;
-  color: var(--text-muted);
-  font-weight: 600;
-  transition: all 0.15s;
-}
-.comm-tab:hover { color: var(--text); }
-.comm-tab.active { background: var(--cyan-bg); border-color: var(--cyan); color: var(--cyan); }
-
-.comm-panel {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 28px;
-  display: none;
-}
-.comm-panel.active { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-
-@media (max-width: 720px) {
-  .comm-panel.active { grid-template-columns: 1fr; }
-}
-
-.comm-info h3 { font-size: 20px; margin-bottom: 10px; }
-.comm-info p { color: var(--text-muted); margin-bottom: 14px; font-size: 14px; }
-.comm-info .when {
-  padding: 12px 14px;
-  background: var(--bg-3);
-  border-left: 3px solid var(--cyan);
-  border-radius: 0 8px 8px 0;
-  font-size: 13.5px;
-}
-.comm-info .when strong { color: var(--cyan); display: block; margin-bottom: 4px; font-size: 12px; }
-
-.comm-diagram {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 200px;
-  font-family: var(--mono);
-  font-size: 13px;
-}
-
-.diag-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 6px 0;
-}
-
-.diag-node {
-  padding: 6px 12px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.diag-node.client { color: var(--cyan); border-color: var(--cyan-bg); }
-.diag-node.server { color: var(--purple); border-color: var(--purple-bg); }
-.diag-node.queue { color: var(--amber); border-color: var(--amber-bg); }
-
-.diag-arrow {
-  flex: 1;
-  height: 2px;
-  background: var(--border);
-  position: relative;
-}
-
-.diag-arrow::after {
-  content: '';
-  position: absolute;
-  right: -2px;
-  top: -3px;
-  border-left: 8px solid var(--text-muted);
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-}
-
-.diag-arrow.bidi::before {
-  content: '';
-  position: absolute;
-  left: -2px;
-  top: -3px;
-  border-right: 8px solid var(--text-muted);
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-}
-
-.diag-label {
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  position: absolute;
-  top: -16px;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-/* ============ Decision Q&A ============ */
-.decision {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 36px;
-  text-align: center;
-}
-
-.decision-step { display: none; }
-.decision-step.active { display: block; animation: fadeIn 0.3s; }
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.decision-q {
-  font-size: 22px;
-  font-weight: 700;
-  margin-bottom: 8px;
-  letter-spacing: -0.01em;
-}
-
-.decision-hint {
-  color: var(--text-muted);
-  font-size: 14px;
-  margin-bottom: 28px;
-  max-width: 480px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.decision-options {
-  display: flex;
-  gap: 14px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.decision-btn {
-  padding: 16px 28px;
-  background: var(--bg-3);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  font-size: 15px;
-  font-weight: 600;
-  min-width: 160px;
-  transition: all 0.15s;
-}
-.decision-btn:hover { border-color: var(--cyan); color: var(--cyan); transform: translateY(-2px); }
-
-.decision-result {
-  display: inline-block;
-  padding: 24px 32px;
-  background: linear-gradient(135deg, var(--cyan-bg), var(--purple-bg));
-  border: 1px solid var(--cyan);
-  border-radius: 14px;
-  margin-top: 20px;
-  text-align: left;
-  max-width: 560px;
-}
-
-.decision-result .badge {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--cyan);
-  background: var(--cyan-bg);
-  padding: 4px 10px;
-  border-radius: 4px;
-  display: inline-block;
-  margin-bottom: 12px;
-}
-
-.decision-result h3 { font-size: 19px; margin-bottom: 10px; }
-.decision-result p { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin-bottom: 8px; }
-
-.decision-restart {
-  display: block;
-  margin: 20px auto 0;
-  padding: 8px 16px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 13px;
-  transition: all 0.15s;
-}
-.decision-restart:hover { color: var(--text); border-color: var(--text-muted); }
-
-/* ============ Footer ============ */
-footer {
-  padding: 48px 0 64px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 13px;
-}
-
-footer p { margin-bottom: 6px; }
-footer a { color: var(--cyan); }
-
-/* ============ Mobile ============ */
-@media (max-width: 640px) {
+code, .mono { font-family: var(--mono); font-size: .9em; }
+code { color: var(--cyan); }
+.container { max-width: 1240px; margin: 0 auto; padding: 0 24px; }
+
+nav { position: sticky; top: 0; z-index: 20; background: rgba(10,14,26,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+nav .container { display: flex; align-items: center; height: 56px; gap: 24px; }
+nav .brand { font-family: var(--mono); font-weight: 700; color: var(--cyan); letter-spacing: .05em; }
+nav ul { display: flex; gap: 18px; margin-left: auto; font-size: 13px; color: var(--muted); }
+nav a:hover { color: var(--text); }
+
+.hero { padding: 96px 0 72px; }
+.hero-tag { font-family: var(--mono); font-size: 12px; letter-spacing: .2em; color: var(--cyan); margin-bottom: 20px; }
+.hero h1 { font-size: 52px; line-height: 1.15; font-weight: 800; letter-spacing: -.02em;
+  background: linear-gradient(120deg, #fff 30%, var(--cyan) 70%, var(--purple)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero .lead { margin-top: 20px; max-width: 720px; color: var(--muted); font-size: 17px; }
+.hero-flow { margin-top: 36px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-family: var(--mono); font-size: 13px; }
+.hero-flow .node { padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-2); }
+.hero-flow .arrow { color: var(--dim); }
+.hero-actions { margin-top: 32px; display: flex; gap: 12px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+.btn-primary { background: var(--cyan); color: #04121a; }
+.btn-ghost { border: 1px solid var(--border-strong); color: var(--muted); }
+
+.section { padding: 80px 0; border-top: 1px solid var(--border); }
+.section-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
+.section-num { font-family: var(--mono); font-size: 13px; color: var(--cyan); letter-spacing: .1em; }
+.section h2 { font-size: 30px; font-weight: 750; letter-spacing: -.01em; }
+.section-sub { color: var(--muted); max-width: 820px; margin-bottom: 36px; }
+
+.panel { background: var(--bg-2); border: 1px solid var(--border); border-radius: 12px; }
+
+/* ---------- 01 roles ---------- */
+.role-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.chip { padding: 7px 14px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 13px; color: var(--muted); background: var(--bg-2); transition: .15s; }
+.chip:hover { color: var(--text); border-color: var(--cyan); }
+.chip.active { color: #04121a; background: var(--cyan); border-color: var(--cyan); }
+.roles { display: grid; grid-template-columns: 1fr 40px 1fr 40px 1fr; align-items: stretch; }
+.role { padding: 22px; transition: .25s; }
+.role h3 { font-size: 17px; margin-bottom: 4px; }
+.role .who { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--dim); margin-bottom: 12px; }
+.role .duty { color: var(--muted); font-size: 13.5px; }
+.role .act { margin-top: 16px; padding: 12px; border-radius: 8px; background: var(--bg-3); font-size: 13.5px; min-height: 66px; border-left: 3px solid var(--border-strong); }
+.role.on .act { border-left-color: var(--cyan); background: rgba(6,182,212,.08); }
+.role.off .act { color: var(--dim); }
+.role-arrow { display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 20px; }
+.role-note { margin-top: 16px; padding: 14px 18px; border-radius: 10px; background: rgba(168,85,247,.08); border: 1px solid rgba(168,85,247,.3); font-size: 14px; color: var(--text); }
+
+/* ---------- 02 label lab ---------- */
+.lab { display: grid; grid-template-columns: 380px 1fr; gap: 20px; }
+.lab-in { padding: 18px; }
+.lab-in label { display: block; font-size: 12px; letter-spacing: .08em; color: var(--dim); margin: 0 0 6px; text-transform: uppercase; }
+.lab-in textarea, .lab-in input { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 13px; line-height: 1.7; resize: vertical; }
+.lab-in textarea { min-height: 230px; }
+.lab-in .hint { font-size: 12px; color: var(--dim); margin: 6px 0 16px; }
+.lab-in .err { color: var(--red); font-size: 12px; min-height: 18px; margin-top: 6px; }
+.lab-out { padding: 6px 0; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--dim); font-size: 11.5px; letter-spacing: .06em; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.tok { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.tag.slot { background: rgba(6,182,212,.15); color: var(--cyan); }
+.tag.event { background: rgba(168,85,247,.15); color: var(--purple); }
+.tag.bad { background: rgba(239,68,68,.15); color: var(--red); }
+.tag.warn { background: rgba(245,158,11,.15); color: var(--amber); }
+
+/* ---------- 03 events ---------- */
+.tabs { display: flex; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tab { padding: 8px 14px; border-radius: 6px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.tab.active { background: var(--bg-4); color: var(--text); }
+.tab .dir { color: var(--dim); margin-right: 6px; }
+.inspect { display: grid; grid-template-columns: 1fr 1fr; }
+.json { padding: 22px; font-family: var(--mono); font-size: 13.5px; line-height: 1.85; white-space: pre; overflow-x: auto; border-right: 1px solid var(--border); }
+.json .k { color: var(--purple); cursor: pointer; border-bottom: 1px dashed transparent; }
+.json .k:hover, .json .k.sel { border-bottom-color: var(--purple); background: rgba(168,85,247,.1); }
+.json .s { color: #86efac; } .json .n { color: var(--amber); } .json .p { color: var(--dim); } .json .z { color: var(--pink); }
+.field-info { padding: 22px; }
+.field-info .fname { font-family: var(--mono); color: var(--purple); font-size: 18px; margin-bottom: 10px; }
+.field-info .fdesc { color: var(--text); }
+.field-info .when { margin-top: 14px; color: var(--muted); font-size: 13.5px; }
+.field-info .placeholder { color: var(--dim); }
+
+/* ---------- 04 simulator ---------- */
+.sim-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.seg-ctl { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.seg-ctl button { padding: 6px 12px; font-size: 13px; color: var(--muted); }
+.seg-ctl button.active { background: var(--bg-4); color: var(--text); }
+.tool-btn { padding: 6px 12px; font-size: 13px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--muted); }
+.tool-btn:hover:not(:disabled) { color: var(--text); border-color: var(--cyan); }
+.tool-btn.danger.active { color: var(--red); border-color: var(--red); background: rgba(239,68,68,.08); }
+.tool-btn.primary { color: var(--cyan); border-color: rgba(6,182,212,.5); }
+.sim-bar .spacer { flex: 1; }
+.conn { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.sim-grid { display: grid; grid-template-columns: 250px 1fr 1.15fr; min-height: 560px; }
+.col { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+.col:last-child { border-right: 0; }
+.col-head { padding: 10px 14px; font-size: 12px; letter-spacing: .08em; color: var(--dim); border-bottom: 1px solid var(--border); text-transform: uppercase; }
+.col-body { padding: 14px; flex: 1; overflow-y: auto; max-height: 620px; }
+.col-body h4 { font-size: 11.5px; color: var(--dim); letter-spacing: .06em; margin: 14px 0 8px; font-weight: 600; }
+.col-body h4:first-child { margin-top: 0; }
+.say { display: block; width: 100%; text-align: left; padding: 9px 11px; margin-bottom: 6px; border-radius: 8px; background: var(--bg-3); border: 1px solid var(--border); font-size: 13px; transition: .15s; }
+.say:hover:not(:disabled) { border-color: var(--cyan); background: rgba(6,182,212,.08); }
+.say small { display: block; color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+.say.biz { border-style: dashed; }
+.say.biz:hover:not(:disabled) { border-color: var(--green); background: rgba(16,185,129,.08); }
+
+.biz-top { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.pill { padding: 10px 12px; border-radius: 10px; background: var(--bg-3); border: 1px solid var(--border); }
+.pill .l { font-size: 11px; color: var(--dim); letter-spacing: .06em; }
+.pill .v { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+.pill.flash { animation: flash .8s; }
+@keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(6,182,212,.7); } 100% { box-shadow: 0 0 0 12px rgba(6,182,212,0); } }
+.rec { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; padding-top: 4px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+.dot.on { background: var(--red); animation: pulse 1.2s infinite; }
+.dot.pause { background: var(--amber); }
+@keyframes pulse { 50% { opacity: .35; } }
+.queue { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.bed { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-strong); font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.bed:hover:not(:disabled) { border-color: var(--green); color: var(--text); }
+.bed.cur { border-color: var(--cyan); color: var(--cyan); background: rgba(6,182,212,.1); }
+.queue-hint { font-size: 11.5px; color: var(--dim); margin-bottom: 16px; }
+.records .grp { margin-bottom: 12px; }
+.records .grp-h { font-family: var(--mono); font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.records .grp-h .sw { width: 10px; height: 10px; border-radius: 3px; }
+.rec-item { font-size: 13px; padding: 7px 10px; border-radius: 6px; background: var(--bg-3); margin-bottom: 5px; border-left: 3px solid var(--border-strong); }
+.rec-item .meta { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.rec-item.marker { background: transparent; border-left-color: var(--purple); color: var(--purple); font-size: 12px; }
+.rec-item.new { animation: slidein .4s; }
+@keyframes slidein { from { opacity: 0; transform: translateY(-4px); } }
+.empty { color: var(--dim); font-size: 13px; padding: 10px 0; }
+
+.stream .ev { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 7px; background: var(--bg-3); cursor: pointer; animation: slidein .35s; }
+.stream .ev-h { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px; }
+.stream .dir { font-family: var(--mono); font-size: 11px; width: 26px; color: var(--dim); }
+.stream .ev.up { border-style: dashed; border-color: rgba(16,185,129,.45); background: rgba(16,185,129,.05); }
+.stream .ev.up .dir { color: var(--green); }
+.stream .type { font-family: var(--mono); font-size: 12px; font-weight: 700; }
+.stream .sum { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.stream .ts { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.stream pre { display: none; padding: 8px 12px 10px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-all; }
+.stream .ev.open pre { display: block; }
+.stream .note { font-size: 12.5px; color: var(--amber); padding: 6px 10px 6px 12px; margin: 2px 0 9px; border-left: 2px solid var(--amber); background: rgba(245,158,11,.06); border-radius: 0 6px 6px 0; animation: slidein .35s; }
+.t-kws { color: var(--cyan); } .t-state { color: var(--purple); } .t-tr { color: var(--text); } .t-status { color: var(--amber); } .t-ctl { color: var(--green); } .t-err { color: var(--red); }
+
+.tl-wrap { border-top: 1px solid var(--border); padding: 14px 16px 18px; }
+.tl-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.tl-head .t { font-size: 12px; letter-spacing: .08em; color: var(--dim); text-transform: uppercase; }
+.tl-head .legend { font-size: 11.5px; color: var(--dim); display: flex; gap: 14px; flex-wrap: wrap; }
+.tl-head .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.tl { position: relative; height: 128px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.tl .seg { position: absolute; top: 46px; height: 34px; border-radius: 4px; border: 1px solid rgba(255,255,255,.12); font-size: 11px; padding: 2px 6px; overflow: hidden; white-space: nowrap; color: #0a0e1a; font-weight: 600; transition: .3s; }
+.tl .seg.pending { background: repeating-linear-gradient(45deg, var(--bg-4), var(--bg-4) 6px, var(--bg-3) 6px, var(--bg-3) 12px) !important; color: var(--muted); }
+.tl .seg.changed { outline: 2px solid var(--amber); outline-offset: 1px; }
+.tl .lead { position: absolute; top: 40px; height: 46px; background: rgba(255,255,255,.07); border-left: 1px dashed rgba(255,255,255,.35); border-right: 1px dashed rgba(255,255,255,.35); pointer-events: none; }
+.tl .kw { position: absolute; top: 86px; height: 6px; background: var(--cyan); border-radius: 2px; }
+.tl .kw-l { position: absolute; top: 94px; font-size: 10.5px; color: var(--cyan); font-family: var(--mono); white-space: nowrap; }
+.tl .chg { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--purple); }
+.tl .chg.client { border-left-color: var(--green); }
+.tl .chg.ghost { border-left-style: dashed; opacity: .7; }
+.tl .chg span { position: absolute; top: 4px; left: 4px; font-size: 10.5px; font-family: var(--mono); white-space: nowrap; color: var(--purple); }
+.tl .chg.client span { color: var(--green); }
+.tl .tick { position: absolute; bottom: 0; height: 6px; border-left: 1px solid var(--border-strong); }
+.tl .tick span { position: absolute; bottom: 6px; left: 2px; font-size: 9.5px; color: var(--dim); font-family: var(--mono); }
+.tl .now { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--red); }
+.tl .empty-tl { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 13px; }
+
+/* ---------- 05 faq ---------- */
+.faq { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.qa { padding: 0; overflow: hidden; }
+.qa summary { list-style: none; cursor: pointer; padding: 16px 18px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; }
+.qa summary::-webkit-details-marker { display: none; }
+.qa summary::before { content: "Q"; font-family: var(--mono); color: var(--cyan); font-size: 13px; }
+.qa[open] summary { border-bottom: 1px solid var(--border); }
+.qa .a { padding: 14px 18px 16px; color: var(--muted); font-size: 14px; }
+.qa .a b { color: var(--text); font-weight: 600; }
+.qa .try { margin-top: 12px; }
+
+/* ---------- 06 status ---------- */
+.status-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+.status-card { padding: 20px; }
+.status-card h3 { font-size: 15px; margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+.status-card li { font-size: 13.5px; color: var(--muted); padding: 5px 0 5px 16px; position: relative; }
+.status-card li::before { content: ""; position: absolute; left: 0; top: 13px; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+.status-card.ok li::before { background: var(--green); }
+.status-card.todo li::before { background: var(--amber); }
+.env { margin-top: 14px; padding: 18px 20px; font-family: var(--mono); font-size: 12.5px; line-height: 1.8; white-space: pre; overflow-x: auto; color: var(--muted); }
+.env .c { color: var(--dim); }
+.env .k { color: var(--purple); }
+
+footer { padding: 40px 0 60px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--border); }
+
+@media (max-width: 1000px) {
+  .roles { grid-template-columns: 1fr; } .role-arrow { transform: rotate(90deg); height: 30px; }
+  .lab, .inspect, .faq, .status-grid { grid-template-columns: 1fr; }
+  .sim-grid { grid-template-columns: 1fr; } .col { border-right: 0; border-bottom: 1px solid var(--border); }
   .hero h1 { font-size: 38px; }
-  .section-head h2 { font-size: 24px; }
-  .section { padding: 56px 0; }
-  .nav-links { gap: 0; }
-  .nav-links a { padding: 6px 8px; font-size: 13px; }
 }
 </style>
 </head>
 <body>
 
-<!-- ============ Top Nav ============ -->
-<nav class="nav">
-  <div class="nav-inner">
-    <div class="nav-brand"><span class="dot"></span>实时 KWS</div>
-    <ul class="nav-links">
-      <li><a href="#concepts">概念</a></li>
-      <li><a href="#event">事件</a></li>
+<nav>
+  <div class="container">
+    <div class="brand">KWS · HYBRID</div>
+    <ul>
+      <li><a href="#roles">分工</a></li>
+      <li><a href="#labels">关键词</a></li>
+      <li><a href="#events">事件</a></li>
       <li><a href="#simulator">模拟器</a></li>
-      <li><a href="#scenarios">场景对比</a></li>
-      <li><a href="#rules">状态机</a></li>
-      <li><a href="#comm">通信</a></li>
-      <li><a href="#decision">选择</a></li>
+      <li><a href="#faq">边界</a></li>
+      <li><a href="#status">现状</a></li>
     </ul>
   </div>
 </nav>
 
-<!-- ============ Hero ============ -->
 <section class="hero">
   <div class="container">
-    <div class="hero-tag">DESIGN DOC · INTERACTIVE</div>
-    <h1>实时 KWS<br>事件交互场景</h1>
+    <div class="hero-tag">DESIGN DOC · INTERACTIVE · 混合方案</div>
+    <h1>实时 KWS 事件<br>不止床号</h1>
     <p class="lead">
-      在音频流中识别关键词，把状态切换交给业务端。<br>
-      这份文档不只是给你看的——下面的模拟器，能让你直接"听"到医生说话。
+      在实时对话的音频流里挑出会改变业务状态的关键词：床号、病区、下一床、暂停记录、查体段落……
+      服务端只记住“说出口的值”并标到转写上，需要业务知识的判断交给业务端，业务端随时可以纠正。
     </p>
+    <div class="hero-flow">
+      <span class="node">PCM 音频</span><span class="arrow">→</span>
+      <span class="node" style="color:var(--cyan)">KWS 旁路</span><span class="arrow">→</span>
+      <span class="node" style="color:var(--cyan)">kws.detected</span><span class="arrow">+</span>
+      <span class="node" style="color:var(--purple)">state.changed</span><span class="arrow">+</span>
+      <span class="node">transcript.context</span><span class="arrow">⇄</span>
+      <span class="node" style="color:var(--green)">set_context</span>
+    </div>
     <div class="hero-actions">
       <a href="#simulator" class="btn btn-primary">▶ 打开查房模拟器</a>
-      <a href="#concepts" class="btn btn-ghost">从概念开始 →</a>
-    </div>
-    <div class="hero-wave" aria-hidden="true">
-      <span></span><span></span><span></span><span></span><span></span>
-      <span></span><span></span><span></span><span></span><span></span>
-      <span></span><span></span><span></span><span></span><span></span>
+      <a href="#roles" class="btn btn-ghost">先看分工 →</a>
     </div>
   </div>
 </section>
 
-<!-- ============ 01 Concepts ============ -->
-<section class="section" id="concepts">
+<!-- 01 -->
+<section class="section" id="roles">
   <div class="container">
-    <div class="section-head">
-      <div class="section-num">01</div>
-      <h2>三个角色，各管一段</h2>
-    </div>
-    <p class="section-sub">KWS 不做完整转写，只挑出会改变业务状态的关键词。状态机来仲裁，业务端只消费"已确认"的状态。</p>
-
-    <div class="cards">
-      <div class="card">
-        <div class="card-icon cyan">🎙</div>
-        <h3>KWS 引擎</h3>
-        <p>在音频流里挑关键词：床号、开始记录、暂停记录、下一床。命中就发事件，不解释、不存储、不归属。</p>
-        <div class="card-demo">
-          <div class="mini-wave">
-            <span></span><span></span><span class="hot"></span><span class="hot"></span><span class="hot"></span>
-            <span></span><span></span><span></span><span></span><span></span>
-            <span></span><span class="hot"></span><span class="hot"></span><span></span><span></span>
-          </div>
-          <div class="mini-event">
-            <span class="tag">kws.detected</span>
-            <span style="color: var(--text-muted);">"12床" · score 0.86</span>
-          </div>
-        </div>
+    <div class="section-head"><div class="section-num">01</div><h2>三方分工：谁处理什么</h2></div>
+    <p class="section-sub">点一个情形，看 KWS 引擎、服务端上下文、业务端各自做了什么。原则：<b>服务端不猜业务</b>，只处理显式说出的槽位值；需要查房队列、权限、确认流程的语义归业务端。</p>
+    <div class="role-picker" id="rolePicker"></div>
+    <div class="roles">
+      <div class="role panel" id="roleKws">
+        <div class="who">KWS ENGINE</div><h3>KWS 引擎</h3>
+        <div class="duty">sherpa-onnx 声学关键词检测，按收包顺序在独立推理阶段运行。只认关键词表里的词，不转写、不解释。</div>
+        <div class="act"></div>
       </div>
-
-      <div class="card">
-        <div class="card-icon purple">⚙</div>
-        <h3>状态机</h3>
-        <p>原始 KWS 事件不直接生效。先过阈值、看队列、去重、二次确认，再决定是否真的切换 current_bed 或录音状态。</p>
-        <div class="card-demo">
-          <div class="gate-flow">
-            <div class="gate-block in">kws.detected</div>
-            <div class="arrow">→</div>
-            <div class="gate-block" style="color: var(--amber);">仲裁</div>
-            <div class="arrow">→</div>
-            <div class="gate-block out">state.changed</div>
-          </div>
-          <div style="margin-top: 8px; color: var(--text-dim); font-size: 11px;">分数低、床号不在队列、2 秒重复 → 拦截</div>
-        </div>
+      <div class="role-arrow">→</div>
+      <div class="role panel" id="roleCtx">
+        <div class="who">SERVER CONTEXT</div><h3>服务端上下文</h3>
+        <div class="duty">按音频时间记录上下文槽位（默认 <code>bed</code>）的变化，给转写片段打 <code>context</code> 标签。</div>
+        <div class="act"></div>
       </div>
-
-      <div class="card">
-        <div class="card-icon green">📋</div>
-        <h3>业务端</h3>
-        <p>只消费 state 类事件。current_bed 改了就切 UI，asr.final 来了就归属到对应床号。不直接相信 KWS 原始命中。</p>
-        <div class="card-demo">
-          <div style="display: flex; gap: 8px; align-items: center; padding: 6px 0;">
-            <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">当前床位</span>
-            <span style="font-family: var(--mono); font-weight: 700; color: var(--cyan); font-size: 14px;">12床</span>
-            <span style="margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--red);">
-              <span class="rec-dot recording" style="width: 8px; height: 8px;"></span>录音中
-            </span>
-          </div>
-          <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; background: var(--bg-3); border-radius: 4px; border-left: 2px solid var(--cyan);">今天体温正常，继续观察。</div>
-        </div>
+      <div class="role-arrow">⇄</div>
+      <div class="role panel" id="roleBiz">
+        <div class="who">BUSINESS CLIENT</div><h3>业务端</h3>
+        <div class="duty">解释指令和标记，持有查房队列与 UI；需要改上下文时发 <code>set_context</code>。</div>
+        <div class="act"></div>
       </div>
     </div>
+    <div class="role-note" id="roleNote"></div>
   </div>
 </section>
 
-<!-- ============ 02 Event Format ============ -->
-<section class="section" id="event">
+<!-- 02 -->
+<section class="section" id="labels">
   <div class="container">
-    <div class="section-head">
-      <div class="section-num">02</div>
-      <h2>事件长这样</h2>
-    </div>
-    <p class="section-sub">点击 JSON 里的字段名，看它的含义。所有事件都共享 <code style="color: var(--cyan); font-family: var(--mono);">type / session_id / seq / ts_ms / source</code> 这几个基础字段。</p>
-
-    <div class="json-inspect">
-      <pre class="json-block" id="jsonBlock"><span class="punct">{</span>
-  <span class="key field" data-field="type">"type"</span><span class="punct">:</span> <span class="str">"kws.detected"</span><span class="punct">,</span>
-  <span class="key field" data-field="session_id">"session_id"</span><span class="punct">:</span> <span class="str">"round-20260508-001"</span><span class="punct">,</span>
-  <span class="key field" data-field="seq">"seq"</span><span class="punct">:</span> <span class="num">18</span><span class="punct">,</span>
-  <span class="key field" data-field="ts_ms">"ts_ms"</span><span class="punct">:</span> <span class="num">1840</span><span class="punct">,</span>
-  <span class="key field" data-field="source">"source"</span><span class="punct">:</span> <span class="str">"kws"</span><span class="punct">,</span>
-  <span class="key field" data-field="category">"category"</span><span class="punct">:</span> <span class="str">"bed"</span><span class="punct">,</span>
-  <span class="key field" data-field="keyword">"keyword"</span><span class="punct">:</span> <span class="str">"十二床"</span><span class="punct">,</span>
-  <span class="key field" data-field="normalized">"normalized"</span><span class="punct">:</span> <span class="str">"12床"</span><span class="punct">,</span>
-  <span class="key field" data-field="score">"score"</span><span class="punct">:</span> <span class="num">0.86</span><span class="punct">,</span>
-  <span class="key field" data-field="start_ms">"start_ms"</span><span class="punct">:</span> <span class="num">1520</span><span class="punct">,</span>
-  <span class="key field" data-field="end_ms">"end_ms"</span><span class="punct">:</span> <span class="num">1840</span>
-<span class="punct">}</span></pre>
-
-      <div class="field-info" id="fieldInfo">
-        <div class="field-info-default">点击左边任意字段，看它代表什么</div>
+    <div class="section-head"><div class="section-num">02</div><h2>关键词表：标签就是协议</h2></div>
+    <p class="section-sub">每个关键词带一个 <code>@类别:值</code> 标签，命中时原样返回。类别是否在 <code>KWS_CONTEXT_SLOTS</code> 里，决定它是“上下文槽位”还是“只推事件”。改改左边，看右边怎么变。</p>
+    <div class="lab">
+      <div class="lab-in panel">
+        <label for="slotsIn">KWS_CONTEXT_SLOTS</label>
+        <input id="slotsIn" value="bed">
+        <div class="err" id="slotsErr"></div>
+        <label for="kwIn" style="margin-top:6px">原始关键词行</label>
+        <textarea id="kwIn" spellcheck="false"></textarea>
+        <div class="hint">格式：<code>关键词 [:增益] [#阈值] @类别:值</code>。拼音为演示用小字典，以 <code>scripts/build_kws_keywords.py</code> + 模型 <code>tokens.txt</code> 为准。</div>
+      </div>
+      <div class="lab-out panel">
+        <table>
+          <thead><tr><th>原始行</th><th>生成的 token 行</th><th>类别 / 值</th><th>运行时行为</th></tr></thead>
+          <tbody id="kwOut"></tbody>
+        </table>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ============ 03 Simulator ============ -->
+<!-- 03 -->
+<section class="section" id="events">
+  <div class="container">
+    <div class="section-head"><div class="section-num">03</div><h2>四种消息</h2></div>
+    <p class="section-sub">三种服务端推送 + 一种业务端控制消息，都走同一条 <code>WS /ws/meeting/live</code>。点字段名看含义。所有时间都在同一条音频时间轴上：已保存 PCM 的累计时长，不含暂停。</p>
+    <div class="panel">
+      <div class="tabs" id="evTabs"></div>
+      <div class="inspect">
+        <div class="json" id="evJson"></div>
+        <div class="field-info" id="evInfo"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 -->
 <section class="section" id="simulator">
   <div class="container">
-    <div class="section-head">
-      <div class="section-num">03</div>
-      <h2>查房模拟器</h2>
-    </div>
-    <p class="section-sub">点左边"医生说什么"，看中间业务 UI 怎么变、右边事件怎么飞出来。顶部切换场景 A / B，会发现同一句话产生的事件流完全不同。</p>
-
-    <div class="sim">
-      <div class="sim-tabs">
-        <button class="sim-tab active" data-scenario="A">
-          <span class="badge">A</span>
-          只用 KWS 事件
-        </button>
-        <button class="sim-tab" data-scenario="B">
-          <span class="badge">B</span>
-          KWS + ASR 完整事件流
-        </button>
-        <div class="sim-tab-info">
-          <span class="rec-dot" id="simModeIndicator"></span>
-          <span id="simModeText">未开始</span>
-        </div>
+    <div class="section-head"><div class="section-num">04</div><h2>查房模拟器</h2></div>
+    <p class="section-sub">左边让医生说话、或以业务端身份操作；中间是业务端 UI；右边是 WebSocket 上的消息（点开看 JSON）；底部是音频时间轴，能看到每个片段的 <code>context</code> 是怎么按时间算出来的。逻辑与服务端实现一致：引导窗口 1s，KWS 检测延迟按 0.6s 模拟。</p>
+    <div class="panel">
+      <div class="sim-bar">
+        <span class="seg-ctl" id="modeCtl">
+          <button data-mode="normal" class="active">正常会话</button>
+          <button data-mode="recording_only">只录音（准入降级）</button>
+        </span>
+        <button class="tool-btn danger" id="faultBtn" title="下一次收音频时 KWS 推理报错">模拟 KWS 故障</button>
+        <button class="tool-btn primary" id="scriptFull">▶ 剧本：一轮查房</button>
+        <button class="tool-btn primary" id="scriptRace">▶ 剧本：检测延迟竞态</button>
+        <button class="tool-btn" id="resetBtn">↺ 重置</button>
+        <span class="spacer"></span>
+        <span class="conn" id="conn"></span>
       </div>
-
       <div class="sim-grid">
-        <!-- LEFT: speak controls -->
-        <div class="sim-col">
-          <div class="sim-col-head">🎤 医生说什么</div>
-          <div class="sim-col-body">
-            <div class="speak-section">
-              <h4>床号</h4>
-              <button class="speak-btn" data-speak="bed:12床">
-                <span class="mic-icon">🎤</span>说"12床"
-              </button>
-              <button class="speak-btn" data-speak="bed:15床">
-                <span class="mic-icon">🎤</span>说"15床"
-              </button>
-              <button class="speak-btn" data-speak="cmd:next_bed">
-                <span class="mic-icon">🎤</span>说"下一床"
-              </button>
-
-              <h4>录音指令</h4>
-              <button class="speak-btn" data-speak="cmd:start_recording">
-                <span class="mic-icon">🎤</span>说"开始记录"
-              </button>
-              <button class="speak-btn" data-speak="cmd:pause_recording">
-                <span class="mic-icon">🎤</span>说"暂停记录"
-              </button>
-              <button class="speak-btn" data-speak="cmd:end_recording">
-                <span class="mic-icon">🎤</span>说"结束记录"
-              </button>
-
-              <h4>带正文（场景 B）</h4>
-              <button class="speak-btn b-only" data-speak="long:12床:今天体温正常，继续观察。" disabled>
-                <span class="mic-icon">🎤</span>"12床，今天体温…"
-              </button>
-              <button class="speak-btn b-only" data-speak="long:15床:昨晚咳嗽加重，需复查。" disabled>
-                <span class="mic-icon">🎤</span>"15床，昨晚咳嗽…"
-              </button>
-
-              <h4>剧本</h4>
-              <button class="scenario-script" data-script="quick">
-                ▶ 快速查房（4 步）
-              </button>
-
-              <button class="reset-btn" id="resetBtn">↺ 重置会话</button>
+        <div class="col">
+          <div class="col-head">医生说 / 业务端操作</div>
+          <div class="col-body" id="speakCol"></div>
+        </div>
+        <div class="col">
+          <div class="col-head">业务端 UI</div>
+          <div class="col-body">
+            <div class="biz-top">
+              <div class="pill" id="bedPill"><div class="l">当前床位（业务端视角）</div><div class="v" id="bedVal">—</div></div>
+              <div class="pill"><div class="l">录音</div><div class="rec"><span class="dot" id="recDot"></span><span id="recVal">未开始</span></div></div>
             </div>
+            <h4>查房队列 · 点击 = 医生在界面点选（发 set_context）</h4>
+            <div class="queue" id="queue"></div>
+            <div class="queue-hint"><button class="bed" id="clearBed" style="font-size:12px;padding:3px 10px">清空当前床</button></div>
+            <h4>查房记录 · 按 transcript.context 归属</h4>
+            <div class="records" id="records"></div>
           </div>
         </div>
-
-        <!-- MIDDLE: business UI -->
-        <div class="sim-col">
-          <div class="sim-col-head">📋 业务端 UI</div>
-          <div class="sim-col-body">
-            <div class="biz-status-bar">
-              <div class="status-pill bed" id="currentBedPill">
-                <div class="label">当前床位</div>
-                <div class="value" id="currentBedValue">—</div>
-              </div>
-              <div class="status-pill">
-                <div class="label">录音状态</div>
-                <div class="rec-indicator">
-                  <span class="rec-dot" id="recDot"></span>
-                  <span class="value" id="recValue" style="font-size: 14px;">未开始</span>
-                </div>
-              </div>
-            </div>
-
-            <div style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 10px;">查房队列</div>
-            <div class="beds-grid" id="bedsGrid"></div>
-
-            <div class="records-section">
-              <div class="label">查房记录</div>
-              <div id="recordsList">
-                <div class="records-empty">还没有记录。说点什么？</div>
-              </div>
-            </div>
-          </div>
+        <div class="col">
+          <div class="col-head">WebSocket 消息 · ↓ 服务端推送 · ↑ 业务端发送</div>
+          <div class="col-body stream" id="stream"></div>
         </div>
-
-        <!-- RIGHT: event stream -->
-        <div class="sim-col">
-          <div class="sim-col-head">⚡ 事件流（开发者视角）</div>
-          <div class="sim-col-body event-stream" id="eventStream">
-            <div class="stream-empty">事件还没飞起来</div>
-          </div>
+      </div>
+      <div class="tl-wrap">
+        <div class="tl-head">
+          <span class="t">音频时间轴</span>
+          <span class="legend">
+            <span><i style="background:rgba(255,255,255,.2)"></i>引导窗口（片段起点后 1s）</span>
+            <span><i style="background:var(--cyan)"></i>关键词</span>
+            <span><i style="background:var(--purple)"></i>KWS 切换</span>
+            <span><i style="background:var(--green)"></i>业务端切换</span>
+            <span><i style="background:var(--amber)"></i>contextChanged</span>
+          </span>
         </div>
+        <div class="tl" id="tl"></div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ============ 04 Scenarios Comparison ============ -->
-<section class="section" id="scenarios">
+<!-- 05 -->
+<section class="section" id="faq">
   <div class="container">
-    <div class="section-head">
-      <div class="section-num">04</div>
-      <h2>两种方案，怎么选</h2>
-    </div>
-    <p class="section-sub">已经在模拟器里试过两种场景了，这是它们各自的边界、收益和代价。</p>
-
-    <div class="compare">
-      <div class="compare-col a">
-        <div class="compare-head">
-          <span class="badge">SCENARIO A</span>
-          <h3>只输出 KWS 事件</h3>
-          <p>业务端只需实时知道床号或控制指令，不需要正文。</p>
-        </div>
-        <div class="compare-body">
-          <h4>典型用例</h4>
-          <ul style="color: var(--text-muted); padding-left: 18px; list-style: disc;">
-            <li>说"12床"→ 前端切到 12床病人页</li>
-            <li>说"下一床"→ 按队列切到下一位</li>
-            <li>说"开始记录 / 暂停记录"→ 控制录音状态</li>
-            <li>正文由其他系统处理，KWS 只打状态点</li>
-          </ul>
-
-          <h4>优点</h4>
-          <ul class="pros">
-            <li>改动最小，业务边界清楚</li>
-            <li>不要求业务端处理转写文本</li>
-            <li>适合先验证识别可靠性</li>
-            <li>KWS 失败不影响主转写链路</li>
-          </ul>
-
-          <h4>限制</h4>
-          <ul class="cons">
-            <li>无法直接生成查房正文</li>
-            <li>只解决"切状态"，不解决"说了什么"</li>
-            <li>正文归属仍需 ASR 配合</li>
-          </ul>
-        </div>
-      </div>
-
-      <div class="compare-col b">
-        <div class="compare-head">
-          <span class="badge">SCENARIO B</span>
-          <h3>KWS + ASR 完整事件流</h3>
-          <p>业务端需要实时正文，并希望系统自动把内容归属到当前床号。</p>
-        </div>
-        <div class="compare-body">
-          <h4>典型用例</h4>
-          <ul style="color: var(--text-muted); padding-left: 18px; list-style: disc;">
-            <li>"12床，今天体温正常"→ 实时显示到 12床</li>
-            <li>"15床，昨晚咳嗽加重"→ 自动切换并追加</li>
-            <li>边查房边校对、修正文本</li>
-          </ul>
-
-          <h4>优点</h4>
-          <ul class="pros">
-            <li>支持实时查房记录生成</li>
-            <li>前端可以边听边显示边改</li>
-            <li>床号切换和正文归属都可追溯</li>
-            <li>适合完整 AI 助理产品形态</li>
-          </ul>
-
-          <h4>限制</h4>
-          <ul class="cons">
-            <li>业务端需处理 partial / final / 状态切换</li>
-            <li>ASR 延迟和错误依然存在</li>
-            <li>需处理 KWS 与 ASR 的时间边界</li>
-          </ul>
-        </div>
-      </div>
-    </div>
+    <div class="section-head"><div class="section-num">05</div><h2>边界问答</h2></div>
+    <p class="section-sub">设计里每条规则都对应一个具体问题。带“在模拟器里试”的，点一下会重置模拟器并演示。</p>
+    <div class="faq" id="faqList"></div>
   </div>
 </section>
 
-<!-- ============ 05 State Machine Rules ============ -->
-<section class="section" id="rules">
+<!-- 06 -->
+<section class="section" id="status">
   <div class="container">
-    <div class="section-head">
-      <div class="section-num">05</div>
-      <h2>状态机规则</h2>
-    </div>
-    <p class="section-sub">无论场景 A 还是 B，都建议走状态机统一仲裁。每条规则下面有"试一下"按钮，看状态机如何拦截非预期的 KWS 命中。</p>
-
-    <div class="rules" id="rulesList">
-      <!-- filled by JS -->
-    </div>
-  </div>
-</section>
-
-<!-- ============ 06 Communication ============ -->
-<section class="section" id="comm">
-  <div class="container">
-    <div class="section-head">
-      <div class="section-num">06</div>
-      <h2>怎么把事件送到业务端</h2>
-    </div>
-    <p class="section-sub">实时音频上传 + 事件下行，首选 WebSocket。其他方式适合不同的解耦程度。</p>
-
-    <div class="comm-tabs">
-      <button class="comm-tab active" data-comm="ws">WebSocket（首选）</button>
-      <button class="comm-tab" data-comm="sse">SSE</button>
-      <button class="comm-tab" data-comm="mq">消息队列</button>
-      <button class="comm-tab" data-comm="poll">REST 轮询</button>
-    </div>
-
-    <div class="comm-panel active" data-panel="ws">
-      <div class="comm-info">
-        <h3>WebSocket</h3>
-        <p>同一条全双工连接里：客户端上推音频帧，服务端下推 kws.detected / state.changed / asr.partial / asr.final。延迟最低，最适合实时场景。</p>
-        <div class="when"><strong>什么时候用</strong>前端实时上传音频并接收事件，业务直接由前端驱动。</div>
+    <div class="section-head"><div class="section-num">06</div><h2>部署与验证现状</h2></div>
+    <p class="section-sub">KWS 默认关闭。<code>KWS_ENABLED=1</code> 时配置必须完整、模型必须能加载，否则服务启动失败，不静默降级。</p>
+    <div class="status-grid">
+      <div class="status-card panel ok">
+        <h3>已验证</h3>
+        <ul>
+          <li>zh-en-3M（2025-12-20）与 wenetspeech-3.3M 均检出“十二床”“十五床”“下一床”“体温”（macOS TTS 合成音频）</li>
+          <li>检测延迟约 0.5–0.9s；单 CPU 线程 RTF 约 0.006</li>
+          <li>该样本上“二床/十二床”“一床/下一床”无互相误触发</li>
+          <li>接入服务后的时间轴、context 标注、配置缺失启动失败</li>
+          <li>回归测试覆盖：槽位/事件分流、片段中途切换、set_context 校验、晚到命中、KWS 故障、只录音</li>
+        </ul>
       </div>
-      <div class="comm-diagram">
-        <div class="diag-row">
-          <div class="diag-node client">前端</div>
-          <div class="diag-arrow bidi" style="position: relative;"><span class="diag-label">音频帧 / 事件</span></div>
-          <div class="diag-node server">语音服务</div>
-        </div>
-        <div style="font-size: 11px; color: var(--text-dim); text-align: center; margin-top: 18px;">单条 WS 双向流</div>
+      <div class="status-card panel todo">
+        <h3>未验证</h3>
+        <ul>
+          <li>真实病房语音的召回与误触发（TTS 样本不能代表）</li>
+          <li>“暂停记录”在 TTS 样本上未检出，需真实录音调 <code>:增益</code> / <code>#阈值</code></li>
+          <li>多会话共享单线程 <code>kws</code> 阶段的负载：压测看 <code>/v1/live/metrics</code> 的 kws <code>wait_ms</code>；估算约 160 路实时并发前不会积压</li>
+        </ul>
+      </div>
+      <div class="status-card panel">
+        <h3>模型与依赖</h3>
+        <ul>
+          <li>推荐 <code>sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20</code>（中英混合，约 3M 参数）</li>
+          <li>备选 <code>wenetspeech-3.3M-2024-01-01</code></li>
+          <li><code>sherpa-onnx&gt;=2.0.1</code>；生成关键词表另需 <code>pypinyin</code></li>
+          <li>sherpa-onnx 不输出置信度，误触发靠逐词阈值与 2s 去重</li>
+        </ul>
       </div>
     </div>
-
-    <div class="comm-panel" data-panel="sse">
-      <div class="comm-info">
-        <h3>Server-Sent Events</h3>
-        <p>服务端单向下推事件流。音频从别的通道（HTTP 上传 / RTP 流 / 第三方系统）进入，业务系统只接收结果。简单可靠，浏览器原生支持。</p>
-        <div class="when"><strong>什么时候用</strong>音频不通过同一连接上传，业务只关心结果事件。</div>
-      </div>
-      <div class="comm-diagram">
-        <div class="diag-row" style="margin-bottom: 18px;">
-          <div class="diag-node client">音频源</div>
-          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-dim);">音频帧</span></div>
-          <div class="diag-node server">语音服务</div>
-        </div>
-        <div class="diag-row">
-          <div class="diag-node server">语音服务</div>
-          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-dim);">SSE 事件</span></div>
-          <div class="diag-node client">业务端</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="comm-panel" data-panel="mq">
-      <div class="comm-info">
-        <h3>消息队列</h3>
-        <p>语音服务发事件到 MQ（Kafka / NATS / RabbitMQ），业务系统作为消费者订阅。彻底解耦，可多消费者，可重放。代价是延迟和复杂度。</p>
-        <div class="when"><strong>什么时候用</strong>后端服务之间解耦，多个下游同时消费事件，需要审计和重放。</div>
-      </div>
-      <div class="comm-diagram">
-        <div class="diag-row">
-          <div class="diag-node server">语音服务</div>
-          <div class="diag-arrow"></div>
-          <div class="diag-node queue">MQ</div>
-          <div class="diag-arrow"></div>
-          <div class="diag-node client">业务 A</div>
-        </div>
-        <div class="diag-row" style="margin-top: 14px; padding-left: 60%;">
-          <div class="diag-arrow" style="flex: none; width: 30px;"></div>
-          <div class="diag-node client">业务 B</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="comm-panel" data-panel="poll">
-      <div class="comm-info">
-        <h3>REST 轮询</h3>
-        <p>业务端定期 GET <code style="font-family: var(--mono); color: var(--amber);">/events?since=seq</code>。延迟由轮询间隔决定，对实时不友好，浪费请求量。</p>
-        <div class="when" style="border-color: var(--amber);"><strong style="color: var(--amber);">不推荐用于实时场景</strong>仅当你只需事后查询历史结果时考虑。</div>
-      </div>
-      <div class="comm-diagram">
-        <div class="diag-row">
-          <div class="diag-node client">业务端</div>
-          <div class="diag-arrow"><span class="diag-label" style="position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--amber);">每 N 秒轮询</span></div>
-          <div class="diag-node server">语音服务</div>
-        </div>
-        <div style="font-size: 12px; color: var(--amber); text-align: center; margin-top: 18px;">⚠ 延迟高，请求浪费</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ============ 07 Decision ============ -->
-<section class="section" id="decision">
-  <div class="container">
-    <div class="section-head">
-      <div class="section-num">07</div>
-      <h2>该选哪个？</h2>
-    </div>
-    <p class="section-sub">回答两个问题，给你一个推荐方案。</p>
-
-    <div class="decision">
-      <!-- Step 1 -->
-      <div class="decision-step active" data-step="1">
-        <div class="decision-q">业务端需要实时拿到医生说的正文吗？</div>
-        <div class="decision-hint">"正文"指的是医生这一句话原原本本的转写内容，不只是"切到 12床"这种状态。</div>
-        <div class="decision-options">
-          <button class="decision-btn" data-answer="1:no">不需要，只要切状态就行</button>
-          <button class="decision-btn" data-answer="1:yes">需要，要实时显示正文</button>
-        </div>
-      </div>
-
-      <!-- Step 2 (after no) -->
-      <div class="decision-step" data-step="2-no">
-        <div class="decision-q">已有的 ASR 主链路允许被影响吗？</div>
-        <div class="decision-hint">如果新 KWS 模块挂了，会不会影响原本的会议转写？</div>
-        <div class="decision-options">
-          <button class="decision-btn" data-answer="2-no:safe">不能影响主链路</button>
-          <button class="decision-btn" data-answer="2-no:ok">可以一起改</button>
-        </div>
-      </div>
-
-      <!-- Step 2 (after yes) -->
-      <div class="decision-step" data-step="2-yes">
-        <div class="decision-q">能接受业务端处理 partial / final 吗？</div>
-        <div class="decision-hint">需要前端区分临时转写和最终转写、按床号归属、支持人工修正。</div>
-        <div class="decision-options">
-          <button class="decision-btn" data-answer="2-yes:yes">可以，前端有能力</button>
-          <button class="decision-btn" data-answer="2-yes:no">不行，前端能力有限</button>
-        </div>
-      </div>
-
-      <!-- Results -->
-      <div class="decision-step" data-step="result-a">
-        <div class="decision-result">
-          <div class="badge">推荐方案</div>
-          <h3>场景 A：只输出 KWS 事件</h3>
-          <p>第一版用最小改动验证实时床号识别是否有业务价值。事件 = kws.detected + state.changed，业务端简单消费。</p>
-          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">通信选 <strong style="color: var(--cyan);">WebSocket</strong>，前端直接上音频、收事件。</p>
-        </div>
-        <button class="decision-restart">↺ 重新选择</button>
-      </div>
-
-      <div class="decision-step" data-step="result-a-cautious">
-        <div class="decision-result">
-          <div class="badge">推荐方案</div>
-          <h3>场景 A + 旁路部署</h3>
-          <p>主转写链路保持不变。KWS 作为旁路服务，通过<strong style="color: var(--cyan);">消息队列</strong>发事件给业务端。失败时退化为 KWS 不可用，但不影响转写。</p>
-          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">先跑一段时间，确认稳定后再考虑升级到场景 B。</p>
-        </div>
-        <button class="decision-restart">↺ 重新选择</button>
-      </div>
-
-      <div class="decision-step" data-step="result-b">
-        <div class="decision-result">
-          <div class="badge">推荐方案</div>
-          <h3>场景 B：KWS + ASR 完整事件流</h3>
-          <p>KWS 切 current_bed，ASR 出正文，状态机把正文归属到当前床号。前端实时展示、人工校对。</p>
-          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">通信选 <strong style="color: var(--purple);">WebSocket</strong>，并设计好 partial / final 的 UI 处理。</p>
-        </div>
-        <button class="decision-restart">↺ 重新选择</button>
-      </div>
-
-      <div class="decision-step" data-step="result-b-fallback">
-        <div class="decision-result" style="border-color: var(--amber); background: linear-gradient(135deg, var(--amber-bg), var(--cyan-bg));">
-          <div class="badge" style="color: var(--amber); background: var(--amber-bg);">建议先做场景 A</div>
-          <h3>暂不上场景 B</h3>
-          <p>前端目前不具备处理 partial / final 的能力，强行上场景 B 容易做出不稳定的体验。</p>
-          <p style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">先用场景 A 把"切床号"做扎实，等前端工程到位再升级。</p>
-        </div>
-        <button class="decision-restart">↺ 重新选择</button>
-      </div>
-    </div>
+    <div class="env panel"><span class="c"># .env：启用 KWS</span>
+<span class="k">KWS_ENABLED</span>=1
+<span class="k">KWS_TOKENS_PATH</span>=/app/models/kws/tokens.txt
+<span class="k">KWS_ENCODER_PATH</span>=/app/models/kws/encoder.onnx
+<span class="k">KWS_DECODER_PATH</span>=/app/models/kws/decoder.onnx
+<span class="k">KWS_JOINER_PATH</span>=/app/models/kws/joiner.onnx
+<span class="k">KWS_KEYWORDS_FILE</span>=/app/models/kws/keywords.txt   <span class="c"># python scripts/build_kws_keywords.py --tokens tokens.txt raw.txt keywords.txt</span>
+<span class="k">KWS_PROVIDER</span>=cpu
+<span class="k">KWS_NUM_THREADS</span>=1
+<span class="k">KWS_CONTEXT_SLOTS</span>=bed                        <span class="c"># 逗号分隔，例如 bed,ward</span>
+<span class="k">KWS_DUPLICATE_COOLDOWN_MS</span>=2000</div>
   </div>
 </section>
 
 <footer>
-  <div class="container">
-    <p>声纹识别会议系统 · 实时 KWS 事件交互场景</p>
-    <p style="margin-top: 8px;">原始 Markdown 文档：<a href="./realtime-kws-event-scenarios.md">realtime-kws-event-scenarios.md</a></p>
-  </div>
+  <div class="container">对应 markdown：<code>docs/realtime-kws-event-scenarios.md</code> · 协议摘要：<code>docs/api.md</code> · 实现：<code>app/services/kws.py</code>、<code>app/services/live_session.py</code></div>
 </footer>
 
 <script>
-/* ============================================================
- * State + Event Bus
- * ============================================================ */
-const BED_QUEUE = ['10床', '11床', '12床', '13床', '14床', '15床'];
-const SESSION_ID = 'round-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-001';
+'use strict';
 
-const state = {
-  scenario: 'A',
-  currentBed: null,
-  recording: 'stopped',     // 'recording' | 'paused' | 'stopped'
-  records: [],              // [{bed, text, partial, id}]
-  events: [],
-  seq: 0,
-  ts: 0,
-  busy: false,
-  lastBedAt: {},            // for de-dup rule
+const $ = (sel) => document.querySelector(sel);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* =============== 01 分工 =============== */
+const ROLE_CASES = [
+  { label: '说“十二床，今天体温正常”', kws: '命中 <code>@bed:12床</code>，推 <code>kws.detected</code>', ctx: '<code>bed</code> 是槽位：在关键词起点切换为 12床，推 <code>state.changed</code>；这句话的 transcript 带 <code>context.bed=12床</code>', biz: '收到 <code>state.changed</code> 切换 UI；正文按 context 归属，不用自己对时间', note: '槽位值是“说出口的值”，服务端不需要任何业务知识就能维护。' },
+  { label: '说“下一床”', kws: '命中 <code>@command:next_bed</code>，推 <code>kws.detected</code>', ctx: '不在槽位里，<b>不动上下文</b>', biz: '按查房队列算出下一床，发 <code>set_context</code> 回写', note: '“下一床”是哪一床取决于查房队列，这是业务知识，所以由业务端解释后回写，服务端只负责记账。' },
+  { label: '说“暂停记录”', kws: '命中 <code>@command:pause_recording</code>', ctx: '不动上下文', biz: '决定是否暂停（可二次确认），发 <code>pause_recording</code> 控制消息', note: '服务端不会因关键词自动暂停：指令是否执行、是否需要确认，都是业务端的事。' },
+  { label: '说“开始查体”', kws: '命中 <code>@section:查体</code>', ctx: '<code>section</code> 未配置为槽位，只推事件', biz: '在记录里打一个段落标记', note: '同一个类别，配进 KWS_CONTEXT_SLOTS 就变成槽位（会标到 transcript 上），不配就只是事件。' },
+  { label: '医生在界面点选 16床', kws: '<span style="color:var(--dim)">不参与</span>', ctx: '收到 <code>set_context</code>，在当前音频位置切换为 16床，推 <code>state.changed(source=client)</code>', biz: '发 <code>{"type":"set_context","slot":"bed","value":"16床"}</code>', note: '业务端是上下文的第二个来源，可以补设、纠正或清空（value=null）。' },
+  { label: '一句话中途说“十六床”', kws: '命中 <code>@bed:16床</code>（在片段起点 2.8s 后）', ctx: '切换为 16床；这句 transcript 仍按起点算 context，并标 <code>contextChanged=true</code>', biz: '把这句标成“待确认”，交给人工', note: '服务端不切句子，只如实告诉业务端“这段话中途换了上下文”。' },
+];
+function renderRoles(i) {
+  const c = ROLE_CASES[i];
+  document.querySelectorAll('#rolePicker .chip').forEach((b, j) => b.classList.toggle('active', i === j));
+  const set = (id, html) => {
+    const el = $(id); el.querySelector('.act').innerHTML = html;
+    el.classList.toggle('off', html.includes('不参与'));
+    el.classList.toggle('on', !html.includes('不参与'));
+  };
+  set('#roleKws', c.kws); set('#roleCtx', c.ctx); set('#roleBiz', c.biz);
+  $('#roleNote').innerHTML = c.note;
+}
+$('#rolePicker').innerHTML = ROLE_CASES.map((c, i) => `<button class="chip" data-i="${i}">${c.label}</button>`).join('');
+$('#rolePicker').addEventListener('click', (e) => { const b = e.target.closest('.chip'); if (b) renderRoles(+b.dataset.i); });
+renderRoles(0);
+
+/* =============== 02 关键词表 =============== */
+// 演示用小字典：pypinyin INITIALS / FINALS_TONE（strict=False）。
+const PINYIN = {
+  '十': ['sh', 'í'], '一': ['y', 'ī'], '二': ['', 'èr'], '三': ['s', 'ān'], '四': ['s', 'ì'], '五': ['w', 'ǔ'],
+  '六': ['l', 'iù'], '七': ['q', 'ī'], '八': ['b', 'ā'], '九': ['j', 'iǔ'], '床': ['ch', 'uáng'], '下': ['x', 'ià'],
+  '病': ['b', 'ìng'], '区': ['q', 'ū'], '暂': ['z', 'àn'], '停': ['t', 'íng'], '记': ['j', 'ì'], '录': ['l', 'ù'],
+  '开': ['k', 'āi'], '始': ['sh', 'ǐ'], '查': ['ch', 'á'], '体': ['t', 'ǐ'], '温': ['w', 'ēn'], '继': ['j', 'ì'],
+  '续': ['x', 'ù'], '结': ['j', 'ié'], '束': ['sh', 'ù'], '号': ['h', 'ào'],
 };
+const LINE_RE = /^([^:#@]+?)\s*((?:\s*[:#][0-9.]+)*)\s*@([a-z][a-z0-9_]*:\S.*)$/;
+const LABEL_RE = /^([a-z][a-z0-9_]*):(.+)$/;
+const SLOT_RE = /^[a-z][a-z0-9_]*$/;
+$('#kwIn').value = ['十二床 @bed:12床', '十五床 @bed:15床', '三病区 @ward:三病区', '下一床 #0.3 @command:next_bed',
+  '暂停记录 :1.5 @command:pause_recording', '开始查体 @section:查体', '12床 @bed:12床', '体温'].join('\n');
 
-const FIELD_DOCS = {
-  type: { title: 'type', desc: '事件类型。kws.detected 表示原始关键词命中，state.* 表示状态机决策结果，asr.* 表示语音转写片段。', example: '"kws.detected"' },
-  session_id: { title: 'session_id', desc: '一次实时查房会话的 ID。同一次查房的所有事件共享同一个 session_id，便于服务端拼接、客户端归类。', example: '"round-20260508-001"' },
-  seq: { title: 'seq', desc: '会话内递增序号。前端用它去重和排序——网络抖动可能让事件乱序到达。', example: '18' },
-  ts_ms: { title: 'ts_ms', desc: '相对本次音频开始的时间，毫秒。用于把事件对齐到音频时间轴。', example: '1840' },
-  source: { title: 'source', desc: '事件来源。可能是 kws、asr、state_machine。前端可据此决定是否在 UI 上区分。', example: '"kws"' },
-  category: { title: 'category', desc: 'KWS 事件特有。bed 表示床号命中，command 表示指令命中，marker 表示用户自定义标记。', example: '"bed"' },
-  keyword: { title: 'keyword', desc: '原始命中的关键词，可能是口语化的"十二床"。', example: '"十二床"' },
-  normalized: { title: 'normalized', desc: '归一化后的业务值。"十二床" → "12床"，"下一床" → "next_bed"。业务端只关心这个值。', example: '"12床"' },
-  score: { title: 'score', desc: 'KWS 置信度，0–1。业务端可据此做阈值过滤，状态机也会用它做仲裁。', example: '0.86' },
-  start_ms: { title: 'start_ms', desc: '关键词在音频中的起始时间，毫秒。用于 UI 高亮、回听定位。', example: '1520' },
-  end_ms: { title: 'end_ms', desc: '关键词在音频中的结束时间，毫秒。', example: '1840' },
-};
-
-/* ============================================================
- * Field inspector
- * ============================================================ */
-const fieldInfoEl = document.getElementById('fieldInfo');
-document.querySelectorAll('#jsonBlock .field').forEach(el => {
-  el.addEventListener('click', () => {
-    document.querySelectorAll('#jsonBlock .field').forEach(f => f.classList.remove('active'));
-    el.classList.add('active');
-    const k = el.dataset.field;
-    const doc = FIELD_DOCS[k];
-    if (!doc) return;
-    fieldInfoEl.innerHTML = `
-      <h4>${doc.title}</h4>
-      <p>${doc.desc}</p>
-      <div class="example">${doc.example}</div>
-    `;
-  });
-});
-
-/* ============================================================
- * Simulator: render
- * ============================================================ */
-const els = {
-  tabs: document.querySelectorAll('.sim-tab'),
-  modeIndicator: document.getElementById('simModeIndicator'),
-  modeText: document.getElementById('simModeText'),
-  currentBedPill: document.getElementById('currentBedPill'),
-  currentBedValue: document.getElementById('currentBedValue'),
-  recDot: document.getElementById('recDot'),
-  recValue: document.getElementById('recValue'),
-  bedsGrid: document.getElementById('bedsGrid'),
-  recordsList: document.getElementById('recordsList'),
-  eventStream: document.getElementById('eventStream'),
-  bOnlyBtns: document.querySelectorAll('.speak-btn.b-only'),
-};
-
-function renderBeds() {
-  els.bedsGrid.innerHTML = BED_QUEUE.map(b => {
-    const cls = b === state.currentBed ? 'active' : 'queued';
-    return `<div class="bed-card ${cls}">${b}</div>`;
-  }).join('');
-}
-
-function renderStatus() {
-  if (state.currentBed) {
-    els.currentBedPill.classList.add('active');
-    els.currentBedValue.textContent = state.currentBed;
-  } else {
-    els.currentBedPill.classList.remove('active');
-    els.currentBedValue.textContent = '—';
-  }
-
-  els.recDot.className = 'rec-dot';
-  if (state.recording === 'recording') {
-    els.recDot.classList.add('recording');
-    els.recValue.textContent = '录音中';
-  } else if (state.recording === 'paused') {
-    els.recDot.classList.add('paused');
-    els.recValue.textContent = '已暂停';
-  } else {
-    els.recValue.textContent = '未开始';
-  }
-}
-
-function renderRecords() {
-  if (state.records.length === 0) {
-    els.recordsList.innerHTML = '<div class="records-empty">还没有记录。说点什么？</div>';
-    return;
-  }
-  els.recordsList.innerHTML = state.records.map(r => {
-    const cls = r.partial ? 'record-item partial' : 'record-item';
-    return `<div class="${cls}" data-id="${r.id}">
-      <span class="record-bed-tag">${r.bed || '未归属'}</span>${escapeHTML(r.text)}
-    </div>`;
-  }).join('');
-  // scroll to bottom
-  els.recordsList.scrollTop = els.recordsList.scrollHeight;
-}
-
-function escapeHTML(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
-/* ============================================================
- * Event emission
- * ============================================================ */
-function pushEvent(evt, opts = {}) {
-  state.events.unshift(evt);
-  // Limit in DOM to avoid runaway growth
-  if (state.events.length > 50) state.events.length = 50;
-
-  const empty = els.eventStream.querySelector('.stream-empty');
-  if (empty) empty.remove();
-
-  const card = document.createElement('div');
-  const typeKind = evt.type.startsWith('kws.') ? 'kws'
-                : evt.type.startsWith('state.') ? 'state'
-                : evt.type.startsWith('asr.') ? 'asr' : 'kws';
-  card.className = 'event-card ' + typeKind + (opts.blocked ? ' blocked' : '');
-
-  const fields = Object.entries(evt)
-    .filter(([k]) => !['type', 'session_id'].includes(k))
-    .map(([k, v]) => `<span class="k">${k}</span><span class="v">${typeof v === 'string' ? '"' + escapeHTML(v) + '"' : v}</span>`)
-    .join('');
-
-  card.innerHTML = `
-    <div class="event-head">
-      <span class="event-type">${evt.type}</span>
-      <span class="event-meta">seq ${evt.seq} · ${evt.ts_ms}ms</span>
-    </div>
-    <div class="event-body">${fields}</div>
-    ${opts.blockReason ? `<div class="event-block-reason">⛔ ${opts.blockReason}</div>` : ''}
-  `;
-  els.eventStream.insertBefore(card, els.eventStream.firstChild);
-
-  // Update mode indicator
-  els.modeIndicator.className = 'rec-dot recording';
-  els.modeText.textContent = '事件 #' + evt.seq;
-  clearTimeout(pushEvent._t);
-  pushEvent._t = setTimeout(() => {
-    els.modeIndicator.className = 'rec-dot';
-    els.modeText.textContent = '空闲';
-  }, 800);
-}
-
-function nextSeq() { state.seq += 1; return state.seq; }
-function nextTs(adv = 100) { state.ts += adv; return state.ts; }
-
-function buildKwsEvent(category, keyword, normalized, score) {
-  return {
-    type: 'kws.detected',
-    session_id: SESSION_ID,
-    seq: nextSeq(),
-    ts_ms: nextTs(200),
-    source: 'kws',
-    category,
-    keyword,
-    normalized,
-    score: +score.toFixed(2),
-  };
-}
-
-function buildStateEvent(type, payload) {
-  return {
-    type,
-    session_id: SESSION_ID,
-    seq: nextSeq(),
-    ts_ms: nextTs(80),
-    source: 'state_machine',
-    ...payload,
-  };
-}
-
-function buildAsrEvent(kind, bed, text) {
-  return {
-    type: 'asr.' + kind,
-    session_id: SESSION_ID,
-    seq: nextSeq(),
-    ts_ms: nextTs(150),
-    source: 'asr',
-    bed,
-    text,
-  };
-}
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-/* ============================================================
- * Speak handlers (state machine logic lives here)
- * ============================================================ */
-async function speakBed(bed, opts = {}) {
-  if (state.busy) return;
-  state.busy = true;
-  setBtnsDisabled(true);
-
-  const score = opts.score ?? (0.78 + Math.random() * 0.15);
-  const kw = bed.replace('床', '');
-  const kwSpoken = ({'10':'十','11':'十一','12':'十二','13':'十三','14':'十四','15':'十五'}[kw] || kw) + '床';
-  const evt = buildKwsEvent('bed', kwSpoken, bed, score);
-  pushEvent(evt);
-  await sleep(350);
-
-  // State-machine arbitration
-  if (score < 0.6) {
-    const block = buildStateEvent('state.bed_change_blocked', { reason: 'score_below_threshold', score: evt.score });
-    pushEvent(block, { blocked: true, blockReason: 'score 低于阈值，未切换' });
-    state.busy = false; setBtnsDisabled(false);
-    return;
-  }
-  if (!BED_QUEUE.includes(bed)) {
-    const block = buildStateEvent('state.bed_change_blocked', { reason: 'bed_not_in_queue', bed });
-    pushEvent(block, { blocked: true, blockReason: bed + ' 不在当前查房队列' });
-    state.busy = false; setBtnsDisabled(false);
-    return;
-  }
-  const last = state.lastBedAt[bed] || 0;
-  if (Date.now() - last < 2000 && state.currentBed === bed) {
-    const block = buildStateEvent('state.bed_change_blocked', { reason: 'duplicate_within_2s', bed });
-    pushEvent(block, { blocked: true, blockReason: '2 秒内重复命中同一床号' });
-    state.busy = false; setBtnsDisabled(false);
-    return;
-  }
-
-  state.currentBed = bed;
-  state.lastBedAt[bed] = Date.now();
-  pushEvent(buildStateEvent('state.current_bed_changed', {
-    current_bed: bed, reason: 'kws.detected', confidence: evt.score,
-  }));
-  renderBeds(); renderStatus();
-
-  state.busy = false; setBtnsDisabled(false);
-}
-
-async function speakCommand(cmd) {
-  if (state.busy) return;
-  state.busy = true;
-  setBtnsDisabled(true);
-
-  const labels = {
-    next_bed: { kw: '下一床', label: '下一床' },
-    start_recording: { kw: '开始记录', label: '开始记录' },
-    pause_recording: { kw: '暂停记录', label: '暂停记录' },
-    end_recording: { kw: '结束记录', label: '结束记录' },
-  };
-  const meta = labels[cmd];
-  const score = 0.78 + Math.random() * 0.15;
-  pushEvent(buildKwsEvent('command', meta.kw, cmd, score));
-  await sleep(350);
-
-  if (cmd === 'next_bed') {
-    if (!state.currentBed) {
-      pushEvent(buildStateEvent('state.command_blocked', { reason: 'no_current_bed', command: cmd }), { blocked: true, blockReason: '当前没有 current_bed，无法判断"下一床"' });
+function renderLab() {
+  const raw = $('#slotsIn').value.split(',').map((s) => s.trim()).filter(Boolean);
+  const slots = [...new Set(raw)];
+  const bad = slots.filter((s) => !SLOT_RE.test(s));
+  $('#slotsErr').textContent = bad.length ? `非法槽位名：${bad.join('、')}（服务启动会失败）` : '';
+  const rows = [];
+  $('#kwIn').value.split('\n').forEach((line) => {
+    line = line.trim();
+    if (!line || line.startsWith('#')) return;
+    const m = LINE_RE.exec(line);
+    if (!m) {
+      rows.push(`<tr><td class="mono">${esc(line)}</td><td colspan="3"><span class="tag bad">格式错误</span> 缺少 <code>@类别:值</code>，生成脚本拒绝；手写成无冒号标签时运行时按 <code>marker</code> 只推事件</td></tr>`);
+      return;
+    }
+    const text = m[1].replace(/\s+/g, '');
+    const missing = [...text].filter((ch) => !PINYIN[ch]);
+    const label = m[3].trim();
+    const lm = LABEL_RE.exec(label);
+    const cat = lm[1], val = lm[2].trim();
+    let tokCell;
+    if (missing.length) {
+      const nonHan = missing.filter((ch) => !/[一-鿿]/.test(ch));
+      tokCell = `<span class="tag bad">不在词表</span> <span class="tok">${esc(missing.join(' '))}</span>` +
+        (nonHan.length ? `<div class="tok" style="margin-top:4px">关键词要写读音对应的汉字，如“十二床”</div>` : `<div class="tok" style="margin-top:4px">演示字典没有这个字</div>`);
     } else {
-      const idx = BED_QUEUE.indexOf(state.currentBed);
-      const next = BED_QUEUE[idx + 1];
-      if (!next) {
-        pushEvent(buildStateEvent('state.command_blocked', { reason: 'queue_end', command: cmd }), { blocked: true, blockReason: '已经是队列最后一床' });
-      } else {
-        state.currentBed = next;
-        pushEvent(buildStateEvent('state.current_bed_changed', {
-          current_bed: next, reason: 'next_bed', confidence: score.toFixed(2),
-        }));
-      }
+      const toks = [...text].flatMap((ch) => PINYIN[ch].filter(Boolean));
+      const opts = m[2].split(/\s+/).filter(Boolean).join(' ');
+      tokCell = `<span class="tok">${esc([toks.join(' '), opts, '@' + label].filter(Boolean).join(' '))}</span>`;
     }
-  } else if (cmd === 'start_recording') {
-    state.recording = 'recording';
-    pushEvent(buildStateEvent('state.recording_changed', { recording: 'recording' }));
-  } else if (cmd === 'pause_recording') {
-    if (state.recording !== 'recording') {
-      pushEvent(buildStateEvent('state.command_blocked', { reason: 'not_recording', command: cmd }), { blocked: true, blockReason: '当前不在录音中，无需暂停' });
-    } else {
-      state.recording = 'paused';
-      pushEvent(buildStateEvent('state.recording_changed', { recording: 'paused' }));
-    }
-  } else if (cmd === 'end_recording') {
-    state.recording = 'stopped';
-    pushEvent(buildStateEvent('state.recording_changed', { recording: 'stopped', requires_confirm: true }));
-  }
-
-  renderBeds(); renderStatus();
-  state.busy = false; setBtnsDisabled(false);
-}
-
-async function speakLong(bed, text) {
-  if (state.busy) return;
-  if (state.scenario !== 'B') return;
-  state.busy = true;
-  setBtnsDisabled(true);
-
-  // 1) KWS bed hit
-  const score = 0.82 + Math.random() * 0.1;
-  const kwSpoken = ({'10':'十','11':'十一','12':'十二','13':'十三','14':'十四','15':'十五'}[bed.replace('床','')] || '') + '床';
-  pushEvent(buildKwsEvent('bed', kwSpoken, bed, score));
-  await sleep(300);
-
-  // 2) state.current_bed_changed
-  state.currentBed = bed;
-  pushEvent(buildStateEvent('state.current_bed_changed', {
-    current_bed: bed, reason: 'kws.detected', confidence: +score.toFixed(2),
-  }));
-  renderBeds(); renderStatus();
-  await sleep(250);
-
-  // 3) ASR partial events (progressive transcription)
-  const recId = 'rec-' + Date.now();
-  const recordEntry = { id: recId, bed, text: '', partial: true };
-  state.records.push(recordEntry);
-
-  const segments = makeProgressiveSegments(text);
-  for (const seg of segments) {
-    pushEvent(buildAsrEvent('partial', bed, seg));
-    recordEntry.text = seg;
-    renderRecords();
-    await sleep(420);
-  }
-
-  // 4) ASR final
-  pushEvent(buildAsrEvent('final', bed, text));
-  recordEntry.text = text;
-  recordEntry.partial = false;
-  renderRecords();
-
-  state.busy = false; setBtnsDisabled(false);
-}
-
-function makeProgressiveSegments(text) {
-  // Generate 3-4 progressively-longer prefixes that look natural
-  const len = text.length;
-  if (len < 6) return [text];
-  return [
-    text.slice(0, Math.ceil(len * 0.3)),
-    text.slice(0, Math.ceil(len * 0.6)),
-    text.slice(0, Math.ceil(len * 0.85)),
-  ];
-}
-
-function setBtnsDisabled(disabled) {
-  document.querySelectorAll('.speak-btn, .scenario-script, .reset-btn').forEach(b => {
-    if (disabled) {
-      if (!b.classList.contains('b-only') || state.scenario === 'B') b.disabled = true;
-    } else {
-      if (b.classList.contains('b-only')) {
-        b.disabled = state.scenario !== 'B';
-      } else {
-        b.disabled = false;
-      }
-    }
+    const isSlot = !bad.length && slots.includes(cat);
+    const behave = isSlot
+      ? `<span class="tag slot">上下文槽位</span><div class="tok" style="margin-top:4px">kws.detected + state.changed，标到 transcript.context.${esc(cat)}</div>`
+      : `<span class="tag event">只推事件</span><div class="tok" style="margin-top:4px">kws.detected，由业务端解释</div>`;
+    rows.push(`<tr><td class="mono">${esc(line)}</td><td>${tokCell}</td><td class="mono">${esc(cat)}<br><span style="color:var(--muted)">${esc(val)}</span></td><td>${behave}</td></tr>`);
   });
+  $('#kwOut').innerHTML = rows.join('') || '<tr><td colspan="4" class="empty">没有关键词</td></tr>';
 }
+$('#slotsIn').addEventListener('input', renderLab);
+$('#kwIn').addEventListener('input', renderLab);
+renderLab();
 
-/* ============================================================
- * Scripts
- * ============================================================ */
-const SCRIPTS = {
-  quick: {
-    A: [
-      { kind: 'cmd', val: 'start_recording', delay: 600 },
-      { kind: 'bed', val: '12床', delay: 800 },
-      { kind: 'cmd', val: 'next_bed', delay: 800 },
-      { kind: 'cmd', val: 'pause_recording', delay: 800 },
-    ],
-    B: [
-      { kind: 'cmd', val: 'start_recording', delay: 600 },
-      { kind: 'long', val: ['12床', '今天体温正常，继续观察。'], delay: 800 },
-      { kind: 'long', val: ['15床', '昨晚咳嗽加重，需复查。'], delay: 1000 },
-      { kind: 'cmd', val: 'end_recording', delay: 800 },
-    ],
-  },
-};
-
-async function runScript(name) {
-  const seq = SCRIPTS[name][state.scenario];
-  for (const step of seq) {
-    if (step.kind === 'bed') await speakBed(step.val);
-    else if (step.kind === 'cmd') await speakCommand(step.val);
-    else if (step.kind === 'long') await speakLong(step.val[0], step.val[1]);
-    await sleep(step.delay);
-  }
-}
-
-/* ============================================================
- * Wire up controls
- * ============================================================ */
-els.tabs.forEach(t => t.addEventListener('click', () => {
-  els.tabs.forEach(x => x.classList.remove('active'));
-  t.classList.add('active');
-  state.scenario = t.dataset.scenario;
-  els.bOnlyBtns.forEach(b => b.disabled = state.scenario !== 'B');
-}));
-
-document.querySelectorAll('.speak-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const v = btn.dataset.speak;
-    if (v.startsWith('bed:')) speakBed(v.slice(4));
-    else if (v.startsWith('cmd:')) speakCommand(v.slice(4));
-    else if (v.startsWith('long:')) {
-      const parts = v.slice(5).split(':');
-      speakLong(parts[0], parts.slice(1).join(':'));
-    }
-  });
-});
-
-document.querySelectorAll('.scenario-script').forEach(btn => {
-  btn.addEventListener('click', () => runScript(btn.dataset.script));
-});
-
-document.getElementById('resetBtn').addEventListener('click', () => {
-  state.currentBed = null;
-  state.recording = 'stopped';
-  state.records = [];
-  state.events = [];
-  state.seq = 0;
-  state.ts = 0;
-  state.lastBedAt = {};
-  els.eventStream.innerHTML = '<div class="stream-empty">事件还没飞起来</div>';
-  renderBeds();
-  renderStatus();
-  renderRecords();
-});
-
-/* Initial render */
-renderBeds();
-renderStatus();
-renderRecords();
-
-/* ============================================================
- * State machine rules (with try buttons)
- * ============================================================ */
-const RULES = [
-  {
-    n: 1, title: '分数低于阈值',
-    desc: 'KWS 给的 score 低于业务阈值时，状态机不切换状态。',
-    tryLabel: '说"12床"但 score = 0.42',
-    run: (resultEl) => simulate({ kind: 'bed', val: '12床', score: 0.42 }, 'score 低于阈值（0.6）', 'block', resultEl),
-  },
-  {
-    n: 2, title: '床号不在当前队列',
-    desc: '命中了一个不在本次查房病区的床号，不自动切换。',
-    tryLabel: '说"99床"',
-    run: (resultEl) => simulate({ kind: 'bed', val: '99床', score: 0.85 }, '99床 不在当前队列', 'block', resultEl),
-  },
-  {
-    n: 3, title: '2 秒内重复命中',
-    desc: '同一床号 2 秒内多次命中只算一次，避免抖动。',
-    tryLabel: '连续两次说"12床"',
-    run: async (resultEl) => {
-      delete state.lastBedAt['12床'];
-      if (state.currentBed === '12床') { state.currentBed = null; renderBeds(); renderStatus(); }
-      await simulate({ kind: 'bed', val: '12床', score: 0.85 }, '第一次 → 切换', 'allow', resultEl, false);
-      await sleep(500);
-      await simulate({ kind: 'bed', val: '12床', score: 0.85 }, '第二次 500ms 内 → 拦截', 'block', resultEl, true);
+/* =============== 03 消息 =============== */
+const EVENTS = {
+  'kws.detected': {
+    dir: '↓', json: { type: 'kws.detected', session_id: 'round-20261030-001', seq: 18, ts_ms: 2100, source: 'kws', category: 'bed', value: '12床', start_ms: 1100, end_ms: 1520 },
+    when: '每次命中都推，不管类别；同一 类别:值 在 2s 冷却内只推一次。',
+    fields: {
+      type: '事件类型。原始命中固定为 kws.detected。',
+      session_id: '会话 ID：连接时用 ?session_id= 指定，缺省由服务端生成 live-<uuid>。',
+      seq: '会话内递增序号，kws.detected 与 state.changed 共用，用于排序和去重。',
+      ts_ms: '检测到时已收到的音频位置。比 end_ms 晚 0.5–0.9s，这是 KWS 的检测延迟。',
+      source: '事件来源，这里固定为 kws。',
+      category: '标签冒号前的类别。在 KWS_CONTEXT_SLOTS 里就是槽位，否则只推事件。',
+      value: '标签冒号后的值，原样返回（例如 12床、next_bed、查体）。',
+      start_ms: '关键词在音频中的起点，由 token 时间戳换算；拿不到时为 null。',
+      end_ms: '关键词在音频中的终点。',
     },
   },
-  {
-    n: 4, title: '"下一床"依赖上下文',
-    desc: '没有 current_bed 时，"下一床"指令无意义，直接拦截。',
-    tryLabel: '没有 current_bed 时说"下一床"',
-    run: (resultEl) => {
-      const had = state.currentBed;
-      state.currentBed = null;
-      renderBeds(); renderStatus();
-      return simulate({ kind: 'cmd', val: 'next_bed' }, '没有 current_bed', 'block', resultEl, false, () => {
-        if (had) { state.currentBed = had; renderBeds(); renderStatus(); }
-      });
+  'state.changed': {
+    dir: '↓', json: { type: 'state.changed', session_id: 'round-20261030-001', seq: 19, ts_ms: 1100, source: 'kws', slot: 'bed', value: '12床', previous: null },
+    when: '只在槽位的当前值（时间上最晚的一次设置）真正改变时推送；重复说同一床号、重复设置都不推。',
+    fields: {
+      type: '槽位当前值变化。所有槽位共用这一个事件类型，用 slot 区分。',
+      session_id: '同 kws.detected。',
+      seq: '与 kws.detected 共用的递增序号。',
+      ts_ms: '生效时刻：KWS 来源取关键词起点 start_ms；client 来源取收到 set_context 时的音频位置。',
+      source: 'kws（说出来的）或 client（业务端 set_context）。',
+      slot: '槽位名，例如 bed、ward。',
+      value: '新值；null 表示被业务端清空。',
+      previous: '变化前的当前值。',
     },
   },
-  {
-    n: 5, title: '破坏性命令二次确认',
-    desc: '"结束记录"等破坏性命令建议加 requires_confirm 字段，不静默执行。',
-    tryLabel: '说"结束记录"',
-    run: (resultEl) => simulate({ kind: 'cmd', val: 'end_recording' }, 'state.recording_changed 带 requires_confirm', 'allow', resultEl),
-  },
-  {
-    n: 6, title: 'KWS 与 ASR 冲突',
-    desc: 'KWS 命中"12床"但 ASR 文本里没有床号，标记为待确认，不静默覆盖。',
-    tryLabel: '查看冲突场景说明',
-    run: (resultEl) => {
-      showRuleResult(resultEl, 'block', '需要打 conflict 标记，等待人工确认', '业务端可以用 UI 提醒护士确认是否真的切换。');
+  transcript: {
+    dir: '↓', json: { type: 'transcript', segmentId: 'segment-3', revision: 2, isFinal: true, start_ms: 900, end_ms: 4100, text: '十二床，今天体温正常，继续观察。', context: { bed: '12床' }, contextChanged: false },
+    when: '原有实时转写消息；KWS 启用时 interim 与 final 都多带 context / contextChanged，未启用时不出现这两个字段。',
+    fields: {
+      type: '原有转写消息，其余字段（speaker、confidence 等）不变，这里省略。',
+      segmentId: '片段 ID，同一片段按 revision 覆盖。',
+      revision: '修订号，越大越新。',
+      isFinal: 'true 为句末精修稿。',
+      start_ms: '片段起点（VAD），与 KWS 同一时间轴。',
+      end_ms: '片段终点。',
+      text: '转写正文。关键词本身也在正文里，是否剔除由业务端决定。',
+      context: '每个槽位在“片段起点 + 1s 引导窗口”结束时的取值。VAD 起点通常略早于关键词，所以“十二床，今天……”这句归 12床。发送时计算，不受检测延迟影响。',
+      contextChanged: '片段其余时段内某个槽位又变了（例如话说到一半提到另一张床）。业务端应标“待确认”。',
     },
   },
+  set_context: {
+    dir: '↑', json: { type: 'set_context', slot: 'bed', value: '15床' },
+    when: '业务端发给服务端。在当前音频位置生效，影响之后的片段；未启用 KWS、未知槽位或值非法时回复 error，不改状态。',
+    fields: {
+      type: '控制消息类型，与 pause_recording 等同一通道。',
+      slot: '必须是 KWS_CONTEXT_SLOTS 里的槽位。',
+      value: '1–64 字符的字符串（首尾空白去掉），或 null 清空。',
+    },
+  },
+};
+let evCur = 'kws.detected';
+function fmtVal(v) {
+  if (v === null) return '<span class="z">null</span>';
+  if (typeof v === 'number') return `<span class="n">${v}</span>`;
+  if (typeof v === 'boolean') return `<span class="z">${v}</span>`;
+  if (typeof v === 'object') return '<span class="p">{ </span>' + Object.entries(v).map(([k, x]) => `<span class="s">"${esc(k)}"</span><span class="p">: </span>${fmtVal(x)}`).join('<span class="p">, </span>') + '<span class="p"> }</span>';
+  return `<span class="s">"${esc(v)}"</span>`;
+}
+function renderEv(field) {
+  const ev = EVENTS[evCur];
+  $('#evTabs').innerHTML = Object.entries(EVENTS).map(([k, e]) => `<button class="tab ${k === evCur ? 'active' : ''}" data-k="${k}"><span class="dir">${e.dir}</span>${k}</button>`).join('');
+  const keys = Object.keys(ev.json);
+  $('#evJson').innerHTML = '<span class="p">{</span>\n' + keys.map((k, i) =>
+    `  <span class="k ${k === field ? 'sel' : ''}" data-f="${k}">"${k}"</span><span class="p">: </span>${fmtVal(ev.json[k])}${i < keys.length - 1 ? '<span class="p">,</span>' : ''}`).join('\n') + '\n<span class="p">}</span>';
+  $('#evInfo').innerHTML = field
+    ? `<div class="fname">${field}</div><div class="fdesc">${esc(ev.fields[field])}</div><div class="when">${esc(ev.when)}</div>`
+    : `<div class="placeholder">点左边任意字段，看它代表什么。</div><div class="when">${esc(ev.when)}</div>`;
+}
+$('#evTabs').addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (b) { evCur = b.dataset.k; renderEv(null); } });
+$('#evJson').addEventListener('click', (e) => { const k = e.target.closest('.k'); if (k) renderEv(k.dataset.f); });
+renderEv(null);
+
+/* =============== 04 模拟器 =============== */
+const LEAD_MS = 1000, KWS_LATENCY_MS = 600, FINAL_DELAY_MS = 300, GAP_MS = 250;
+const QUEUE = ['12床', '15床', '16床', '18床'];
+const SLOTS = ['bed'];
+const BED_COLOR = { '12床': '#06b6d4', '15床': '#a855f7', '16床': '#10b981', '18床': '#f59e0b' };
+const UTTER = {
+  bed12: { say: '十二床，今天体温正常，继续观察。', dur: 3200, kw: { at: 150, len: 450, category: 'bed', value: '12床' } },
+  bed15: { say: '十五床，昨晚咳嗽加重，需要复查。', dur: 3400, kw: { at: 150, len: 450, category: 'bed', value: '15床' } },
+  next: { say: '下一床。', dur: 900, kw: { at: 100, len: 500, category: 'command', value: 'next_bed' } },
+  plain: { say: '目前情况稳定，按原方案治疗。', dur: 2600 },
+  mid: { say: '血压平稳，饮食正常，十六床也是一样。', dur: 4000, kw: { at: 2800, len: 500, category: 'bed', value: '16床' } },
+  exam: { say: '开始查体。', dur: 1000, kw: { at: 100, len: 600, category: 'section', value: '查体' } },
+  pause: { say: '暂停记录。', dur: 1000, kw: { at: 100, len: 700, category: 'command', value: 'pause_recording' } },
+  race: { say: '十八床，伤口愈合良好。', dur: 2800, kw: { at: 150, len: 450, category: 'bed', value: '18床' }, raceBed: '16床' },
+};
+const SPEAK_GROUPS = [
+  ['医生说（槽位）', [['bed12', '“十二床，今天体温正常…”', '片段开头说床号'], ['bed15', '“十五床，昨晚咳嗽加重…”', ''], ['mid', '“血压平稳…十六床也是一样”', '床号在片段中途']]],
+  ['医生说（指令 / 标记）', [['next', '“下一床”', 'command:next_bed'], ['pause', '“暂停记录”', 'command:pause_recording'], ['exam', '“开始查体”', 'section:查体（非槽位）']]],
+  ['医生说（无关键词）', [['plain', '“目前情况稳定…”', '沿用当前上下文']]],
 ];
 
-const rulesContainer = document.getElementById('rulesList');
-rulesContainer.innerHTML = RULES.map((r, i) => `
-  <div class="rule-card" data-idx="${i}">
-    <h4><span class="rule-num">${r.n}</span>${r.title}</h4>
-    <p>${r.desc}</p>
-    <div class="rule-try">
-      <span>${r.tryLabel}</span>
-      <button class="rule-try-btn">▶ 试一下</button>
-    </div>
-    <div class="rule-result"></div>
-  </div>
-`).join('');
-
-document.querySelectorAll('.rule-card').forEach((card, idx) => {
-  const btn = card.querySelector('.rule-try-btn');
-  const resultEl = card.querySelector('.rule-result');
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    resultEl.classList.remove('show');
-    resultEl.innerHTML = '';
-    await RULES[idx].run(resultEl);
-    btn.disabled = false;
-  });
-});
-
-async function simulate(action, label, kind, resultEl, append, after) {
-  const target = resultEl || findRuleResultByAction(action);
-  if (action.kind === 'bed') {
-    await speakBed(action.val, { score: action.score });
-  } else if (action.kind === 'cmd') {
-    await speakCommand(action.val);
+function bisectRight(arr, x) { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (x < arr[m]) hi = m; else lo = m + 1; } return lo; }
+// 与 app/services/kws.py ContextTimeline 同一逻辑。
+class Timeline {
+  constructor(slots) { this.slots = slots; this.ch = {}; slots.forEach((s) => { this.ch[s] = { t: [], v: [] }; }); }
+  set(slot, value, at) {
+    const c = this.ch[slot];
+    const prev = c.v.length ? c.v[c.v.length - 1] : null;
+    const i = bisectRight(c.t, at);
+    if ((i ? c.v[i - 1] : null) === value) return [false, prev];
+    if (i && c.t[i - 1] === at) c.v[i - 1] = value; else { c.t.splice(i, 0, at); c.v.splice(i, 0, value); }
+    return [c.v[c.v.length - 1] !== prev, prev];
   }
-  showRuleResult(target, kind, label, '查看右侧事件流可以看到详细 JSON。', append);
-  if (after) after();
+  at(start, end) {
+    const lead = start + LEAD_MS; const ctx = {}; let changed = false;
+    for (const s of this.slots) {
+      const c = this.ch[s]; const i = bisectRight(c.t, lead);
+      ctx[s] = i ? c.v[i - 1] : null;
+      changed = changed || bisectRight(c.t, end) > i;
+    }
+    return [ctx, changed];
+  }
 }
 
-function findRuleResultByAction() { return null; /* not used */ }
+let S, busy = false, runToken = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function showRuleResult(el, kind, label, desc, append = false) {
-  if (!el) return;
-  const html = `<div><strong>${kind === 'allow' ? '✓ 通过' : '⛔ 拦截'}</strong> · ${label}<div class="desc">${desc}</div></div>`;
-  if (append) el.insertAdjacentHTML('beforeend', html);
-  else el.innerHTML = html;
-  el.className = 'rule-result show ' + kind;
+function reset(mode) {
+  runToken++;
+  busy = false;
+  S = {
+    mode: mode || (S ? S.mode : 'normal'), audio: 0, seq: 0, segN: 0, tl: new Timeline(SLOTS),
+    kwsFault: false, kwsDead: false, paused: false, ended: false, bizBed: null,
+    segments: [], marks: [], changes: [], records: [], started: false,
+  };
+  document.querySelectorAll('#modeCtl button').forEach((b) => b.classList.toggle('active', b.dataset.mode === S.mode));
+  $('#faultBtn').classList.remove('active');
+  $('#stream').innerHTML = '';
+  $('#conn').textContent = 'WS /ws/meeting/live?session_id=round-demo';
+  if (S.mode === 'recording_only') {
+    emit('down', { type: 'status', phase: 'recording_only', message: '实时负载超限，本场只录音' });
+    note('准入降级在会话开始时决定：本场不发 transcript，但 KWS 照常运行，set_context 也可用。');
+  }
+  renderAll();
 }
 
-/* ============================================================
- * Communication tabs
- * ============================================================ */
-document.querySelectorAll('.comm-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.comm-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.comm-panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.querySelector(`.comm-panel[data-panel="${tab.dataset.comm}"]`).classList.add('active');
+function emit(dir, msg) {
+  if (msg.type === 'kws.detected' || msg.type === 'state.changed') msg = { type: msg.type, session_id: 'round-demo', seq: ++S.seq, ...Object.fromEntries(Object.entries(msg).filter(([k]) => k !== 'type')) };
+  const cls = { 'kws.detected': 't-kws', 'state.changed': 't-state', transcript: 't-tr', status: 't-status', error: 't-err' }[msg.type] || 't-ctl';
+  let sum = '';
+  if (msg.type === 'kws.detected') sum = `${msg.category}:${msg.value} · 起点 ${msg.start_ms}`;
+  else if (msg.type === 'state.changed') sum = `${msg.slot}: ${msg.previous ?? 'null'} → ${msg.value ?? 'null'} · ${msg.source}`;
+  else if (msg.type === 'transcript') sum = `context.bed=${msg.context ? (msg.context.bed ?? 'null') : '—'}${msg.contextChanged ? ' · contextChanged' : ''} · ${msg.text}`;
+  else if (msg.type === 'set_context') sum = `${msg.slot} = ${msg.value ?? 'null'}`;
+  else if (msg.type === 'status') sum = msg.phase;
+  else if (msg.type === 'recording_saved') sum = `transcriptionStatus=${msg.transcriptionStatus}`;
+  const ts = msg.ts_ms ?? msg.end_ms ?? '';
+  const el = document.createElement('div');
+  el.className = `ev ${dir}`;
+  el.innerHTML = `<div class="ev-h"><span class="dir">${dir === 'up' ? '↑' : '↓'}</span><span class="type ${cls}">${esc(msg.type)}</span><span class="sum">${esc(sum)}</span><span class="ts">${ts === '' ? '' : ts + 'ms'}</span></div><pre>${esc(JSON.stringify(msg, null, 2))}</pre>`;
+  el.addEventListener('click', () => el.classList.toggle('open'));
+  appendStream(el);
+  return msg;
+}
+function note(text) { const el = document.createElement('div'); el.className = 'note'; el.textContent = text; appendStream(el); }
+function appendStream(el) { const s = $('#stream'); s.appendChild(el); s.scrollTop = s.scrollHeight; }
+
+function flashBed() { const p = $('#bedPill'); p.classList.remove('flash'); void p.offsetWidth; p.classList.add('flash'); }
+
+// 服务端：设置槽位并按需推 state.changed；返回是否改变了当前值。
+function serverSet(slot, value, at, source) {
+  const [changed, previous] = S.tl.set(slot, value, at);
+  S.changes.push({ at, value, source, ghost: !changed });
+  if (changed) {
+    emit('down', { type: 'state.changed', ts_ms: at, source, slot, value, previous });
+    S.bizBed = value; flashBed();
+  }
+  return changed;
+}
+// 业务端：发 set_context。
+function clientSet(value, why) {
+  emit('up', { type: 'set_context', slot: 'bed', value });
+  if (why) note(why);
+  const changed = serverSet('bed', value, S.audio, 'client');
+  if (!changed) note('值没变：服务端不推 state.changed。');
+}
+
+function bizHandleCommand(det) {
+  if (det.value === 'next_bed') {
+    if (!S.bizBed) { note('业务端：没有当前床号，“下一床”无法解释，提示人工选择，不自动切换。'); return; }
+    const i = QUEUE.indexOf(S.bizBed);
+    if (i < 0 || i === QUEUE.length - 1) { note('业务端：已是队列最后一床，忽略“下一床”。'); return; }
+    clientSet(QUEUE[i + 1], `业务端按查房队列把“下一床”解释为 ${QUEUE[i + 1]}，回写给服务端。`);
+  } else if (det.value === 'pause_recording') {
+    note('业务端决定执行“暂停记录”（实际产品可加二次确认）。');
+    emit('up', { type: 'pause_recording' });
+    emit('down', { type: 'recording_paused' });
+    S.paused = true;
+  }
+}
+
+async function utter(key, token) {
+  const u = UTTER[key];
+  const start = S.audio + GAP_MS, end = start + u.dur;
+  const seg = { id: ++S.segN, start, end, text: u.say, ctx: undefined, changed: false };
+  S.segments.push(seg);
+  const acts = [];
+  if (S.kwsFault && !S.kwsDead) {
+    acts.push({ t: start + 20, run: () => {
+      S.kwsDead = true;
+      emit('down', { type: 'status', phase: 'kws_unavailable', message: 'KWS 推理失败，本场停止关键词检测' });
+      note('KWS 只停本场检测；转写、录音和 set_context 不受影响。');
+    } });
+  }
+  if (u.kw && !(S.kwsFault || S.kwsDead)) {
+    const ks = start + u.kw.at, ke = ks + u.kw.len;
+    S.marks.push({ start: ks, end: ke, label: `${u.kw.category}:${u.kw.value}` });
+    acts.push({ t: ke + KWS_LATENCY_MS, run: () => {
+      const det = emit('down', { type: 'kws.detected', ts_ms: ke + KWS_LATENCY_MS, source: 'kws', category: u.kw.category, value: u.kw.value, start_ms: ks, end_ms: ke });
+      if (SLOTS.includes(det.category)) {
+        const changed = serverSet(det.category, det.value, ks, 'kws');
+        if (!changed && S.bizBed !== det.value) note(`晚到命中：${det.value} 的起点 ${ks}ms 早于业务端的设置，只修正该时段片段的 context，不改当前值、不推 state.changed。`);
+        else if (!changed) note('当前值已是该床号，不推 state.changed。');
+      } else if (det.category === 'command') {
+        bizHandleCommand(det);
+      } else {
+        S.records.push({ marker: true, bed: S.bizBed, text: `段落标记：${det.value}（${ks}ms）`, isNew: true });
+        note(`业务端：${det.category} 不是槽位，只在记录里打标记。`);
+      }
+    } });
+    if (u.raceBed) {
+      acts.push({ t: ke + 250, run: () => clientSet(u.raceBed, `KWS 还没检出“${u.kw.value}”，业务端此时点选了 ${u.raceBed}。`) });
+    }
+  }
+  if (S.mode === 'normal') {
+    acts.push({ t: end + FINAL_DELAY_MS, run: () => {
+      const [ctx, changed] = S.tl.at(seg.start, seg.end);
+      seg.ctx = ctx.bed; seg.changed = changed;
+      emit('down', { type: 'transcript', segmentId: `segment-${seg.id}`, revision: 1, isFinal: true, start_ms: seg.start, end_ms: seg.end, text: seg.text, context: ctx, contextChanged: changed });
+      S.records.push({ bed: ctx.bed, text: seg.text, changed, start: seg.start, end: seg.end, isNew: true });
+      if (changed) note('片段中途槽位变了：context 仍取起点 + 1s 的值，业务端标“待确认”。');
+    } });
+  }
+  acts.sort((a, b) => a.t - b.t);
+  S.audio = start;
+  renderAll();
+  for (const a of acts) {
+    await sleep(520);
+    if (token !== runToken) return false;
+    S.audio = Math.max(S.audio, a.t);
+    a.run();
+    renderAll();
+  }
+  S.audio = Math.max(S.audio, end + FINAL_DELAY_MS);
+  renderAll();
+  return true;
+}
+
+async function run(keys) {
+  if (busy) return;
+  const token = runToken;
+  busy = true; renderControls();
+  for (const k of keys) {
+    if (S.ended) break;
+    if (S.paused) { note('暂停中：音频不入录音，也不进 KWS，说“继续记录”不会被听到。只能由业务端发 resume_recording。'); break; }
+    S.started = true;
+    const ok = await utter(k, token);
+    if (!ok) return;
+    await sleep(250);
+  }
+  if (token !== runToken) return;
+  busy = false; renderControls();
+}
+
+function renderControls() {
+  const col = $('#speakCol');
+  if (!col.dataset.built) {
+    col.innerHTML = SPEAK_GROUPS.map(([h, items]) => `<h4>${h}</h4>` + items.map(([k, t, s]) => `<button class="say" data-k="${k}">${t}${s ? `<small>${s}</small>` : ''}</button>`).join('')).join('') +
+      `<h4>业务端操作</h4>
+       <button class="say biz" id="resumeBtn">发 resume_recording<small>暂停后恢复只能走这里</small></button>
+       <button class="say biz" id="badCtx">发非法 set_context<small>slot=ward（未配置）</small></button>
+       <button class="say biz" id="stopBtn">发 stop_recording<small>结束本场</small></button>`;
+    col.dataset.built = '1';
+    col.addEventListener('click', (e) => {
+      const b = e.target.closest('.say'); if (!b || b.disabled) return;
+      if (b.dataset.k) run([b.dataset.k]);
+      else if (b.id === 'resumeBtn') { emit('up', { type: 'resume_recording' }); emit('down', { type: 'recording_resumed' }); S.paused = false; renderAll(); }
+      else if (b.id === 'badCtx') { emit('up', { type: 'set_context', slot: 'ward', value: '三病区' }); emit('down', { type: 'error', message: '未知上下文槽位: ward' }); note('未知槽位被拒绝，状态不变。'); }
+      else if (b.id === 'stopBtn') {
+        emit('up', { type: 'stop_recording' });
+        emit('down', { type: 'recording_saved', fileId: 'demo-file-id', format: 'wav', sampleRate: 16000, channels: 1, transcriptionStatus: S.mode === 'normal' ? 'complete' : 'recording_only' });
+        S.ended = true; renderAll();
+      }
+    });
+  }
+  col.querySelectorAll('.say[data-k]').forEach((b) => { b.disabled = busy || S.ended; });
+  $('#resumeBtn').disabled = busy || S.ended || !S.paused;
+  $('#badCtx').disabled = busy || S.ended;
+  $('#stopBtn').disabled = busy || S.ended;
+  $('#scriptFull').disabled = busy; $('#scriptRace').disabled = busy;
+  $('#faultBtn').disabled = busy || S.kwsDead || S.ended;
+  document.querySelectorAll('#queue .bed, #clearBed').forEach((b) => { b.disabled = busy || S.ended; });
+}
+
+function renderBiz() {
+  $('#bedVal').textContent = S.bizBed || '—';
+  $('#bedVal').style.color = S.bizBed ? BED_COLOR[S.bizBed] : 'var(--dim)';
+  const recState = S.ended ? ['', '已保存'] : S.paused ? ['pause', '已暂停'] : S.started ? ['on', '录音中'] : ['', '未开始'];
+  $('#recDot').className = 'dot ' + recState[0]; $('#recVal').textContent = recState[1];
+  $('#queue').innerHTML = QUEUE.map((b) => `<button class="bed ${b === S.bizBed ? 'cur' : ''}" data-b="${b}">${b}</button>`).join('');
+  if (S.mode === 'recording_only' && !S.records.length) { $('#records').innerHTML = '<div class="empty">只录音：没有 transcript，记录为空；当前床位仍随 state.changed 更新。</div>'; return; }
+  if (!S.records.length) { $('#records').innerHTML = '<div class="empty">还没有记录。让医生说点什么？</div>'; return; }
+  const groups = new Map();
+  S.records.forEach((r) => { const k = r.bed || '未归属'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+  $('#records').innerHTML = [...groups].map(([bed, items]) => `<div class="grp"><div class="grp-h"><span class="sw" style="background:${BED_COLOR[bed] || 'var(--dim)'}"></span>${esc(bed)}</div>` +
+    items.map((r) => r.marker
+      ? `<div class="rec-item marker ${r.isNew ? 'new' : ''}">${esc(r.text)}</div>`
+      : `<div class="rec-item ${r.isNew ? 'new' : ''}" style="border-left-color:${BED_COLOR[r.bed] || 'var(--dim)'}">${esc(r.text)}<div class="meta">${r.start}–${r.end}ms${r.changed ? ' · <span style="color:var(--amber)">待确认：片段中途切换了床号</span>' : ''}</div></div>`).join('') + '</div>').join('');
+  S.records.forEach((r) => { r.isNew = false; });
+}
+
+function renderTimeline() {
+  const tl = $('#tl');
+  if (!S.segments.length) { tl.innerHTML = '<div class="empty-tl">时间轴随音频推进</div>'; return; }
+  const total = Math.max(8000, S.audio + 600);
+  const x = (ms) => (ms / total * 100).toFixed(3) + '%';
+  const w = (ms) => (ms / total * 100).toFixed(3) + '%';
+  let html = '';
+  for (let t = 0; t <= total; t += 1000) html += `<div class="tick" style="left:${x(t)}">${t % 2000 === 0 ? `<span>${t / 1000}s</span>` : ''}</div>`;
+  S.segments.forEach((s) => {
+    const pending = s.ctx === undefined;
+    const color = pending ? '' : (BED_COLOR[s.ctx] || '#64748b');
+    const label = S.mode === 'recording_only' ? '无转写' : pending ? '片段' : (s.ctx || 'null');
+    html += `<div class="lead" style="left:${x(s.start)};width:${w(Math.min(LEAD_MS, s.end - s.start))}"></div>`;
+    html += `<div class="seg ${pending ? 'pending' : ''} ${s.changed ? 'changed' : ''}" style="left:${x(s.start)};width:${w(s.end - s.start)};background:${color}" title="${esc(s.text)}">${esc(label)}</div>`;
   });
+  S.marks.forEach((m) => { html += `<div class="kw" style="left:${x(m.start)};width:${w(m.end - m.start)}"></div><div class="kw-l" style="left:${x(m.start)}">${esc(m.label)}</div>`; });
+  S.changes.forEach((c) => { html += `<div class="chg ${c.source === 'client' ? 'client' : ''} ${c.ghost ? 'ghost' : ''}" style="left:${x(c.at)}"><span>${esc(c.value ?? 'null')}${c.ghost ? '（仅修正时段）' : ''}</span></div>`; });
+  html += `<div class="now" style="left:${x(S.audio)}"></div>`;
+  tl.innerHTML = html;
+}
+
+function renderAll() { renderBiz(); renderTimeline(); renderControls(); }
+
+$('#queue').addEventListener('click', (e) => {
+  const b = e.target.closest('.bed'); if (!b || b.disabled) return;
+  S.started = true; clientSet(b.dataset.b, '医生在界面点选病人。'); renderAll();
 });
+$('#clearBed').addEventListener('click', () => { if (!busy && !S.ended) { clientSet(null, '业务端清空当前床（value=null）。'); renderAll(); } });
+$('#modeCtl').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) reset(b.dataset.mode); });
+$('#faultBtn').addEventListener('click', () => { S.kwsFault = !S.kwsFault; $('#faultBtn').classList.toggle('active', S.kwsFault); if (S.kwsFault) note('已设置：下一次收到音频时 KWS 推理会报错。'); });
+$('#resetBtn').addEventListener('click', () => reset());
+$('#scriptFull').addEventListener('click', () => { reset(); run(['bed12', 'plain', 'next', 'plain', 'mid', 'exam', 'pause']); });
+$('#scriptRace').addEventListener('click', () => { reset(); run(['race', 'plain']); });
 
-/* ============================================================
- * Decision Q&A
- * ============================================================ */
-const DECISION_FLOW = {
-  '1:no': '2-no',
-  '1:yes': '2-yes',
-  '2-no:safe': 'result-a-cautious',
-  '2-no:ok': 'result-a',
-  '2-yes:yes': 'result-b',
-  '2-yes:no': 'result-b-fallback',
-};
+reset('normal');
 
-document.querySelectorAll('.decision-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const next = DECISION_FLOW[btn.dataset.answer];
-    document.querySelectorAll('.decision-step').forEach(s => s.classList.remove('active'));
-    document.querySelector(`.decision-step[data-step="${next}"]`).classList.add('active');
-  });
-});
-
-document.querySelectorAll('.decision-restart').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.decision-step').forEach(s => s.classList.remove('active'));
-    document.querySelector('.decision-step[data-step="1"]').classList.add('active');
-  });
+/* =============== 05 问答 =============== */
+const FAQ = [
+  { q: '服务端会自己理解“下一床”吗？', a: '<b>不会。</b>“下一床”是哪一床取决于查房队列，这是业务知识。服务端只推 <code>kws.detected(command:next_bed)</code>，业务端算出床号后用 <code>set_context</code> 回写，之后的转写自然按新床号标注。', demo: () => { reset('normal'); run(['bed12', 'next', 'plain']); } },
+  { q: '一句话中途换了床号，这句归谁？', a: '按<b>片段起点 + 1s 引导窗口</b>结束时的值归属；窗口之后发生的切换只标 <code>contextChanged=true</code>，服务端不切句子，交给业务端或人工确认。', demo: () => { reset('normal'); run(['bed12', 'mid', 'plain']); } },
+  { q: '业务端点选和 KWS 同时发生，以谁为准？', a: 'KWS 有 0.5–0.9s 检测延迟。<b>当前值取时间上最晚的一次设置。</b>如果检测延迟期间业务端已经 <code>set_context</code>，晚到命中的起点更早：它只修正那段时间的片段 context，不改当前值、不推 <code>state.changed</code>，<code>kws.detected</code> 照常推。', demo: () => { reset('normal'); run(['race', 'plain']); } },
+  { q: '准入降级为只录音，KWS 还工作吗？', a: '<b>照常工作。</b>KWS 属于实时对话的一部分：没有 transcript，但 <code>kws.detected</code>、<code>state.changed</code>、<code>set_context</code> 都在，业务端仍能实时切换病人。停止后 <code>transcriptionStatus=recording_only</code>，可按 fileId 生成 MOSS 复核稿。', demo: () => { reset('recording_only'); run(['bed12', 'next', 'plain']); } },
+  { q: 'KWS 中途挂了会怎样？', a: '推一次 <code>status(phase=kws_unavailable)</code>，本场停止关键词检测。<b>转写、录音、set_context 都不受影响</b>，context 仍可由业务端维护。', demo: () => { reset('normal'); S.kwsFault = true; $('#faultBtn').classList.add('active'); run(['bed12', 'plain']); } },
+  { q: '说“暂停记录”后，能再说“继续记录”恢复吗？', a: '<b>不能。</b>暂停期间音频不入录音、也不进 KWS，服务端听不到任何话。恢复只能由业务端发 <code>resume_recording</code>（例如界面按钮）。', demo: () => { reset('normal'); run(['bed12', 'pause', 'plain']); } },
+  { q: '为什么事件里没有置信度？', a: 'sherpa-onnx 的 KWS 结果<b>不输出分数</b>。误触发靠关键词表里逐词的 <code>:增益</code> 与 <code>#阈值</code> 调节，同一 <code>类别:值</code> 2s 内重复命中只推一次。上线前要用真实录音调参。' },
+  { q: '配置写错了，会悄悄关掉 KWS 吗？', a: '<b>不会。</b><code>KWS_ENABLED=1</code> 但模型路径缺失、槽位名非法或模型加载失败，服务直接启动失败。默认 <code>KWS_ENABLED=0</code> 时协议与原来完全一致，<code>set_context</code> 会回 error。' },
+  { q: '床号关键词会留在正文里吗？', a: '会。“十二床，今天体温正常”整句都在 transcript 里。是否剔除、怎么展示由业务端决定，服务端不改写正文。' },
+  { q: '想加“病区”这种新维度怎么办？', a: '关键词表加 <code>三病区 @ward:三病区</code>，再把 <code>KWS_CONTEXT_SLOTS</code> 设为 <code>bed,ward</code>。不需要改代码：transcript.context 会多一个 <code>ward</code>，<code>state.changed</code> 用 <code>slot</code> 区分。可在第 02 节里试。' },
+];
+$('#faqList').innerHTML = FAQ.map((f, i) => `<details class="qa panel"><summary>${f.q}</summary><div class="a">${f.a}${f.demo ? `<div class="try"><button class="tool-btn primary" data-i="${i}">▶ 在模拟器里试</button></div>` : ''}</div></details>`).join('');
+$('#faqList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-i]'); if (!b) return;
+  $('#simulator').scrollIntoView({ behavior: 'smooth' });
+  setTimeout(() => FAQ[+b.dataset.i].demo(), 450);
 });
 </script>
 </body>
