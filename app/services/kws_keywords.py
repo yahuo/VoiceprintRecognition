@@ -22,6 +22,7 @@ MAX_NAME_LENGTH = 32
 MAX_PHRASE_LENGTH = 32
 MAX_VALUE_LENGTH = 64
 MAX_KEYWORDS = 2000
+MAX_CATEGORIES = 64
 
 
 class KeywordsError(ValueError):
@@ -76,6 +77,12 @@ def compile_categories(categories, vocabulary: set[str]) -> tuple[list[dict], li
     """校验并规范化类别列表，返回 (规范化类别, keywords 行)；任何一处不合法都抛出 KeywordsError。"""
     if not isinstance(categories, list):
         raise KeywordsError([{"message": "categories 须为列表"}])
+    # 先按提交的条目数限量，不合法的条目也计入，避免超大请求逐条校验。
+    if len(categories) > MAX_CATEGORIES:
+        raise KeywordsError([{"message": f"类别不能超过 {MAX_CATEGORIES} 个"}])
+    submitted = sum(len(c["keywords"]) for c in categories if isinstance(c, dict) and isinstance(c.get("keywords"), list))
+    if submitted > MAX_KEYWORDS:
+        raise KeywordsError([{"message": f"关键词不能超过 {MAX_KEYWORDS} 个"}])
     errors, normalized, lines = [], [], []
     seen_codes, seen_phrases, seen_tokens = set(), {}, {}
 
@@ -95,6 +102,9 @@ def compile_categories(categories, vocabulary: set[str]) -> tuple[list[dict], li
             continue
         seen_codes.add(code)
         name = str(category.get("name") or code).strip()[:MAX_NAME_LENGTH] or code
+        if not isinstance(category.get("keywords") or [], list):
+            fail(f"类别 {code} 的 keywords 须为列表", code)
+            continue
         keywords = []
         for keyword in category.get("keywords") or []:
             if not isinstance(keyword, dict):
@@ -130,8 +140,6 @@ def compile_categories(categories, vocabulary: set[str]) -> tuple[list[dict], li
 
     if not errors and not lines:
         fail("至少保留一个关键词")
-    if len(lines) > MAX_KEYWORDS:
-        fail(f"关键词不能超过 {MAX_KEYWORDS} 个")
     if errors:
         raise KeywordsError(errors)
     return normalized, lines
