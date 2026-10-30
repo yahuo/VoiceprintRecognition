@@ -122,23 +122,25 @@ class ContextTimeline:
 
     def __init__(self, slots):
         self.slots = tuple(slots)
-        self._current = dict.fromkeys(self.slots)
         # 槽位 -> (有序生效时刻, 对应值)；同一时刻只保留最后一次设置，没有新音频时反复 set_context 不会累积。
         self._changes: dict[str, tuple[list[int], list[str | None]]] = {slot: ([], []) for slot in self.slots}
 
     def set(self, slot: str, value: str | None, at_ms: int) -> tuple[bool, str | None]:
-        previous = self._current[slot]
-        if value == previous:
-            return False, previous
-        self._current[slot] = value
+        """在 at_ms 生效；返回 (当前值是否改变, 原当前值)。当前值是时间上最晚的一次设置。
+
+        早于已有设置的插入（KWS 检测延迟期间客户端已 set_context）只修正该时段的片段上下文，不改变当前值。
+        """
         times, values = self._changes[slot]
+        previous = values[-1] if values else None
         index = bisect_right(times, at_ms)
+        if (values[index - 1] if index else None) == value:
+            return False, previous
         if index and times[index - 1] == at_ms:
             values[index - 1] = value
         else:
             times.insert(index, at_ms)
             values.insert(index, value)
-        return True, previous
+        return values[-1] != previous, previous
 
     def at(self, start_ms: int, end_ms: int) -> tuple[dict[str, str | None], bool]:
         """返回片段上下文（起点 + 引导窗口内的最终取值）以及片段其余时段是否发生切换。"""

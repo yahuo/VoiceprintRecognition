@@ -72,9 +72,12 @@ class ContextTimelineTest(unittest.TestCase):
         context = ContextTimeline(["bed"])
         self.assertEqual(context.set("bed", "12床", 5000), (True, None))
         self.assertEqual(context.set("bed", "12床", 6000), (False, "12床"))
-        context.set("bed", "15床", 3000)  # KWS 起点可能早于先到达的客户端设置
+        # KWS 起点可能早于先到达的客户端设置：只修正该时段，当前值不变。
+        self.assertEqual(context.set("bed", "15床", 3000), (False, "12床"))
         self.assertEqual(context.at(0, 2000), ({"bed": None}, False))
+        self.assertEqual(context.at(2500, 4000), ({"bed": "15床"}, False))
         self.assertEqual(context.at(4500, 7000), ({"bed": "12床"}, False))
+        self.assertEqual(context.set("bed", "16床", 7000), (True, "12床"))
 
     def test_repeated_sets_at_same_time_do_not_accumulate(self):
         context = ContextTimeline(["bed"])
@@ -201,6 +204,18 @@ class KwsWebSocketTest(unittest.TestCase):
         self.assertEqual(states, [("12床", "kws", 100), ("15床", "client", 2100)])
         self.assertEqual(len([e for e in sent if e["type"] == "error"]), 2)
         self.assertEqual([e["context"] for e in self.finals(sent)], [{"bed": "12床"}, {"bed": "15床"}])
+
+    def test_late_kws_detection_does_not_override_newer_client_context(self):
+        # 15床 在 2000ms 说出，但到 2200ms 才检出；客户端已在 2100ms 设为 12床。
+        sent = self.run_session(
+            FakeKwsService([(2200, bed("15床", 2000))]),
+            between=[control({"type": "set_context", "slot": "bed", "value": "12床"})],
+        )
+
+        self.assertEqual([e["value"] for e in sent if e["type"] == "kws.detected"], ["15床"])
+        states = [(e["value"], e["previous"], e["source"]) for e in sent if e["type"] == "state.changed"]
+        self.assertEqual(states, [("12床", None, "client")])
+        self.assertEqual([e["context"] for e in self.finals(sent)], [{"bed": None}, {"bed": "12床"}])
 
     def test_kws_failure_keeps_transcription_and_client_context(self):
         kws = FakeKwsService(fail=True)
