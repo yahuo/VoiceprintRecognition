@@ -76,7 +76,9 @@ python scripts/build_kws_keywords.py --tokens /models/kws/tokens.txt keywords_ra
 }
 ```
 
-`ts_ms` 是生效时刻：KWS 来源取关键词起点，客户端来源取收到 `set_context` 时的音频位置。`source` 为 `kws` 或 `client`。取值不变（重复说同一床号、重复设置）不推送。
+`ts_ms` 是生效时刻：KWS 来源取关键词起点，客户端来源取收到 `set_context` 时的音频位置。`source` 为 `kws` 或 `client`。只在当前值（时间上最晚的一次设置）改变时推送，重复说同一床号、重复设置都不推送。
+
+KWS 有 0.5–0.9s 检测延迟。若这段时间内客户端已 `set_context`，晚到的槽位命中起点早于客户端设置：它只修正该时段片段的 `context`，不改变当前值、不推 `state.changed`，`kws.detected` 照常推送。
 
 ### transcript：标注上下文
 
