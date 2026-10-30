@@ -861,7 +861,13 @@
         }
 
         .server-url {
+            display: flex;
+            gap: 10px;
             margin-bottom: 20px;
+        }
+
+        .server-url input#adminToken {
+            flex: 0 0 300px;
         }
 
         .server-url input {
@@ -1367,6 +1373,7 @@
         <div class="server-url">
             <input type="text" id="serverUrl" placeholder="服务器地址">
             <script>document.getElementById('serverUrl').value = window.location.origin;</script>
+            <input type="password" id="adminToken" placeholder="管理令牌（未启用鉴权可留空）" autocomplete="off">
         </div>
 
         <div class="tabs">
@@ -1635,6 +1642,24 @@
 
         function getApiUrl() {
             return serverUrlInput.value.trim().replace(/\/$/, '');
+        }
+
+        // 管理类写接口带上管理令牌；服务端未设置 ADMIN_TOKEN 时忽略该头。令牌只存本浏览器。
+        const ADMIN_TOKEN_STORAGE_KEY = 'voiceprintAdminToken';
+        const adminTokenInput = document.getElementById('adminToken');
+        adminTokenInput.value = localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '';
+        adminTokenInput.addEventListener('input', () => {
+            localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, adminTokenInput.value.trim());
+        });
+
+        function adminHeaders(headers = {}) {
+            const token = adminTokenInput.value.trim();
+            return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+        }
+
+        function adminErrorText(response, result) {
+            if (response.status === 401) return `需要管理令牌：请在服务器地址旁填写正确的管理令牌（${result?.detail || '未授权'}）`;
+            return result?.detail || `HTTP ${response.status}`;
         }
 
         function getWsUrl(selectedParticipants = []) {
@@ -2948,6 +2973,7 @@
             try {
                 const response = await fetch(`${getApiUrl()}/v1/voiceprint/register`, {
                     method: 'POST',
+                    headers: adminHeaders(),
                     body: formData
                 });
 
@@ -2960,7 +2986,7 @@
                     document.getElementById('voiceprintFileName').textContent = '选择音频文件';
                     loadVoiceprints();
                 } else {
-                    alert('注册失败: ' + (result.detail || '未知错误'));
+                    alert('注册失败: ' + adminErrorText(response, result));
                 }
             } catch (error) {
                 alert('请求失败: ' + error.message);
@@ -2973,7 +2999,8 @@
             try {
                 const url = `${getApiUrl()}/v1/voiceprint?id=${encodeURIComponent(id)}`;
                 const response = await fetch(url, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: adminHeaders()
                 });
 
                 const result = await response.json();
@@ -2982,7 +3009,7 @@
                     alert(`✅ ${result.message}`);
                     loadVoiceprints();
                 } else {
-                    alert('删除失败: ' + (result.detail || '未知错误'));
+                    alert('删除失败: ' + adminErrorText(response, result));
                 }
             } catch (error) {
                 alert('请求失败: ' + error.message);
@@ -2991,12 +3018,14 @@
 
         async function reloadVoiceprints() {
             try {
-                const response = await fetch(`${getApiUrl()}/v1/voiceprint/reload`, { method: 'POST' });
+                const response = await fetch(`${getApiUrl()}/v1/voiceprint/reload`, { method: 'POST', headers: adminHeaders() });
                 const result = await response.json();
 
                 if (result.status === 'success') {
                     alert(`✅ 声纹库已重载，共 ${result.count} 个声纹`);
                     loadVoiceprints();
+                } else {
+                    alert('重载失败: ' + adminErrorText(response, result));
                 }
             } catch (error) {
                 alert('请求失败: ' + error.message);
@@ -3549,7 +3578,7 @@
             try {
                 const response = await fetch(`${getApiUrl()}/v1/kws/keywords`, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: adminHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify(kwsPayload()),
                 });
                 const result = await response.json();
@@ -3558,7 +3587,7 @@
                         const hit = item.phrase && kwsFindPhrase(item.phrase);
                         if (hit) hit.tag.serverError = item.message;
                     }
-                    throw new Error(kwsErrorText(result));
+                    throw new Error(response.status === 401 ? adminErrorText(response, result) : kwsErrorText(result));
                 }
                 kwsApply(result);
                 kwsShowToast(`已保存为 v${result.version}，新开始的实时会话使用这份关键词`, false);

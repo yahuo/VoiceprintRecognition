@@ -3,6 +3,7 @@
 
 import asyncio
 from datetime import datetime
+import hmac
 import math
 import os
 import tempfile
@@ -11,7 +12,7 @@ import uuid
 from typing import Annotated
 
 import anyio
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,29 @@ from .services.meeting_jobs import MeetingJobStore, normalize_job_id
 from .services.moss import MossError, max_audio_seconds
 from .services.recording_store import recording_store
 
+def _parse_cors_allow_origins(raw):
+    """CORS_ALLOW_ORIGINS 逗号分隔；未设置或为空时保持 *。"""
+    origins = [x.strip().rstrip("/") for x in (raw or "").split(",") if x.strip()]
+    return origins or ["*"]
+
+
+# 设置后管理类写接口要求 Authorization: Bearer <ADMIN_TOKEN>；未设置时不鉴权，兼容现网业务端。
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+CORS_ALLOW_ORIGINS = _parse_cors_allow_origins(os.environ.get("CORS_ALLOW_ORIGINS"))
+
+
+def require_admin_token(authorization: str | None = Header(default=None)):
+    if not ADMIN_TOKEN:
+        return
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="需要管理令牌", headers={"WWW-Authenticate": "Bearer"})
+    if not hmac.compare_digest(token.strip().encode(), ADMIN_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="管理令牌错误", headers={"WWW-Authenticate": "Bearer"})
+
+
+ADMIN_ONLY = [Depends(require_admin_token)]
+
 app = FastAPI(
     title="Voiceprint Meeting System API",
     description="MOSS 离线转写与分人、Paraformer Streaming + Nano 实时转写、CAM++ 身份验证",
@@ -36,7 +60,7 @@ app = FastAPI(
 )
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ALLOW_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Meeting-Job-Id"])
 service = ModelService()
 kws_service = KwsService()  # 启动时按配置加载
@@ -225,6 +249,9 @@ def _remove_temp(path):
 @app.on_event("startup")
 async def startup_event():
     global kws_service
+    if not ADMIN_TOKEN:
+        print("警告: 未设置 ADMIN_TOKEN，声纹注册/删除/重载、录音删除、关键词保存等写接口不鉴权，"
+              "能访问本服务的任何人都可调用；生产环境请配置 ADMIN_TOKEN 与 CORS_ALLOW_ORIGINS。")
     recording_store.cleanup_temp_files()
     kws_service = await asyncio.to_thread(create_kws_service, CONFIG)
     await asyncio.to_thread(service.load_models, device=DEVICE)
@@ -256,7 +283,7 @@ async def list_speakers():
     return {"status": "success", "count": len(speakers), "speakers": speakers}
 
 
-@app.post("/v1/voiceprint/reload")
+@app.post("/v1/voiceprint/reload", dependencies=ADMIN_ONLY)
 async def reload_voiceprints():
     service.reload_voiceprints()
     return {"status": "success", "message": "声纹库已重新加载",
@@ -279,7 +306,7 @@ async def summarize_meeting_api(request: Request):
     return JSONResponse(status_code=502, content=result) if result["status"] == "error" else result
 
 
-@app.post("/v1/voiceprint/register")
+@app.post("/v1/voiceprint/register", dependencies=ADMIN_ONLY)
 async def register_speaker(name: str = Form(...), file: UploadFile = File(...),
                            voiceprint_id: str | None = Form(default=None, alias="id")):
     speaker_id, speaker_name = _normalize_voiceprint_id(voiceprint_id), _normalize_speaker_name(name)
@@ -304,7 +331,7 @@ async def voiceprint_exists(voiceprint_id: str = Query(..., alias="id")):
     return {"registered": entry is not None, "id": speaker_id, "name": entry["name"] if entry else None}
 
 
-@app.delete("/v1/voiceprint")
+@app.delete("/v1/voiceprint", dependencies=ADMIN_ONLY)
 async def delete_speaker(voiceprint_id: str = Query(..., alias="id")):
     speaker_id = _normalize_required_voiceprint_id(voiceprint_id)
     entry = delete_voiceprint_by_id(speaker_id)
@@ -414,7 +441,7 @@ async def cancel_meeting_job(job_id: str):
     return meeting_jobs.cancel(job_id)
 
 
-@app.post("/v1/meeting/recordings/delete")
+@app.post("/v1/meeting/recordings/delete", dependencies=ADMIN_ONLY)
 async def delete_meeting_recordings(request: DeleteRecordingsRequest):
     result = recording_store.delete_many(_normalize_recording_file_ids(request.fileIds))
     return {"status": "partial" if result["failed"] else "success", **result}
@@ -495,7 +522,7 @@ async def preview_kws_keywords(body: KwsKeywordsPreview):
     return {"items": kws_service.preview(body.phrases)}
 
 
-@app.put("/v1/kws/keywords")
+@app.put("/v1/kws/keywords", dependencies=ADMIN_ONLY)
 async def update_kws_keywords(body: KwsKeywordsUpdate):
     """整表保存并生效：新开始的实时会话使用新词表，进行中的会话不受影响。version 须为读取时的版本。"""
     _require_kws()

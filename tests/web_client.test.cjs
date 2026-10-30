@@ -370,3 +370,45 @@ test('kws blocks saving unrecognized phrases and reports a disabled server', asy
     await disabled.scope.loadKwsKeywords();
     assert.ok(disabled.elements.get('kwsCategories').innerHTML.includes('KWS_ENABLED=0'));
 });
+
+test('admin token is restored from localStorage and sent only on management writes', async () => {
+    const storage = new Map([['voiceprintAdminToken', 'secret']]);
+    const calls = [];
+    const c = client({ storage, fetch: async (url, options = {}) => {
+        calls.push({ url, method: options.method || 'GET', headers: options.headers || {} });
+        if (url.endsWith('/v1/kws/keywords')) return Response.json(kwsDoc);
+        return Response.json({ status: 'success', count: 0, speakers: [], message: 'ok' });
+    } });
+    assert.equal(c.elements.get('adminToken').value, 'secret');
+    c.scope.confirm = () => true;
+    await c.scope.reloadVoiceprints();
+    await c.scope.deleteVoiceprint('a', '张三');
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsSetSlot('command', true);
+    await c.scope.saveKwsKeywords();
+    const writes = calls.filter(call => call.method !== 'GET');
+    assert.deepEqual(writes.map(call => call.method), ['POST', 'DELETE', 'PUT']);
+    for (const call of writes) assert.equal(call.headers.Authorization, 'Bearer secret');
+    assert.equal(writes[2].headers['Content-Type'], 'application/json');
+    assert.ok(calls.filter(call => call.method === 'GET').every(call => !call.headers.Authorization));
+
+    c.elements.get('adminToken').value = '';
+    assert.deepEqual(JSON.parse(JSON.stringify(c.scope.adminHeaders())), {});
+});
+
+test('a 401 response tells the user a management token is required', async () => {
+    const alerts = [];
+    const unauthorized = () => new Response(JSON.stringify({ detail: '需要管理令牌' }), { status: 401 });
+    const c = client({ fetch: async (url, options = {}) => (options.method ? unauthorized() : Response.json(kwsDoc)) });
+    c.scope.alert = message => alerts.push(message);
+    c.scope.confirm = () => true;
+    await c.scope.reloadVoiceprints();
+    await c.scope.deleteVoiceprint('a', '张三');
+    assert.equal(alerts.length, 2);
+    for (const message of alerts) assert.match(message, /需要管理令牌：请在服务器地址旁填写/);
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsSetSlot('command', true);
+    await c.scope.saveKwsKeywords();
+    assert.match(c.get('kwsUi.saveError'), /需要管理令牌：请在服务器地址旁填写/);
+    assert.equal(c.scope.kwsChangeCount(), 1);
+});
