@@ -21,6 +21,8 @@ SLOT_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 MAX_CONTEXT_VALUE_LENGTH = 64
 # 片段起点之后这段时间内的切换视为本片段的上下文（VAD 起点通常略早于关键词）。
 CONTEXT_LEAD_MS = 1000
+# 末个关键词 token 到检测时刻的间隔（chunk-16 模型、40ms 收包实测约 400ms），用于倒推关键词起止时刻。
+DETECTION_LAG_MS = 400
 REQUIRED_PATHS = ("kws_tokens_path", "kws_encoder_path", "kws_decoder_path", "kws_joiner_path", "kws_keywords_file")
 
 
@@ -83,8 +85,6 @@ class SherpaOnnxKwsSession:
         self._stream = spotter.create_stream()
         self._duplicate_cooldown_ms = duplicate_cooldown_ms
         self._last_detected: dict[tuple[str, str], int] = {}
-        # sherpa 的 token 时间戳相对最近一次 reset，换算回会话时间轴。
-        self._base_ms = 0
 
     def accept_pcm(self, pcm: bytes, sample_rate: int, end_ms: int) -> list[KwsDetection]:
         samples = _pcm16_to_float32(pcm)
@@ -100,9 +100,8 @@ class SherpaOnnxKwsSession:
             result = self._spotter.keyword_spotter.get_result(self._stream)
             if not result.keyword.strip():
                 continue
-            detection = _parse_result(result.keyword, result.timestamps, self._base_ms, end_ms)
+            detection = _parse_result(result.keyword, result.timestamps, end_ms)
             self._spotter.reset_stream(self._stream)
-            self._base_ms = end_ms
             if self._should_emit(detection, end_ms):
                 detections.append(detection)
 
@@ -201,13 +200,15 @@ def _pcm16_to_float32(pcm: bytes) -> np.ndarray:
     return samples.astype(np.float32) / 32768.0
 
 
-def _parse_result(keyword: str, timestamps, base_ms: int, detected_ms: int) -> KwsDetection:
+def _parse_result(keyword: str, timestamps, detected_ms: int) -> KwsDetection:
     label = keyword.strip()
     match = LABEL_PATTERN.match(label)
     category, value = (match.group(1), match.group(2).strip()) if match else ("marker", label)
     if timestamps:
-        start_ms = base_ms + round(timestamps[0] * 1000)
-        end_ms = base_ms + round(timestamps[-1] * 1000)
+        # sherpa 连续约 1.5s 无关键词时会在内部 reset，token 时间戳从该处重新计数，而 Python 绑定拿不到这个偏移；
+        # 只用 token 跨度，从检测时刻倒推起止。
+        end_ms = max(0, detected_ms - DETECTION_LAG_MS)
+        start_ms = max(0, end_ms - round((timestamps[-1] - timestamps[0]) * 1000))
     else:
         start_ms, end_ms = None, detected_ms
     return KwsDetection(category=category, value=value, start_ms=start_ms, end_ms=end_ms)

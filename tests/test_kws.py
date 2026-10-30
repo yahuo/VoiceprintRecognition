@@ -31,12 +31,13 @@ class KwsServiceTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "KWS_TOKENS_PATH"):
             create_kws_service({"kws_enabled": True})
 
-    def test_label_is_category_and_value_with_session_time(self):
-        detection = _parse_result("bed:12床", [0.44, 0.52, 0.96], base_ms=7000, detected_ms=8800)
-        self.assertEqual(detection, KwsDetection("bed", "12床", start_ms=7440, end_ms=7960))
-        self.assertEqual(_parse_result("command:next_bed", [], 0, 500),
+    def test_label_is_category_and_value_timed_back_from_detection(self):
+        # token 时间戳相对 sherpa 内部 reset，只取跨度：起止由检测时刻倒推。
+        detection = _parse_result("bed:12床", [0.08, 0.36, 0.64], detected_ms=27040)
+        self.assertEqual(detection, KwsDetection("bed", "12床", start_ms=26080, end_ms=26640))
+        self.assertEqual(_parse_result("command:next_bed", [], 500),
                          KwsDetection("command", "next_bed", start_ms=None, end_ms=500))
-        self.assertEqual(_parse_result("体温", [0.1], 0, 500).category, "marker")
+        self.assertEqual(_parse_result("体温", [0.1], 500).category, "marker")
 
     def test_context_slots_are_validated(self):
         self.assertEqual(parse_context_slots(" bed, ward ,bed"), ("bed", "ward"))

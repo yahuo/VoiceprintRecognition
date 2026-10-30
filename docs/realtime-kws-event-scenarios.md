@@ -59,7 +59,7 @@ python scripts/build_kws_keywords.py --tokens /models/kws/tokens.txt keywords_ra
 }
 ```
 
-`ts_ms` 为检测到时已收音频的位置，通常比 `end_ms` 晚 0.5–0.9s；`start_ms` 拿不到时为 `null`。
+`ts_ms` 为检测到时已收音频的位置，比关键词实际结束晚约 0.2–0.45s。sherpa-onnx 连续约 1.5s 无关键词时会在内部重置，token 时间戳从重置处重新计数，Python 接口拿不到这个偏移；因此 `start_ms/end_ms` 是由 `ts_ms` 减去固定检测延迟（`DETECTION_LAG_MS`，400ms）和 token 跨度倒推出来的估计值。实测与真实起止相差在 ±0.4s 以内，多数在 0.2s 以内。拿不到 token 时间戳时，`start_ms` 为 `null`。
 
 ### state.changed：槽位取值真正变化时
 
@@ -78,7 +78,7 @@ python scripts/build_kws_keywords.py --tokens /models/kws/tokens.txt keywords_ra
 
 `ts_ms` 是生效时刻：KWS 来源取关键词起点，客户端来源取收到 `set_context` 时的音频位置。`source` 为 `kws` 或 `client`。只在当前值（时间上最晚的一次设置）改变时推送，重复说同一床号、重复设置都不推送。
 
-KWS 有 0.5–0.9s 检测延迟。若这段时间内客户端已 `set_context`，晚到的槽位命中起点早于客户端设置：它只修正该时段片段的 `context`，不改变当前值、不推 `state.changed`，`kws.detected` 照常推送。
+KWS 有约 0.2–0.45s 的检测延迟。若这段时间内客户端已 `set_context`，晚到的槽位命中起点早于客户端设置：它只修正该时段片段的 `context`，不改变当前值、不推 `state.changed`，`kws.detected` 照常推送。
 
 ### transcript：标注上下文
 
@@ -178,6 +178,13 @@ KWS_DUPLICATE_COOLDOWN_MS=2000
 
 推荐 `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`（中英混合，约 3M 参数）；`wenetspeech-3.3M-2024-01-01` 也可用。依赖 `sherpa-onnx>=2.0.1`。
 
-已验证（macOS TTS 合成音频，单 CPU 线程）：两个模型均能检出“十二床”“十五床”“下一床”“体温”，检测延迟约 0.5–0.9s，RTF 约 0.006；“二床/十二床”“一床/下一床”在该样本上没有互相误触发；接入服务后时间轴与 `context` 标注正确。
+已验证（macOS TTS 合成音频，单 CPU 线程）：两个模型均能检出“十二床”“十五床”“下一床”“体温”，RTF 约 0.006；“二床/十二床”“一床/下一床”在该样本上没有互相误触发；接入服务后时间轴与 `context` 标注正确。
 
-未验证：真实病房语音的召回与误触发、多会话共享 `kws` 阶段的负载。“暂停记录”在 TTS 样本上未检出，上线前需用真实录音调关键词阈值。
+2026-10-30 在 xfusion 上用隔离实例测试，结果如下：
+
+- 检测延迟（从关键词结束到客户端收到）：p50 274ms，p95 399ms。
+- 误报：约 49 分钟真实会议录音中，`kws.detected` 为 0 次。
+- 8 路并发：kws 阶段平均 wait 为 3ms，排队集中在 nano 阶段。
+- 准入降级为只录音的会话照常推送事件。
+
+未验证：真实病房语音的召回率，以及 8 路以上并发时 `kws` 阶段的负载。“暂停记录”在部分上下文中漏检，上线前需要用真实录音调整关键词的增益和阈值。
