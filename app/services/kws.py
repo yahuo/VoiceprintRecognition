@@ -8,7 +8,7 @@ KWS_CONTEXT_SLOTS 中的类别是上下文槽位：命中即切换会话上下�
 其余类别（指令、标记等）只推送事件，由业务端解释。
 """
 
-from bisect import insort
+from bisect import bisect_right
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -123,26 +123,32 @@ class ContextTimeline:
     def __init__(self, slots):
         self.slots = tuple(slots)
         self._current = dict.fromkeys(self.slots)
-        self._changes: list[tuple[int, int, str, str | None]] = []  # (生效时刻, 插入序号, 槽位, 值)
+        # 槽位 -> (有序生效时刻, 对应值)；同一时刻只保留最后一次设置，没有新音频时反复 set_context 不会累积。
+        self._changes: dict[str, tuple[list[int], list[str | None]]] = {slot: ([], []) for slot in self.slots}
 
     def set(self, slot: str, value: str | None, at_ms: int) -> tuple[bool, str | None]:
         previous = self._current[slot]
         if value == previous:
             return False, previous
         self._current[slot] = value
-        insort(self._changes, (at_ms, len(self._changes), slot, value))
+        times, values = self._changes[slot]
+        index = bisect_right(times, at_ms)
+        if index and times[index - 1] == at_ms:
+            values[index - 1] = value
+        else:
+            times.insert(index, at_ms)
+            values.insert(index, value)
         return True, previous
 
     def at(self, start_ms: int, end_ms: int) -> tuple[dict[str, str | None], bool]:
         """返回片段上下文（起点 + 引导窗口内的最终取值）以及片段其余时段是否发生切换。"""
         lead_end = start_ms + CONTEXT_LEAD_MS
-        context = dict.fromkeys(self.slots)
+        context = {}
         changed = False
-        for at_ms, _, slot, value in self._changes:
-            if at_ms <= lead_end:
-                context[slot] = value
-            elif at_ms <= end_ms:
-                changed = True
+        for slot, (times, values) in self._changes.items():
+            index = bisect_right(times, lead_end)
+            context[slot] = values[index - 1] if index else None
+            changed = changed or bisect_right(times, end_ms) > index
         return context, changed
 
 
