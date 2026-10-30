@@ -78,6 +78,16 @@ CONFIG = {
     "vad_model_path": os.environ.get("VAD_MODEL_PATH", ""),
     "asr_model_path": os.environ.get("ASR_MODEL_PATH", ""),
     "spk_model_path": os.environ.get("SPK_MODEL_PATH", ""),
+    "kws_enabled": os.environ.get("KWS_ENABLED", "0").lower() in {"1", "true", "yes", "on"},
+    "kws_tokens_path": os.environ.get("KWS_TOKENS_PATH", ""),
+    "kws_encoder_path": os.environ.get("KWS_ENCODER_PATH", ""),
+    "kws_decoder_path": os.environ.get("KWS_DECODER_PATH", ""),
+    "kws_joiner_path": os.environ.get("KWS_JOINER_PATH", ""),
+    "kws_keywords_file": os.environ.get("KWS_KEYWORDS_FILE", ""),
+    "kws_provider": os.environ.get("KWS_PROVIDER", "cpu"),
+    "kws_num_threads": int(os.environ.get("KWS_NUM_THREADS", "1")),
+    "kws_sample_rate": int(os.environ.get("KWS_SAMPLE_RATE", "16000")),
+    "kws_duplicate_cooldown_ms": int(os.environ.get("KWS_DUPLICATE_COOLDOWN_MS", "2000")),
 }
 
 

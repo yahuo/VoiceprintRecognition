@@ -24,6 +24,9 @@ uvicorn>=0.20.0
 python-multipart>=0.0.6
 websockets>=10.0
 
+# 实时关键词识别 (KWS)，默认需 KWS_ENABLED=1 并配置模型路径才启用
+sherpa-onnx>=1.12.0
+
 # 实时录音
 pyaudio>=0.2.13
 

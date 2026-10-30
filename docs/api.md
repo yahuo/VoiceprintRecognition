@@ -10,7 +10,7 @@
 
 `offline_configured` 仅表示已提供 MOSS 配置，不代表 worker 已热启动、CUDA 可用或已通过真实音频验收。健康接口不返回 API key、LLM 地址、模型路径等私有配置。
 
-`GET /v1/live/metrics` 返回实时会话数和各推理阶段（`vad`、`paraformer`、`nano`、`campp`）的积压数 `pending`、累计调用/排队/执行时间，以及最近 512 次调用的排队 `wait_ms` 与执行 `run_ms`（p50/p95/max）。用于压测定位瓶颈，不含音频、文本或身份；进程重启后清零。
+`GET /v1/live/metrics` 返回实时会话数和各推理阶段（`vad`、`paraformer`、`nano`、`campp`、`kws`）的积压数 `pending`、累计调用/排队/执行时间，以及最近 512 次调用的排队 `wait_ms` 与执行 `run_ms`（p50/p95/max）。用于压测定位瓶颈，不含音频、文本或身份；进程重启后清零。
 
 同一接口还返回 `recording_only_sessions`（`active_sessions` 中只录音的会话数）和 `admission` 准入块：
 

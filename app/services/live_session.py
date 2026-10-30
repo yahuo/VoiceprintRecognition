@@ -3,6 +3,7 @@
 复用已验证的 streaming 缓存/收敛协议；没有 legacy 能量切分或重复整段 interim。
 各模型在独立的单线程 FIFO 阶段执行；积压时只合并/作废首遍，最终片段不丢弃。
 新会话开始时由 live_admission 判定一次；enforce 模式下超限的会话只录音。
+KWS 为可选旁路：按收包顺序在独立阶段检测关键词，只推送事件并给片段标注当前床号。
 """
 
 import asyncio
@@ -18,6 +19,7 @@ import anyio
 import torch
 
 from app.core import CONFIG
+from .kws import build_state_change_event
 from .live_admission import LiveAdmission
 from .recording_store import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH_BYTES
 from .streaming import FsmnVadSegmenter, IncrementalParaformer
@@ -134,7 +136,8 @@ VAD_STAGE = InferenceStage("vad", CONFIG["live_vad_cpu_threads"])
 PARAFORMER_STAGE = InferenceStage("paraformer")
 NANO_STAGE = InferenceStage("nano")
 CAMPP_STAGE = InferenceStage("campp")
-STAGES = {stage.name: stage for stage in (VAD_STAGE, PARAFORMER_STAGE, NANO_STAGE, CAMPP_STAGE)}
+KWS_STAGE = InferenceStage("kws")
+STAGES = {stage.name: stage for stage in (VAD_STAGE, PARAFORMER_STAGE, NANO_STAGE, CAMPP_STAGE, KWS_STAGE)}
 ADMISSION = LiveAdmission(
     mode=CONFIG["live_admission_mode"],
     max_sessions=CONFIG["live_admission_max_sessions"],
@@ -194,7 +197,9 @@ class SegmentWorkQueue:
         self._queue.task_done()
 
 
-async def run_live_session(websocket, service, recording_store, *, priority, allowed_speaker_ids):
+async def run_live_session(
+    websocket, service, recording_store, *, priority, allowed_speaker_ids, kws_service=None, session_id=None,
+):
     global _active_sessions, _recording_only_sessions
     _start_stages()
     # 判定与计数之间没有 await：同时加入的会话在事件循环里依次计数，硬上限不会被突发穿透。
@@ -206,6 +211,7 @@ async def run_live_session(websocket, service, recording_store, *, priority, all
         await _run_live_session(
             websocket, service, recording_store,
             priority=priority, allowed_speaker_ids=allowed_speaker_ids, transcribe=transcribe,
+            kws_service=kws_service, session_id=session_id,
         )
     finally:
         _active_sessions -= 1
@@ -213,8 +219,11 @@ async def run_live_session(websocket, service, recording_store, *, priority, all
             _recording_only_sessions -= 1
 
 
-async def _run_live_session(websocket, service, recording_store, *, priority, allowed_speaker_ids, transcribe=True):
-    """transcribe=False 为只录音会话：控制消息与录音提交不变，不送任何模型。"""
+async def _run_live_session(
+    websocket, service, recording_store, *, priority, allowed_speaker_ids, transcribe=True,
+    kws_service=None, session_id=None,
+):
+    """transcribe=False 为只录音会话：控制消息与录音提交不变，不送任何模型（含 KWS）。"""
     matching = transcribe and bool(allowed_speaker_ids)
     scope = service.build_matching_scope(allowed_speaker_ids) if matching else None
     vad = FsmnVadSegmenter(
@@ -235,6 +244,11 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
     committed = False
     transcription_failed = False
     disconnected = False
+    kws = kws_service.create_session() if transcribe and kws_service is not None else None
+    if kws is not None and not kws.enabled:
+        kws = None
+    tag_bed = kws is not None  # 字段是否出现只取决于会话开始时 KWS 是否可用
+    event_seq, current_bed, audio_bytes = 0, None, 0
 
     async def send(payload):
         if disconnected:
@@ -256,6 +270,7 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
             "audio": audio, "segmentId": segment_id, "revision": revision,
             "isFinal": is_final, "time": segment_time,
             "start_ms": bounds[0], "end_ms": bounds[1],
+            **({"bed": current_bed} if tag_bed else {}),
         })
         next_interim = len(audio) + interval_bytes
         if is_final:
@@ -265,6 +280,27 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
     async def enqueue_segments(segments):
         for segment in segments:
             await enqueue(segment.audio, (segment.start_ms, segment.end_ms), True)
+
+    async def detect_keywords(data):
+        nonlocal kws, event_seq, current_bed
+        audio_ms = audio_bytes * 1000 // (SAMPLE_RATE * SAMPLE_WIDTH_BYTES)
+        try:
+            detections = await KWS_STAGE.run(kws.accept_pcm, data, SAMPLE_RATE, audio_ms)
+        except Exception:
+            # KWS 只是旁路：失败后本会话停止检测，转写与录音不受影响。
+            kws = None
+            await send({"type": "status", "phase": "kws_unavailable", "message": "关键词识别失败，本次会话不再推送 KWS 事件"})
+            return
+        for detection in detections:
+            event_seq += 1
+            await send(detection.to_event(session_id=session_id, seq=event_seq, ts_ms=audio_ms))
+            if detection.category == "bed":
+                current_bed = detection.normalized
+                event_seq += 1
+                await send(build_state_change_event(
+                    session_id=session_id, seq=event_seq, current_bed=current_bed,
+                    detection=detection, ts_ms=audio_ms,
+                ))
 
     async def flush():
         await enqueue_segments(await VAD_STAGE.run(vad.flush))
@@ -401,6 +437,10 @@ async def _run_live_session(websocket, service, recording_store, *, priority, al
             writer.write_pcm(data)
             if not transcribe:
                 continue
+            # 与 VAD 片段边界同一时间轴：暂停期间的音频不计入。
+            audio_bytes += len(data)
+            if kws is not None:
+                await detect_keywords(data)
             if vad.pending_bytes + len(data) < vad.chunk_bytes:
                 vad.feed(data)  # 不足一帧只缓存，不调用模型也不切换线程
             else:

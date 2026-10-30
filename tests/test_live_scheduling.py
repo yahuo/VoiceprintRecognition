@@ -113,7 +113,7 @@ class InferenceStageTest(unittest.TestCase):
 class LiveMetricsTest(unittest.TestCase):
     def test_metrics_endpoint_reports_stages_without_content(self):
         response = asyncio.run(server.get_live_metrics())
-        self.assertEqual(set(response["stages"]), {"vad", "paraformer", "nano", "campp"})
+        self.assertEqual(set(response["stages"]), {"vad", "paraformer", "nano", "campp", "kws"})
         self.assertIsInstance(response["active_sessions"], int)
         for stage in response["stages"].values():
             self.assertEqual(

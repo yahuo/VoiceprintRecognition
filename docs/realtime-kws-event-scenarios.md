@@ -375,6 +375,35 @@ Voice Service -> Client: kws.detected、state.changed、asr.partial、asr.final
 | 消息队列 | 后端服务解耦，例如语音服务发事件，业务系统订阅 |
 | REST 轮询 | 不推荐实时场景，只适合查询历史结果 |
 
+## 当前实现约定
+
+当前实现把 KWS 接到实时 WebSocket 入口：
+
+```text
+WS /ws/meeting/live
+```
+
+客户端继续发送 16kHz、16bit、单声道 PCM 音频帧，可用 `session_id` 查询参数指定会话 ID（缺省时服务端生成）。服务端在原有实时转写之外，按收包顺序把音频帧送入独立的 KWS 推理阶段；命中后推送 `kws.detected`，床号类事件会继续推送 `state.current_bed_changed`。`ts_ms` 与 `transcript` 的 `start_ms/end_ms` 使用同一时间轴（不含暂停期间）。
+
+KWS 启用时，每条 `transcript` 额外带 `bed` 字段，取片段入队时的当前床号；未启用时不出现该字段。准入降级为只录音的会话不做 KWS；单个会话内 KWS 出错时推送 `status`（`phase=kws_unavailable`）并停止检测，转写和录音不受影响。
+
+KWS 默认关闭。启用时需要配置：
+
+```bash
+KWS_ENABLED=1
+KWS_TOKENS_PATH=/app/models/kws/tokens.txt
+KWS_ENCODER_PATH=/app/models/kws/encoder.onnx
+KWS_DECODER_PATH=/app/models/kws/decoder.onnx
+KWS_JOINER_PATH=/app/models/kws/joiner.onnx
+KWS_KEYWORDS_FILE=/app/models/kws/keywords.txt
+KWS_PROVIDER=cpu
+KWS_NUM_THREADS=1
+KWS_SAMPLE_RATE=16000
+KWS_DUPLICATE_COOLDOWN_MS=2000
+```
+
+未配置或模型加载失败时，WebSocket 仍按原有实时转写逻辑工作，只是不推送 KWS 事件。
+
 ## 选择建议
 
 第一版建议先做场景 A：

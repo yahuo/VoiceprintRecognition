@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import threading
+import uuid
 from typing import Annotated
 
 import anyio
@@ -21,6 +22,7 @@ from .core import (
     CONFIG, ModelService, delete_voiceprint_by_id, generate_voiceprint_id,
     load_voiceprint_index, save_voiceprint_embedding,
 )
+from .services.kws import create_kws_service
 from .services.live_session import ACCURACY_HOTWORDS, final_token_budget, live_metrics, run_live_session
 from .services.meeting_jobs import MeetingJobStore, normalize_job_id
 from .services.moss import MossError, max_audio_seconds
@@ -36,6 +38,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Meeting-Job-Id"])
 service = ModelService()
+kws_service = create_kws_service(CONFIG)
 meeting_jobs = MeetingJobStore()
 DEVICE = "cpu"
 TRANSCRIPTION_PRIORITIES = frozenset({"speed", "accuracy"})
@@ -457,11 +460,16 @@ async def websocket_live(websocket: WebSocket):
         allowed = _normalize_allowed_speaker_ids(websocket.query_params.getlist("allowed_speaker_ids"))
         values = websocket.query_params.getlist("priority")
         priority = _normalize_transcription_priority(values[-1] if values else None)
+        session_ids = websocket.query_params.getlist("session_id")
+        session_id = (session_ids[-1].strip() if session_ids else "") or f"live-{uuid.uuid4()}"
     except HTTPException as exc:
         await websocket.send_json({"type": "error", "message": exc.detail})
         await websocket.close(code=1008)
         return
-    await run_live_session(websocket, service, recording_store, priority=priority, allowed_speaker_ids=allowed)
+    await run_live_session(
+        websocket, service, recording_store, priority=priority, allowed_speaker_ids=allowed,
+        kws_service=kws_service, session_id=session_id,
+    )
 
 
 if __name__ == "__main__":
