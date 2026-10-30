@@ -415,7 +415,8 @@ footer { padding: 40px 0 60px; color: var(--dim); font-size: 13px; border-top: 1
         <h3>已验证</h3>
         <ul>
           <li>zh-en-3M（2025-12-20）与 wenetspeech-3.3M 均检出“十二床”“十五床”“下一床”“体温”（macOS TTS 合成音频）</li>
-          <li>检测延迟约 0.5–0.9s；单 CPU 线程 RTF 约 0.006</li>
+          <li>检测延迟 p50 0.27s、p95 0.40s（xfusion 隔离实例，8 路并发）；单 CPU 线程 RTF 约 0.006</li>
+          <li>约 49 分钟真实会议录音零误报；8 路并发下 kws 阶段平均 wait 3ms</li>
           <li>该样本上“二床/十二床”“一床/下一床”无互相误触发</li>
           <li>接入服务后的时间轴、context 标注、配置缺失启动失败</li>
           <li>回归测试覆盖：槽位/事件分流、片段中途切换、set_context 校验、晚到命中、KWS 故障、只录音</li>
@@ -424,9 +425,9 @@ footer { padding: 40px 0 60px; color: var(--dim); font-size: 13px; border-top: 1
       <div class="status-card panel todo">
         <h3>未验证</h3>
         <ul>
-          <li>真实病房语音的召回与误触发（TTS 样本不能代表）</li>
-          <li>“暂停记录”在 TTS 样本上未检出，需真实录音调 <code>:增益</code> / <code>#阈值</code></li>
-          <li>多会话共享单线程 <code>kws</code> 阶段的负载：压测看 <code>/v1/live/metrics</code> 的 kws <code>wait_ms</code>；估算约 160 路实时并发前不会积压</li>
+          <li>真实病房语音的召回率（TTS 样本不能代表）</li>
+          <li>“暂停记录”在部分上下文中漏检，需真实录音调 <code>:增益</code> / <code>#阈值</code></li>
+          <li>8 路以上并发时单线程 <code>kws</code> 阶段的负载：看 <code>/v1/live/metrics</code> 的 kws <code>wait_ms</code>；估算约 160 路前不会积压</li>
         </ul>
       </div>
       <div class="status-card panel">
@@ -552,7 +553,7 @@ const EVENTS = {
       type: '事件类型。原始命中固定为 kws.detected。',
       session_id: '会话 ID：连接时用 ?session_id= 指定，缺省由服务端生成 live-<uuid>。',
       seq: '会话内递增序号，kws.detected 与 state.changed 共用，用于排序和去重。',
-      ts_ms: '检测到时已收到的音频位置。比 end_ms 晚 0.5–0.9s，这是 KWS 的检测延迟。',
+      ts_ms: '检测到时已收到的音频位置，比关键词实际结束晚约 0.2–0.45s（KWS 检测延迟）。start_ms/end_ms 由它和 token 跨度倒推，误差约 ±0.4s。',
       source: '事件来源，这里固定为 kws。',
       category: '标签冒号前的类别。在 KWS_CONTEXT_SLOTS 里就是槽位，否则只推事件。',
       value: '标签冒号后的值，原样返回（例如 12床、next_bed、查体）。',
@@ -902,7 +903,7 @@ reset('normal');
 const FAQ = [
   { q: '服务端会自己理解“下一床”吗？', a: '<b>不会。</b>“下一床”是哪一床取决于查房队列，这是业务知识。服务端只推 <code>kws.detected(command:next_bed)</code>，业务端算出床号后用 <code>set_context</code> 回写，之后的转写自然按新床号标注。', demo: () => { reset('normal'); run(['bed12', 'next', 'plain']); } },
   { q: '一句话中途换了床号，这句归谁？', a: '按<b>片段起点 + 1s 引导窗口</b>结束时的值归属；窗口之后发生的切换只标 <code>contextChanged=true</code>，服务端不切句子，交给业务端或人工确认。', demo: () => { reset('normal'); run(['bed12', 'mid', 'plain']); } },
-  { q: '业务端点选和 KWS 同时发生，以谁为准？', a: 'KWS 有 0.5–0.9s 检测延迟。<b>当前值取时间上最晚的一次设置。</b>如果检测延迟期间业务端已经 <code>set_context</code>，晚到命中的起点更早：它只修正那段时间的片段 context，不改当前值、不推 <code>state.changed</code>，<code>kws.detected</code> 照常推。', demo: () => { reset('normal'); run(['race', 'plain']); } },
+  { q: '业务端点选和 KWS 同时发生，以谁为准？', a: 'KWS 有约 0.2–0.45s 检测延迟。<b>当前值取时间上最晚的一次设置。</b>如果检测延迟期间业务端已经 <code>set_context</code>，晚到命中的起点更早：它只修正那段时间的片段 context，不改当前值、不推 <code>state.changed</code>，<code>kws.detected</code> 照常推。', demo: () => { reset('normal'); run(['race', 'plain']); } },
   { q: '准入降级为只录音，KWS 还工作吗？', a: '<b>照常工作。</b>KWS 属于实时对话的一部分：没有 transcript，但 <code>kws.detected</code>、<code>state.changed</code>、<code>set_context</code> 都在，业务端仍能实时切换病人。停止后 <code>transcriptionStatus=recording_only</code>，可按 fileId 生成 MOSS 复核稿。', demo: () => { reset('recording_only'); run(['bed12', 'next', 'plain']); } },
   { q: 'KWS 中途挂了会怎样？', a: '推一次 <code>status(phase=kws_unavailable)</code>，本场停止关键词检测。<b>转写、录音、set_context 都不受影响</b>，context 仍可由业务端维护。', demo: () => { reset('normal'); S.kwsFault = true; $('#faultBtn').classList.add('active'); run(['bed12', 'plain']); } },
   { q: '说“暂停记录”后，能再说“继续记录”恢复吗？', a: '<b>不能。</b>暂停期间音频不入录音、也不进 KWS，服务端听不到任何话。恢复只能由业务端发 <code>resume_recording</code>（例如界面按钮）。', demo: () => { reset('normal'); run(['bed12', 'pause', 'plain']); } },
