@@ -35,6 +35,26 @@
 
 窗口信号来自已完成的调用，多人同时加入时仍接近 0，这类突发由会话数硬上限兜底。只录音会话不占用模型，不计入上限。阈值取自 GB10 fp32 压测初值：16 路时 P95 约 7 秒，利用率 0.85 约对应 13～14 路。排队 p95 阈值尚未按单轮数据校准。
 
+## 鉴权与跨域
+
+设置环境变量 `ADMIN_TOKEN` 后，以下管理类写接口要求请求头 `Authorization: Bearer <ADMIN_TOKEN>`，缺失或不匹配返回 401（`detail` 为“需要管理令牌”或“管理令牌错误”，带 `WWW-Authenticate: Bearer`）：
+
+- `POST /v1/voiceprint/register`
+- `DELETE /v1/voiceprint`
+- `POST /v1/voiceprint/reload`
+- `POST /v1/meeting/recordings/delete`
+- `PUT /v1/kws/keywords`
+
+其他接口不校验令牌：健康与查询接口、离线转写与任务、录音下载、会议摘要、`POST /v1/kws/keywords/preview` 和实时 WebSocket。网页在服务器地址旁填写“管理令牌”（只存本浏览器 localStorage），上述请求自动携带该头。
+
+```bash
+curl -X DELETE 'http://localhost:8000/v1/voiceprint?id=doctor-a' -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`CORS_ALLOW_ORIGINS` 为逗号分隔的允许跨域来源（如 `https://his.example.com,https://emr.example.com`），配置后浏览器只放行这些来源的跨域请求；同源访问 `/client` 不受影响。未设置时为 `*`。
+
+两者均未设置时与旧版本行为一致：写接口不鉴权且允许任意来源跨域，内网中任意网页都可借用户浏览器修改关键词、注册或删除声纹、删除录音。生产环境应设置 `ADMIN_TOKEN`（较长的随机值，不提交 Git、不写入镜像），把它告知调用写接口的业务端，并按需配置 `CORS_ALLOW_ORIGINS`；服务启动时未设置 `ADMIN_TOKEN` 会打印警告。令牌以明文请求头传输，跨网段访问应置于 HTTPS 网关之后。
+
 ## 声纹管理
 
 ### 注册
@@ -49,6 +69,8 @@
 
 成功返回 `status/id/name/message/embedding_shape`。提取失败返回 400；空音频返回 422，超过 `MAX_UPLOAD_BYTES`（默认 256 MiB）返回 413，与会议上传共用限制及临时文件清理。声纹向量不通过 API 返回。
 
+设置了 `ADMIN_TOKEN` 时需加 `-H "Authorization: Bearer $ADMIN_TOKEN"`，见[鉴权与跨域](#鉴权与跨域)。
+
 ```bash
 curl -X POST http://localhost:8000/v1/voiceprint/register \
   -F 'id=doctor-a' -F 'name=医生A' -F 'file=@registration.wav'
@@ -58,8 +80,8 @@ curl -X POST http://localhost:8000/v1/voiceprint/register \
 
 - `GET /v1/voiceprint/list` → `{status, count, speakers:[{id,name}]}`。
 - `GET /v1/voiceprint/exists?id=doctor-a` → `{registered, id, name}`。
-- `DELETE /v1/voiceprint?id=doctor-a`：不存在返回 404，成功返回 `{status,id,name,message}`。
-- `POST /v1/voiceprint/reload`：重新加载已有索引与向量。
+- `DELETE /v1/voiceprint?id=doctor-a`（受 `ADMIN_TOKEN` 保护）：不存在返回 404，成功返回 `{status,id,name,message}`。
+- `POST /v1/voiceprint/reload`（受 `ADMIN_TOKEN` 保护）：重新加载已有索引与向量。
 
 id 不用于构造向量文件路径，旧名字索引仍支持迁移。不要把姓名或录音文件名当作声纹识别结果。
 
@@ -236,17 +258,17 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 ### 原始录音管理
 
 - `GET /v1/meeting/recordings/{fileId}`：下载 `{fileId}.wav`。
-- `POST /v1/meeting/recordings/delete`，JSON：`{"fileIds":["UUID"],"reason":"可选","requestId":"可选"}`。
+- `POST /v1/meeting/recordings/delete`（受 `ADMIN_TOKEN` 保护），JSON：`{"fileIds":["UUID"],"reason":"可选","requestId":"可选"}`。
 - 返回 `{status, deleted, missing, failed}`，幂等删除，部分失败时 `status=partial`。
 - fileId 必须是 UUID；服务端不保存病人 id/住院号等业务关联。
 
 ## 关键词维护（KWS）
 
-网页“关键词”页使用以下接口；规则与示例见 [实时 KWS 事件交互场景说明](realtime-kws-event-scenarios.md#关键词与标签)。与声纹接口一样不另设鉴权，须部署在受信网络或网关之后。
+网页“关键词”页使用以下接口；规则与示例见 [实时 KWS 事件交互场景说明](realtime-kws-event-scenarios.md#关键词与标签)。保存（`PUT`）受 `ADMIN_TOKEN` 保护，读取与 preview 不需要令牌，见[鉴权与跨域](#鉴权与跨域)。
 
 - `GET /v1/kws/keywords`：KWS 未启用时返回 `{"enabled": false}`；否则返回 `{enabled, version, updated_at, categories, active_sessions}`。`version` 为 0 且 `updated_at` 为 null 表示内容来自 `KWS_KEYWORDS_FILE` 导入、尚未在页面保存。每个关键词带服务端生成的发音 `tokens`。
 - `POST /v1/kws/keywords/preview`，`{"phrases": ["十二床", "12床"]}`（最多 200 个）→ `{"items": [{phrase, tokens, error}]}`，`error` 非空表示该说法无法识别。不改变任何状态。
-- `PUT /v1/kws/keywords`，提交整表：
+- `PUT /v1/kws/keywords`（受 `ADMIN_TOKEN` 保护），提交整表：
 
 ```json
 {

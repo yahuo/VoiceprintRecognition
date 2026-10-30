@@ -114,6 +114,7 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 
 - 追加 `KWS_KEYWORDS_STORE`，指向可写且随 Pod 保留的路径（建议与 `/data/voiceprints` 同卷的 `/data/kws/keywords.json`，部署前核实该卷可写、`/data/models/local` 仍为只读）；数据备份需包含该文件。
 - 现网 `keywords.txt` 已是 token 格式，直接导入后页面上的说法显示为拼音。宜另放一份中文说法的导入文件（如 `十二床 @bed:12床`），`KWS_KEYWORDS_FILE` 指向它；只在关键词库不存在时读取。
+- 关键词保存、声纹注册/删除/重载与录音删除改为可选令牌鉴权：现网须配置 `ADMIN_TOKEN`（不写入镜像与 Git），并在升级前通知调用这些写接口的业务端加 `Authorization: Bearer <令牌>`，否则配置后其请求返回 401；可同时用 `CORS_ALLOW_ORIGINS` 限定跨域来源。见 [docs/api.md](api.md#鉴权与跨域)。
 - 镜像需含 `pypinyin`（`deploy/Dockerfile.xfusion` 已加入）。现网为单副本，保存即对新会话生效；扩成多副本前须先解决关键词库共享与通知。
 
 ## 尚未由部署验收证明的事项
