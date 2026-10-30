@@ -72,6 +72,13 @@ class CompileCategoriesTest(unittest.TestCase):
             compile_categories([category("bed", slot=True)], VOCABULARY)
         with self.assertRaisesRegex(KeywordsError, "categories 须为列表"):
             compile_categories({"bed": []}, VOCABULARY)
+        with self.assertRaisesRegex(KeywordsError, "类别不能超过"):
+            compile_categories([category(f"c{i}") for i in range(65)], VOCABULARY)
+        # 不合法的条目也计入上限，超大请求不逐条校验。
+        with self.assertRaisesRegex(KeywordsError, "关键词不能超过"):
+            compile_categories([{"code": "bed", "keywords": [{"phrase": "x"}] * 2001}], VOCABULARY)
+        with self.assertRaisesRegex(KeywordsError, "keywords 须为列表"):
+            compile_categories([{"code": "bed", "keywords": "a" * 5000}], VOCABULARY)
 
     @unittest.skipUnless(importlib.util.find_spec("pypinyin"), "需要 pypinyin")
     def test_chinese_phrases_with_same_pronunciation_are_rejected(self):
