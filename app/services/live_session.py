@@ -3,7 +3,8 @@
 复用已验证的 streaming 缓存/收敛协议；没有 legacy 能量切分或重复整段 interim。
 各模型在独立的单线程 FIFO 阶段执行；积压时只合并/作废首遍，最终片段不丢弃。
 新会话开始时由 live_admission 判定一次；enforce 模式下超限的会话只录音。
-KWS 为可选旁路：按收包顺序在独立阶段检测关键词，只推送事件并给片段标注当前床号。
+KWS 为可选旁路：按收包顺序在独立阶段检测关键词并推送事件；上下文槽位（如床号）按音频时间标注到片段，
+业务端可用 set_context 纠正或补设。
 """
 
 import asyncio
@@ -19,7 +20,7 @@ import anyio
 import torch
 
 from app.core import CONFIG
-from .kws import build_state_change_event
+from .kws import MAX_CONTEXT_VALUE_LENGTH, ContextTimeline, build_state_event
 from .live_admission import LiveAdmission
 from .recording_store import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH_BYTES
 from .streaming import FsmnVadSegmenter, IncrementalParaformer
@@ -223,7 +224,7 @@ async def _run_live_session(
     websocket, service, recording_store, *, priority, allowed_speaker_ids, transcribe=True,
     kws_service=None, session_id=None,
 ):
-    """transcribe=False 为只录音会话：控制消息与录音提交不变，不送任何模型（含 KWS）。"""
+    """transcribe=False 为只录音会话：控制消息与录音提交不变，不送转写/声纹模型；KWS 照常检测。"""
     matching = transcribe and bool(allowed_speaker_ids)
     scope = service.build_matching_scope(allowed_speaker_ids) if matching else None
     vad = FsmnVadSegmenter(
@@ -244,11 +245,20 @@ async def _run_live_session(
     committed = False
     transcription_failed = False
     disconnected = False
-    kws = kws_service.create_session() if transcribe and kws_service is not None else None
-    if kws is not None and not kws.enabled:
-        kws = None
-    tag_bed = kws is not None  # 字段是否出现只取决于会话开始时 KWS 是否可用
-    event_seq, current_bed, audio_bytes = 0, None, 0
+    kws_enabled = kws_service is not None and kws_service.enabled
+    kws = kws_service.create_session() if kws_enabled else None
+    # 上下文随 KWS 启用而存在；会话中 KWS 出错停用后仍可由 set_context 维护。
+    context = ContextTimeline(kws_service.context_slots) if kws_enabled else None
+    event_seq, audio_bytes = 0, 0
+
+    def audio_ms():
+        return audio_bytes * 1000 // (SAMPLE_RATE * SAMPLE_WIDTH_BYTES)
+
+    def segment_fields(work):
+        fields = {key: value for key, value in work.items() if key != "audio"}
+        if context is not None:
+            fields["context"], fields["contextChanged"] = context.at(work["start_ms"], work["end_ms"])
+        return fields
 
     async def send(payload):
         if disconnected:
@@ -270,7 +280,6 @@ async def _run_live_session(
             "audio": audio, "segmentId": segment_id, "revision": revision,
             "isFinal": is_final, "time": segment_time,
             "start_ms": bounds[0], "end_ms": bounds[1],
-            **({"bed": current_bed} if tag_bed else {}),
         })
         next_interim = len(audio) + interval_bytes
         if is_final:
@@ -281,11 +290,21 @@ async def _run_live_session(
         for segment in segments:
             await enqueue(segment.audio, (segment.start_ms, segment.end_ms), True)
 
+    async def update_context(slot, value, at_ms, source):
+        nonlocal event_seq
+        changed, previous = context.set(slot, value, at_ms)
+        if changed:
+            event_seq += 1
+            await send(build_state_event(
+                session_id=session_id, seq=event_seq, ts_ms=at_ms, source=source,
+                slot=slot, value=value, previous=previous,
+            ))
+
     async def detect_keywords(data):
-        nonlocal kws, event_seq, current_bed
-        audio_ms = audio_bytes * 1000 // (SAMPLE_RATE * SAMPLE_WIDTH_BYTES)
+        nonlocal kws, event_seq
+        now_ms = audio_ms()
         try:
-            detections = await KWS_STAGE.run(kws.accept_pcm, data, SAMPLE_RATE, audio_ms)
+            detections = await KWS_STAGE.run(kws.accept_pcm, data, SAMPLE_RATE, now_ms)
         except Exception:
             # KWS 只是旁路：失败后本会话停止检测，转写与录音不受影响。
             kws = None
@@ -293,14 +312,21 @@ async def _run_live_session(
             return
         for detection in detections:
             event_seq += 1
-            await send(detection.to_event(session_id=session_id, seq=event_seq, ts_ms=audio_ms))
-            if detection.category == "bed":
-                current_bed = detection.normalized
-                event_seq += 1
-                await send(build_state_change_event(
-                    session_id=session_id, seq=event_seq, current_bed=current_bed,
-                    detection=detection, ts_ms=audio_ms,
-                ))
+            await send(detection.to_event(session_id=session_id, seq=event_seq, ts_ms=now_ms))
+            if detection.category in context.slots:
+                at_ms = detection.start_ms if detection.start_ms is not None else now_ms
+                await update_context(detection.category, detection.value, at_ms, "kws")
+
+    async def set_context(control):
+        slot, value = control.get("slot"), control.get("value")
+        if context is None:
+            await send({"type": "error", "message": "KWS 未启用，不支持 set_context"})
+        elif slot not in context.slots:
+            await send({"type": "error", "message": f"未知上下文槽位: {slot}"})
+        elif value is not None and not (isinstance(value, str) and 0 < len(value.strip()) <= MAX_CONTEXT_VALUE_LENGTH):
+            await send({"type": "error", "message": f"上下文值须为 1-{MAX_CONTEXT_VALUE_LENGTH} 字符的字符串或 null"})
+        else:
+            await update_context(slot, value.strip() if value is not None else None, audio_ms(), "client")
 
     async def flush():
         await enqueue_segments(await VAD_STAGE.run(vad.flush))
@@ -321,7 +347,7 @@ async def _run_live_session(
         text = partial_texts.get(sid, "")
         if text:
             await send({
-                **{key: value for key, value in work.items() if key != "audio"},
+                **segment_fields(work),
                 "type": "transcript", "text": text, "speakerId": None,
                 "speaker": "未知", "confidence": 0.0, "degraded": True,
             })
@@ -382,7 +408,7 @@ async def _run_live_session(
                     except Exception:
                         speaker_id, speaker, score = None, "未知", 0.0
                 await send({
-                    **{key: value for key, value in work.items() if key != "audio"},
+                    **segment_fields(work),
                     "type": "transcript", "text": text,
                     "speakerId": speaker_id, "speaker": speaker, "confidence": round(score, 2),
                 })
@@ -422,6 +448,8 @@ async def _run_live_session(
                         await flush()
                     paused = True
                     await send({"type": "recording_paused"})
+                elif kind == "set_context":
+                    await set_context(control)
                 elif kind == "resume_recording":
                     # flush 已重置缓存并保留绝对采样原点，不能重复计入暂停时长。
                     paused = False
@@ -435,12 +463,12 @@ async def _run_live_session(
             if len(data) > 2 * 1024 * 1024:
                 raise ValueError("单个 PCM 包超过限制")
             writer.write_pcm(data)
-            if not transcribe:
-                continue
             # 与 VAD 片段边界同一时间轴：暂停期间的音频不计入。
             audio_bytes += len(data)
             if kws is not None:
                 await detect_keywords(data)
+            if not transcribe:
+                continue
             if vad.pending_bytes + len(data) < vad.chunk_bytes:
                 vad.feed(data)  # 不足一帧只缓存，不调用模型也不切换线程
             else:

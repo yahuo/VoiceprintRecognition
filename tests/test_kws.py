@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -6,14 +8,16 @@ from unittest.mock import patch
 from app import server
 from app.services import live_session
 from app.services.kws import (
+    ContextTimeline,
     KwsDetection,
-    _categorize_keyword,
-    _normalize_keyword,
+    _parse_result,
     _pcm16_to_float32,
-    build_state_change_event,
+    build_state_event,
     create_kws_service,
+    parse_context_slots,
 )
 from app.services.recording_store import RecordingStore
+from scripts.build_kws_keywords import build
 from tests.test_live_admission import admission
 from tests.test_streaming_pipeline import FakeStreamingService, pcm
 from tests.test_transcription_priority import _WebSocket, _packetize
@@ -21,59 +25,79 @@ from tests.test_transcription_priority import _WebSocket, _packetize
 
 class KwsServiceTest(unittest.TestCase):
     def test_create_kws_service_is_disabled_by_default(self):
-        service = create_kws_service({"kws_enabled": False})
+        self.assertFalse(create_kws_service({"kws_enabled": False}).enabled)
 
-        self.assertFalse(service.enabled)
-        self.assertFalse(service.create_session().enabled)
+    def test_enabled_with_missing_paths_fails_fast(self):
+        with self.assertRaisesRegex(RuntimeError, "KWS_TOKENS_PATH"):
+            create_kws_service({"kws_enabled": True})
 
-    def test_missing_model_paths_disable_kws_without_raising(self):
-        service = create_kws_service({"kws_enabled": True})
+    def test_label_is_category_and_value_with_session_time(self):
+        detection = _parse_result("bed:12床", [0.44, 0.52, 0.96], base_ms=7000, detected_ms=8800)
+        self.assertEqual(detection, KwsDetection("bed", "12床", start_ms=7440, end_ms=7960))
+        self.assertEqual(_parse_result("command:next_bed", [], 0, 500),
+                         KwsDetection("command", "next_bed", start_ms=None, end_ms=500))
+        self.assertEqual(_parse_result("体温", [0.1], 0, 500).category, "marker")
 
-        self.assertFalse(service.enabled)
-        self.assertIn("KWS 配置缺失", service.reason)
-
-    def test_keyword_normalization_supports_alias_and_commands(self):
-        self.assertEqual(_normalize_keyword("shí èr chuáng @12床"), "12床")
-        self.assertEqual(_normalize_keyword("下一床"), "next_bed")
-
-    def test_keyword_category(self):
-        self.assertEqual(_categorize_keyword("12床"), "bed")
-        self.assertEqual(_categorize_keyword("next_bed"), "command")
-        self.assertEqual(_categorize_keyword("重点"), "marker")
+    def test_context_slots_are_validated(self):
+        self.assertEqual(parse_context_slots(" bed, ward ,bed"), ("bed", "ward"))
+        with self.assertRaises(ValueError):
+            parse_context_slots("bed,Bad-Slot")
 
     def test_pcm16_to_float32_trims_odd_byte(self):
         samples = _pcm16_to_float32(b"\x00\x40\xff")
-
         self.assertEqual(samples.shape[0], 1)
         self.assertAlmostEqual(float(samples[0]), 0.5, places=5)
 
-    def test_state_change_event(self):
-        detection = KwsDetection(
-            keyword="十二床",
-            normalized="12床",
-            category="bed",
-            score=0.86,
-        )
+    def test_state_event(self):
+        event = build_state_event(session_id="s1", seq=2, ts_ms=1000, source="kws",
+                                  slot="bed", value="12床", previous=None)
+        self.assertEqual((event["type"], event["slot"], event["value"]), ("state.changed", "bed", "12床"))
 
-        event = build_state_change_event(
-            session_id="s1",
-            seq=2,
-            current_bed="12床",
-            detection=detection,
-            ts_ms=1000,
-        )
 
-        self.assertEqual(event["type"], "state.current_bed_changed")
-        self.assertEqual(event["current_bed"], "12床")
-        self.assertEqual(event["confidence"], 0.86)
+class ContextTimelineTest(unittest.TestCase):
+    def test_segment_takes_context_at_start_with_lead_window(self):
+        context = ContextTimeline(["bed", "ward"])
+        context.set("ward", "三病区", 0)
+        context.set("bed", "12床", 2300)  # 片段起点后 300ms 才说出床号
+        self.assertEqual(context.at(2000, 5000), ({"bed": "12床", "ward": "三病区"}, False))
+
+    def test_change_inside_segment_is_flagged_not_applied(self):
+        context = ContextTimeline(["bed"])
+        context.set("bed", "12床", 0)
+        context.set("bed", "15床", 4000)
+        self.assertEqual(context.at(1000, 6000), ({"bed": "12床"}, True))
+        self.assertEqual(context.at(3500, 6000), ({"bed": "15床"}, False))
+
+    def test_same_value_is_not_a_change_and_late_insert_keeps_time_order(self):
+        context = ContextTimeline(["bed"])
+        self.assertEqual(context.set("bed", "12床", 5000), (True, None))
+        self.assertEqual(context.set("bed", "12床", 6000), (False, "12床"))
+        context.set("bed", "15床", 3000)  # KWS 起点可能早于先到达的客户端设置
+        self.assertEqual(context.at(0, 2000), ({"bed": None}, False))
+        self.assertEqual(context.at(4500, 7000), ({"bed": "12床"}, False))
+
+
+@unittest.skipUnless(importlib.util.find_spec("pypinyin"), "需要 pypinyin")
+class KeywordsBuilderTest(unittest.TestCase):
+    VOCABULARY = {"sh", "í", "èr", "ch", "uáng", "x", "ià", "y", "ī"}
+
+    def test_builds_tokens_and_keeps_options_and_label(self):
+        output, errors = build(["# 注释", "", "十二床 @bed:12床", "下一床 :1.5 #0.3 @command:next_bed"], self.VOCABULARY)
+        self.assertEqual(errors, [])
+        self.assertEqual(output, ["sh í èr ch uáng @bed:12床", "x ià y ī ch uáng :1.5 #0.3 @command:next_bed"])
+
+    def test_rejects_missing_label_and_unknown_tokens(self):
+        output, errors = build(["十二床", "12床 @bed:12床"], self.VOCABULARY)
+        self.assertEqual(output, [])
+        self.assertEqual(len(errors), 2)
 
 
 class FakeKwsService:
     enabled = True
-    reason = ""
+    context_slots = ("bed",)
 
-    def __init__(self, beds_by_ms=(), fail=False):
-        self.beds_by_ms = list(beds_by_ms)
+    def __init__(self, detections=(), fail=False):
+        self.detections = list(detections)  # (检测时刻, KwsDetection)
         self.fail = fail
         self.calls = []
 
@@ -84,10 +108,17 @@ class FakeKwsService:
         self.calls.append(end_ms)
         if self.fail:
             raise RuntimeError("kws broken")
-        if self.beds_by_ms and end_ms >= self.beds_by_ms[0][0]:
-            _, bed = self.beds_by_ms.pop(0)
-            return [KwsDetection(keyword=bed, normalized=bed, category="bed", score=0.9, end_ms=end_ms)]
+        if self.detections and end_ms >= self.detections[0][0]:
+            return [self.detections.pop(0)[1]]
         return []
+
+
+def bed(value, start_ms):
+    return KwsDetection("bed", value, start_ms=start_ms, end_ms=start_ms + 500)
+
+
+def control(payload):
+    return {"type": "websocket.receive", "text": json.dumps(payload)}
 
 
 class KwsWebSocketTest(unittest.TestCase):
@@ -105,54 +136,94 @@ class KwsWebSocketTest(unittest.TestCase):
             p.stop()
         self.tmpdir.cleanup()
 
-    def run_session(self, kws, control=None):
+    def run_session(self, kws, admission_control=None, before=(), between=()):
         # 暂停会 flush，得到两个最终片段：0-2100ms 与 2100-3200ms。
-        events = [{"type": "websocket.receive", "bytes": c} for c in _packetize(pcm(2.1), 683)]
-        events.append({"type": "websocket.receive", "text": '{"type":"pause_recording"}'})
-        events.append({"type": "websocket.receive", "text": '{"type":"resume_recording"}'})
+        events = list(before)
+        events += [{"type": "websocket.receive", "bytes": c} for c in _packetize(pcm(2.1), 683)]
+        events.append(control({"type": "pause_recording"}))
+        events += list(between)
+        events.append(control({"type": "resume_recording"}))
         events += [{"type": "websocket.receive", "bytes": c} for c in _packetize(pcm(1.1), 683)]
-        events.append({"type": "websocket.receive", "text": '{"type":"stop_recording"}'})
+        events.append(control({"type": "stop_recording"}))
         ws = _WebSocket(events, {"session_id": ["round-1"]})
         with patch.object(server, "kws_service", kws), \
-                patch.object(live_session, "ADMISSION", control or admission("off")):
+                patch.object(live_session, "ADMISSION", admission_control or admission("off")):
             asyncio.run(server.websocket_live(ws))
         return ws.sent_json
 
-    def test_bed_events_and_segment_bed_follow_audio_order(self):
-        sent = self.run_session(FakeKwsService([(0, "12床"), (2200, "15床")]))
+    @staticmethod
+    def finals(sent):
+        return [e for e in sent if e["type"] == "transcript" and e["isFinal"]]
 
-        kws_events = [e for e in sent if e["type"] in ("kws.detected", "state.current_bed_changed")]
-        self.assertEqual([e["seq"] for e in kws_events], [1, 2, 3, 4])
-        self.assertTrue(all(e["session_id"] == "round-1" for e in kws_events))
-        beds = [e["current_bed"] for e in kws_events if e["type"] == "state.current_bed_changed"]
-        self.assertEqual(beds, ["12床", "15床"])
-        finals = [e for e in sent if e["type"] == "transcript" and e["isFinal"]]
-        self.assertEqual([e["bed"] for e in finals], ["12床", "15床"])
+    def test_slot_detections_update_context_by_audio_time(self):
+        kws = FakeKwsService([(500, bed("12床", 100)), (2700, bed("15床", 2300))])
+        sent = self.run_session(kws)
+
+        events = [e for e in sent if e["type"] in ("kws.detected", "state.changed")]
+        self.assertEqual([e["seq"] for e in events], [1, 2, 3, 4])
+        self.assertTrue(all(e["session_id"] == "round-1" for e in events))
+        states = [(e["value"], e["previous"], e["ts_ms"], e["source"]) for e in events if e["type"] == "state.changed"]
+        self.assertEqual(states, [("12床", None, 100, "kws"), ("15床", "12床", 2300, "kws")])
+        self.assertEqual([(e["context"], e["contextChanged"]) for e in self.finals(sent)],
+                         [({"bed": "12床"}, False), ({"bed": "15床"}, False)])
         self.assertEqual(sent[-1]["transcriptionStatus"], "complete")
 
-    def test_kws_failure_keeps_transcription_and_bed_field(self):
-        kws = FakeKwsService(fail=True)
+    def test_non_slot_category_is_event_only_and_mid_segment_change_is_flagged(self):
+        kws = FakeKwsService([
+            (300, KwsDetection("command", "next_bed", start_ms=100, end_ms=300)),
+            (1900, bed("15床", 1500)),
+        ])
         sent = self.run_session(kws)
+
+        self.assertEqual([e["value"] for e in sent if e["type"] == "state.changed"], ["15床"])
+        self.assertEqual([(e["context"], e["contextChanged"]) for e in self.finals(sent)],
+                         [({"bed": None}, True), ({"bed": "15床"}, False)])
+
+    def test_set_context_corrects_state_and_validates_input(self):
+        sent = self.run_session(
+            FakeKwsService([(500, bed("12床", 100))]),
+            between=[
+                control({"type": "set_context", "slot": "bed", "value": " 15床 "}),
+                control({"type": "set_context", "slot": "bed", "value": "15床"}),
+                control({"type": "set_context", "slot": "ward", "value": "三病区"}),
+                control({"type": "set_context", "slot": "bed", "value": ""}),
+            ],
+        )
+
+        states = [(e["value"], e["source"], e["ts_ms"]) for e in sent if e["type"] == "state.changed"]
+        self.assertEqual(states, [("12床", "kws", 100), ("15床", "client", 2100)])
+        self.assertEqual(len([e for e in sent if e["type"] == "error"]), 2)
+        self.assertEqual([e["context"] for e in self.finals(sent)], [{"bed": "12床"}, {"bed": "15床"}])
+
+    def test_kws_failure_keeps_transcription_and_client_context(self):
+        kws = FakeKwsService(fail=True)
+        sent = self.run_session(kws, between=[control({"type": "set_context", "slot": "bed", "value": "15床"})])
 
         self.assertEqual(len(kws.calls), 1)
         self.assertEqual([e.get("phase") for e in sent if e["type"] == "status"], ["kws_unavailable"])
-        finals = [e for e in sent if e["type"] == "transcript" and e["isFinal"]]
-        self.assertEqual([e["bed"] for e in finals], [None, None])
+        self.assertEqual([e["context"] for e in self.finals(sent)], [{"bed": None}, {"bed": "15床"}])
         self.assertEqual(sent[-1]["transcriptionStatus"], "complete")
 
-    def test_recording_only_session_skips_kws(self):
-        kws = FakeKwsService([(0, "12床")])
+    def test_recording_only_session_keeps_kws(self):
+        kws = FakeKwsService([(500, bed("12床", 100))])
         sent = self.run_session(kws, admission("enforce", max_sessions=0))
 
-        self.assertEqual(kws.calls, [])
-        self.assertFalse(any(e["type"].startswith(("kws.", "state.")) for e in sent))
+        self.assertEqual(sent[0]["phase"], "recording_only")
+        self.assertGreater(len(kws.calls), 0)
+        self.assertEqual([e["type"] for e in sent if e["type"].startswith(("kws.", "state."))],
+                         ["kws.detected", "state.changed"])
+        self.assertFalse(any(e["type"] == "transcript" for e in sent))
+        self.assertEqual(sent[-1]["transcriptionStatus"], "recording_only")
 
     def test_disabled_kws_leaves_transcript_protocol_unchanged(self):
-        sent = self.run_session(create_kws_service({"kws_enabled": False}))
+        sent = self.run_session(
+            create_kws_service({"kws_enabled": False}),
+            before=[control({"type": "set_context", "slot": "bed", "value": "12床"})],
+        )
 
-        finals = [e for e in sent if e["type"] == "transcript" and e["isFinal"]]
-        self.assertEqual(len(finals), 2)
-        self.assertTrue(all("bed" not in e for e in finals))
+        self.assertEqual(len(self.finals(sent)), 2)
+        self.assertTrue(all("context" not in e and "contextChanged" not in e for e in self.finals(sent)))
+        self.assertEqual([e["type"] for e in sent if e["type"] == "error"], ["error"])
 
 
 if __name__ == "__main__":
