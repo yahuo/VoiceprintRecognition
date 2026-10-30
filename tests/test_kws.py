@@ -76,6 +76,13 @@ class ContextTimelineTest(unittest.TestCase):
         self.assertEqual(context.at(0, 2000), ({"bed": None}, False))
         self.assertEqual(context.at(4500, 7000), ({"bed": "12床"}, False))
 
+    def test_repeated_sets_at_same_time_do_not_accumulate(self):
+        context = ContextTimeline(["bed"])
+        for i in range(1000):
+            context.set("bed", f"{i % 2}床", 2000)
+        self.assertEqual(len(context._changes["bed"][0]), 1)
+        self.assertEqual(context.at(2000, 3000), ({"bed": "1床"}, False))
+
 
 @unittest.skipUnless(importlib.util.find_spec("pypinyin"), "需要 pypinyin")
 class KeywordsBuilderTest(unittest.TestCase):
