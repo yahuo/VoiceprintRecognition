@@ -270,3 +270,103 @@ test('recording-only admission shows a notice instead of transcripts and ignores
     assert.ok(!notice.includes('<b>'));
     assert.equal(c.get('liveTranscriptItems.length'), 0);
 });
+
+const kwsDoc = {
+    enabled: true, version: 3, updated_at: '2026-10-30T14:02:00+08:00', active_sessions: 2,
+    categories: [
+        { code: 'bed', name: '床号', slot: true, keywords: [{ phrase: '十二床', value: '12床', boost: null, threshold: null, tokens: 'sh í èr ch uáng' }] },
+        { code: 'command', name: '查房指令', slot: false, keywords: [{ phrase: '下一床', value: 'next_bed', boost: null, threshold: 0.3, tokens: 'x ià y ī ch uáng' }] },
+    ],
+};
+
+function kwsClient(handlers) {
+    const calls = [];
+    const c = client({ fetch: async (url, options = {}) => {
+        const method = options.method || 'GET';
+        calls.push({ url, method, body: options.body && JSON.parse(options.body) });
+        const [status, body] = handlers[`${method} ${new URL(url, 'http://x').pathname}`](options.body && JSON.parse(options.body));
+        return new Response(JSON.stringify(body), { status });
+    } });
+    return { ...c, calls };
+}
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+const key = (k, value = '') => ({ key: k, target: { value }, preventDefault() {}, stopPropagation() {} });
+
+test('kws spoken numbers turn digits into Chinese phrases', () => {
+    const c = client();
+    assert.deepEqual([1, 10, 12, 20, 99, 100, 105, 110, 999].map(n => c.scope.kwsToChinese(n)),
+        ['一', '十', '十二', '二十', '九十九', '一百', '一百零五', '一百一十', '九百九十九']);
+    assert.equal(c.scope.kwsSpeak('12床'), '十二床');
+    assert.equal(c.scope.kwsSpeak('1000床'), '1000床');
+    assert.equal(c.scope.kwsDefaultValue('十五床', '十五床', true), '15床');
+    assert.equal(c.scope.kwsDefaultValue('暂停记录', '暂停记录', false), '暂停记录');
+});
+
+test('kws enter adds tags, rejects duplicates across categories and previews pronunciation', async () => {
+    const c = kwsClient({
+        'GET /v1/kws/keywords': () => [200, kwsDoc],
+        'POST /v1/kws/keywords/preview': body => [200, { items: body.phrases.map(phrase => ({ phrase, tokens: 'sh í w ǔ ch uáng', error: null })) }],
+    });
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsInputKey(key('Enter', '12床、15床 下一床'), 'bed');
+    assert.deepEqual(JSON.parse(c.get("JSON.stringify(kwsCategory('bed').keywords.map(k => [k.phrase, k.value]))")), [['十二床', '12床'], ['十五床', '15床']]);
+    assert.equal(c.get("kwsUi.hints.bed"), '「十二床」已在床号里；「下一床」已在查房指令里');
+    assert.equal(c.scope.kwsChangeCount(), 1);
+    await settle();
+    assert.deepEqual(c.calls[1].body, { phrases: ['十五床'] });
+    assert.equal(c.get("kwsCategory('bed').keywords[1].tokens"), 'sh í w ǔ ch uáng');
+    assert.ok(c.elements.get('kwsCategories').innerHTML.includes('十五床'));
+    assert.ok(c.elements.get('kwsSaveText').innerHTML.includes('1 处改动未保存'));
+});
+
+test('kws backspace arms then deletes the last tag and undo restores it', async () => {
+    const c = kwsClient({ 'GET /v1/kws/keywords': () => [200, kwsDoc] });
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsInputKey(key('Backspace'), 'command');
+    assert.equal(c.get("kwsCategory('command').keywords.length"), 1);
+    c.scope.kwsInputKey(key('Backspace'), 'command');
+    assert.equal(c.get("kwsCategory('command').keywords.length"), 0);
+    assert.equal(c.scope.kwsChangeCount(), 1);
+    c.scope.kwsUndoLast();
+    assert.equal(c.scope.kwsChangeCount(), 0);
+});
+
+test('kws save sends the read version and keeps the draft on conflict', async () => {
+    let attempt = 0;
+    const c = kwsClient({
+        'GET /v1/kws/keywords': () => [200, kwsDoc],
+        'PUT /v1/kws/keywords': body => (++attempt === 1
+            ? [409, { detail: '关键词已被其他人修改，请刷新后重试' }]
+            : [200, { ...kwsDoc, version: body.version + 1, categories: body.categories }]),
+    });
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsSetSlot('command', true);
+    c.scope.kwsEditField(c.get("kwsCategory('bed').keywords[0].id"), 'boost', '1.5');
+    await c.scope.saveKwsKeywords();
+    assert.equal(c.calls[1].body.version, 3);
+    assert.deepEqual(c.calls[1].body.categories[0].keywords[0], { phrase: '十二床', value: '12床', boost: '1.5', threshold: '' });
+    assert.equal(c.calls[1].body.categories[1].keywords[0].threshold, '0.3');
+    assert.ok(c.get('kwsUi.saveError').includes('关键词已被其他人修改'));
+    assert.equal(c.scope.kwsChangeCount(), 2);
+    await c.scope.saveKwsKeywords();
+    assert.equal(c.get('kwsMeta.version'), 4);
+    assert.equal(c.scope.kwsChangeCount(), 0);
+});
+
+test('kws blocks saving unrecognized phrases and reports a disabled server', async () => {
+    const c = kwsClient({
+        'GET /v1/kws/keywords': () => [200, kwsDoc],
+        'POST /v1/kws/keywords/preview': body => [200, { items: body.phrases.map(phrase => ({ phrase, tokens: '', error: '发音 B 不在模型词表中' })) }],
+    });
+    await c.scope.loadKwsKeywords();
+    c.scope.kwsAddPhrases('command', 'B超');
+    await settle();
+    await c.scope.saveKwsKeywords();
+    assert.ok(c.get('kwsUi.saveError').includes('B超'));
+    assert.equal(c.calls.filter(call => call.method === 'PUT').length, 0);
+
+    const disabled = kwsClient({ 'GET /v1/kws/keywords': () => [200, { enabled: false }] });
+    await disabled.scope.loadKwsKeywords();
+    assert.ok(disabled.elements.get('kwsCategories').innerHTML.includes('KWS_ENABLED=0'));
+});

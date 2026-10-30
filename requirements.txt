@@ -26,6 +26,7 @@ websockets>=10.0
 
 # 实时关键词识别 (KWS)，默认需 KWS_ENABLED=1 并配置模型路径才启用
 sherpa-onnx>=2.0.1
+pypinyin>=0.55.0
 
 # 实时录音
 pyaudio>=0.2.13

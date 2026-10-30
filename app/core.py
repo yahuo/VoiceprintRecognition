@@ -84,6 +84,7 @@ CONFIG = {
     "kws_decoder_path": os.environ.get("KWS_DECODER_PATH", ""),
     "kws_joiner_path": os.environ.get("KWS_JOINER_PATH", ""),
     "kws_keywords_file": os.environ.get("KWS_KEYWORDS_FILE", ""),
+    "kws_keywords_store": os.environ.get("KWS_KEYWORDS_STORE", ""),
     "kws_provider": os.environ.get("KWS_PROVIDER", "cpu"),
     "kws_num_threads": int(os.environ.get("KWS_NUM_THREADS", "1")),
     "kws_context_slots": os.environ.get("KWS_CONTEXT_SLOTS", "bed"),
