@@ -3,17 +3,22 @@
 实时 KWS 旁路与会话上下文。
 
 KWS 默认关闭；KWS_ENABLED=1 时配置必须完整，否则启动失败，不静默降级。
-keywords 文件每行的 @ 标签写成 `类别:值`，例如 `@bed:12床`、`@command:next_bed`。
-KWS_CONTEXT_SLOTS 中的类别是上下文槽位：命中即切换会话上下文并标注到转写片段；
-其余类别（指令、标记等）只推送事件，由业务端解释。
+关键词按类别维护在 KWS_KEYWORDS_STORE（JSON，见 kws_keywords.py）；该文件不存在时从 KWS_KEYWORDS_FILE 导入初始内容。
+命中标签为 `类别:值`，例如 `bed:12床`、`command:next_bed`。
+上下文槽位类别：命中即切换会话上下文并标注到转写片段；其余类别（指令、标记等）只推送事件，由业务端解释。
+保存关键词时重建 KeywordSpotter：新开始的会话用新词表，进行中的会话保持开始时的词表和槽位。
 """
 
 from bisect import bisect_right
 from dataclasses import dataclass
+import os
 import re
+import tempfile
 from typing import Any
 
 import numpy as np
+
+from .kws_keywords import KeywordsError, KeywordStore, compile_categories, load_vocabulary, parse_raw_lines, phrase_tokens
 
 
 LABEL_PATTERN = re.compile(r"^([a-z][a-z0-9_]*):(.+)$")
@@ -23,7 +28,7 @@ MAX_CONTEXT_VALUE_LENGTH = 64
 CONTEXT_LEAD_MS = 1000
 # 末个关键词 token 到检测时刻的间隔（chunk-16 模型、40ms 收包实测约 400ms），用于倒推关键词起止时刻。
 DETECTION_LAG_MS = 400
-REQUIRED_PATHS = ("kws_tokens_path", "kws_encoder_path", "kws_decoder_path", "kws_joiner_path", "kws_keywords_file")
+REQUIRED_PATHS = ("kws_tokens_path", "kws_encoder_path", "kws_decoder_path", "kws_joiner_path", "kws_keywords_store")
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,14 @@ class KwsService:
     context_slots: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class PreparedKeywords:
+    """校验通过、已建好 spotter 但尚未生效的关键词表。"""
+
+    categories: list[dict]
+    spotter: Any
+
+
 class SherpaOnnxKwsService(KwsService):
     enabled = True
 
@@ -62,21 +75,73 @@ class SherpaOnnxKwsService(KwsService):
             import sherpa_onnx
         except ImportError as exc:
             raise RuntimeError("sherpa-onnx 未安装，无法启用 KWS") from exc
+        try:
+            import pypinyin  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError("pypinyin 未安装，无法把关键词转成发音") from exc
 
-        self.context_slots = parse_context_slots(config["kws_context_slots"])
+        self._sherpa = sherpa_onnx
+        self._config = config
         self.duplicate_cooldown_ms = int(config["kws_duplicate_cooldown_ms"])
-        self._spotter = sherpa_onnx.KeywordSpotter(
-            tokens=config["kws_tokens_path"],
-            encoder=config["kws_encoder_path"],
-            decoder=config["kws_decoder_path"],
-            joiner=config["kws_joiner_path"],
-            num_threads=int(config["kws_num_threads"]),
-            keywords_file=config["kws_keywords_file"],
-            provider=config["kws_provider"],
-        )
+        self._vocabulary = load_vocabulary(config["kws_tokens_path"])
+        self.store = KeywordStore(config["kws_keywords_store"])
+        document = self.store.load() or _seed_document(config)
+        try:
+            prepared = self.prepare(document["categories"])
+        except KeywordsError as exc:
+            raise RuntimeError(f"KWS 关键词表无效: {exc}") from exc
+        self.activate(prepared, int(document.get("version") or 0), document.get("updated_at"))
+
+    def preview(self, phrases) -> list[dict]:
+        """说法对应的发音 token；供网页在保存前展示和标出无法识别的说法。"""
+        result = []
+        for phrase in phrases:
+            tokens, error = phrase_tokens(" ".join(str(phrase).split()), self._vocabulary)
+            result.append({"phrase": phrase, "tokens": " ".join(tokens), "error": error})
+        return result
+
+    def prepare(self, categories) -> PreparedKeywords:
+        """校验并建好新 spotter；耗时，放在线程里执行。校验失败抛出 KeywordsError。"""
+        normalized, lines = compile_categories(categories, self._vocabulary)
+        fd, path = tempfile.mkstemp(prefix="kws-keywords-", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            spotter = self._sherpa.KeywordSpotter(
+                tokens=self._config["kws_tokens_path"],
+                encoder=self._config["kws_encoder_path"],
+                decoder=self._config["kws_decoder_path"],
+                joiner=self._config["kws_joiner_path"],
+                num_threads=int(self._config["kws_num_threads"]),
+                keywords_file=path,
+                provider=self._config["kws_provider"],
+            )
+        finally:
+            os.unlink(path)
+        return PreparedKeywords(normalized, spotter)
+
+    def activate(self, prepared: PreparedKeywords, version: int, updated_at: str | None) -> None:
+        """切换到新词表；在事件循环中调用，与 create_session、context_slots 的读取不交错。"""
+        self._spotter = prepared.spotter
+        self.categories = prepared.categories
+        self.context_slots = tuple(c["code"] for c in prepared.categories if c["slot"])
+        self.version = version
+        self.updated_at = updated_at
 
     def create_session(self):
         return SherpaOnnxKwsSession(self._spotter, duplicate_cooldown_ms=self.duplicate_cooldown_ms)
+
+
+def _seed_document(config: dict[str, Any]) -> dict:
+    path = config.get("kws_keywords_file")
+    if not path or not os.path.exists(path):
+        raise RuntimeError(f"关键词库 {config['kws_keywords_store']} 不存在，且未提供可导入的 KWS_KEYWORDS_FILE")
+    with open(path, encoding="utf-8") as f:
+        try:
+            categories = parse_raw_lines(f, parse_context_slots(config["kws_context_slots"]))
+        except KeywordsError as exc:
+            raise RuntimeError(f"KWS_KEYWORDS_FILE 无法导入: {exc}") from exc
+    return {"version": 0, "updated_at": None, "categories": categories}
 
 
 class SherpaOnnxKwsSession:

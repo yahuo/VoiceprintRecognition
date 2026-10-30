@@ -873,6 +873,490 @@
             color: white;
             font-size: 14px;
         }
+
+        /* KWS 关键词维护 */
+        #tab-keywords [hidden] {
+            display: none !important;
+        }
+
+        .kws-summary {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 18px;
+            margin-bottom: 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        .kws-summary-main {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .kws-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            color: #8f97b8;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .kws-pill::before {
+            content: "";
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .kws-pill.ok {
+            color: #2ed573;
+            background: rgba(46, 213, 115, 0.12);
+        }
+
+        .kws-pill.dirty {
+            color: #ffa502;
+            background: rgba(255, 165, 2, 0.12);
+        }
+
+        .kws-summary-meta {
+            color: #8f97b8;
+            font-size: 13px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .kws-legend {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 4px 10px;
+            max-width: 62ch;
+            font-size: 12px;
+            color: #8f97b8;
+        }
+
+        .kws-legend b {
+            color: #e8eaf6;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .kws-categories {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .kws-cat {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 16px 18px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        .kws-new-cat {
+            margin-top: 14px;
+            border: 1.5px dashed rgba(165, 180, 252, 0.35);
+            background: transparent;
+        }
+
+        .kws-cat-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .kws-cat-title,
+        .kws-cat-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .kws-cat-name {
+            width: 9em;
+            padding: 2px 6px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            background: transparent;
+        }
+
+        .kws-cat-name:hover,
+        .kws-cat-name:focus {
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.06);
+            outline: none;
+        }
+
+        .kws-code {
+            padding: 2px 7px;
+            border-radius: 6px;
+            font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+            font-size: 12px;
+            color: #a5b4fc;
+            background: rgba(102, 126, 234, 0.12);
+        }
+
+        .kws-count {
+            color: #8f97b8;
+            font-size: 12px;
+        }
+
+        .kws-spacer {
+            flex: 1;
+        }
+
+        .kws-seg {
+            display: inline-flex;
+            padding: 2px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        .kws-seg button {
+            padding: 4px 12px;
+            border-radius: 999px;
+            background: transparent;
+            color: #8f97b8;
+            font-size: 12px;
+        }
+
+        .kws-seg button[aria-pressed="true"] {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+        }
+
+        .kws-chip {
+            padding: 5px 12px;
+            border: 1px solid rgba(102, 126, 234, 0.25);
+            border-radius: 999px;
+            background: rgba(102, 126, 234, 0.12);
+            color: #a5b4fc;
+            font-size: 12px;
+        }
+
+        .kws-chip:hover {
+            background: rgba(102, 126, 234, 0.24);
+        }
+
+        .kws-chip.danger {
+            border-color: rgba(255, 71, 87, 0.25);
+            background: rgba(255, 71, 87, 0.1);
+            color: #ff8a95;
+        }
+
+        .kws-tagbox {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            min-height: 52px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(10, 15, 40, 0.5);
+            border: 1.5px solid rgba(255, 255, 255, 0.1);
+            box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.2);
+            cursor: text;
+        }
+
+        .kws-tagbox:focus-within {
+            border-color: rgba(102, 126, 234, 0.7);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15), inset 0 2px 6px rgba(0, 0, 0, 0.2);
+        }
+
+        .kws-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 6px 5px 11px;
+            border-radius: 999px;
+            border: 1px solid rgba(122, 143, 255, 0.3);
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.25), rgba(118, 75, 162, 0.2));
+            color: #e0e7ff;
+            font-size: 13px;
+            line-height: 1.2;
+            cursor: pointer;
+        }
+
+        .kws-tag:hover {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.38), rgba(118, 75, 162, 0.32));
+        }
+
+        .kws-tag .kws-val {
+            font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+            font-size: 11px;
+            color: #a5b4fc;
+        }
+
+        .kws-tag.new {
+            border-style: dashed;
+            border-color: rgba(46, 213, 115, 0.6);
+        }
+
+        .kws-tag.new::after {
+            content: "未保存";
+            font-size: 10px;
+            color: #2ed573;
+        }
+
+        .kws-tag.pending::after {
+            content: "生成发音中";
+            font-size: 10px;
+            color: #8f97b8;
+        }
+
+        .kws-tag.invalid {
+            border: 1px solid rgba(255, 71, 87, 0.6);
+            background: rgba(255, 71, 87, 0.15);
+            color: #ffc1c7;
+        }
+
+        .kws-tag.invalid::after {
+            content: "需修正";
+            font-size: 10px;
+            color: #ff8a95;
+        }
+
+        .kws-tag.selected {
+            box-shadow: 0 0 0 2px #a5b4fc;
+        }
+
+        .kws-tag.armed {
+            box-shadow: 0 0 0 2px #ff4757;
+        }
+
+        .kws-tag.flash {
+            animation: kws-flash 0.9s;
+        }
+
+        @keyframes kws-flash {
+
+            0%,
+            100% {
+                transform: none;
+            }
+
+            20%,
+            60% {
+                transform: translateX(-3px);
+            }
+
+            40%,
+            80% {
+                transform: translateX(3px);
+            }
+        }
+
+        .kws-tag .kws-x {
+            width: 18px;
+            height: 18px;
+            padding: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            color: #a5b4fc;
+            font-size: 13px;
+            line-height: 18px;
+        }
+
+        .kws-tag .kws-x:hover {
+            background: rgba(255, 71, 87, 0.45);
+            color: #fff;
+        }
+
+        .kws-more {
+            padding: 4px 6px;
+            background: none;
+            color: #a5b4fc;
+            font-size: 12px;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+
+        .kws-input {
+            flex: 1;
+            min-width: 180px;
+            padding: 4px 2px;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: #e8eaf6;
+            font-size: 14px;
+        }
+
+        .kws-input::placeholder {
+            color: #55608a;
+        }
+
+        .kws-hint {
+            min-height: 18px;
+            font-size: 12px;
+            color: #8f97b8;
+        }
+
+        .kws-hint.warn {
+            color: #ffa502;
+        }
+
+        .kws-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 12px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(0, 0, 0, 0.22);
+        }
+
+        .kws-panel.kws-plain {
+            padding: 0;
+            border: none;
+            background: transparent;
+        }
+
+        .kws-panel-title {
+            grid-column: 1 / -1;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .kws-field {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .kws-field label,
+        .kws-field small {
+            color: #8f97b8;
+        }
+
+        .kws-field label {
+            font-size: 12px;
+        }
+
+        .kws-field small {
+            font-size: 11px;
+        }
+
+        .kws-field input,
+        .kws-field select {
+            padding: 8px 10px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .kws-tokens {
+            padding: 8px 0;
+            font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+            font-size: 13px;
+            color: #a5b4fc;
+            word-break: break-all;
+        }
+
+        .kws-tokens.bad {
+            font-family: inherit;
+            color: #ff8a95;
+        }
+
+        .kws-panel-actions {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .kws-panel-actions small {
+            flex: 1;
+            color: #8f97b8;
+            font-size: 12px;
+        }
+
+        .kws-savebar {
+            position: sticky;
+            bottom: 0;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            margin-top: 18px;
+            padding: 12px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 14px;
+            background: rgba(16, 20, 44, 0.94);
+            backdrop-filter: blur(8px);
+        }
+
+        .kws-savebar-text {
+            flex: 1;
+            min-width: 220px;
+            font-size: 13px;
+            color: #8f97b8;
+        }
+
+        .kws-savebar-text b {
+            color: #ffa502;
+            font-weight: 600;
+        }
+
+        .kws-savebar-text.err b {
+            color: #ff4757;
+        }
+
+        .kws-btn {
+            padding: 10px 22px;
+            font-size: 14px;
+        }
+
+        .kws-btn-ghost {
+            background: rgba(255, 255, 255, 0.08);
+            color: #e8eaf6;
+        }
+
+        .kws-toast {
+            position: absolute;
+            left: 50%;
+            bottom: calc(100% + 10px);
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            max-width: calc(100% - 32px);
+            padding: 10px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            background: #2a2f55;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+            font-size: 13px;
+        }
+
+        .kws-toast button {
+            padding: 0;
+            background: none;
+            color: #a5b4fc;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .kws-tag.flash {
+                animation: none;
+            }
+        }
     </style>
 </head>
 
@@ -889,6 +1373,7 @@
             <button class="tab-btn active" onclick="switchTab('live')">🔴 实时录音</button>
             <button class="tab-btn" onclick="switchTab('upload')">📤 上传／会后复核</button>
             <button class="tab-btn" onclick="switchTab('voiceprint')">👤 声纹管理</button>
+            <button class="tab-btn" onclick="switchTab('keywords')">关键词</button>
         </div>
 
         <!-- Tab 1: 实时录音 -->
@@ -1047,6 +1532,48 @@
                 </div>
             </div>
         </div>
+
+        <!-- Tab 4: KWS 关键词 -->
+        <div id="tab-keywords" class="tab-content">
+            <section class="kws-summary" aria-label="关键词版本">
+                <div class="kws-summary-main">
+                    <span id="kwsStatePill" class="kws-pill">未加载</span>
+                    <span id="kwsSummaryMeta" class="kws-summary-meta"></span>
+                </div>
+                <div class="kws-legend">
+                    <b>上下文槽位</b><span>命中后切换会话上下文，并标到之后的转写片段上，如床号。</span>
+                    <b>只推事件</b><span>命中时推一条 kws.detected，由业务端处理，如下一床、暂停记录。</span>
+                </div>
+            </section>
+
+            <div id="kwsCategories" class="kws-categories">
+                <div class="empty-state">加载中...</div>
+            </div>
+
+            <section id="kwsNewCategory" class="kws-cat kws-new-cat" aria-label="新建类别" hidden>
+                <div class="kws-cat-head">
+                    <span class="kws-cat-title">新建类别</span>
+                    <span class="kws-count">类别代码会出现在事件和转写的 context 里，建好后不可改</span>
+                </div>
+                <form class="kws-panel kws-plain" onsubmit="event.preventDefault(); kwsAddCategory();">
+                    <div class="kws-field"><label for="kwsNewName">名称</label><input id="kwsNewName" placeholder="如：检查项目" autocomplete="off"></div>
+                    <div class="kws-field"><label for="kwsNewCode">类别代码</label><input id="kwsNewCode" placeholder="小写字母开头，如 exam" autocomplete="off"></div>
+                    <div class="kws-field"><label for="kwsNewType">类型</label>
+                        <select id="kwsNewType"><option value="event">只推事件</option><option value="slot">上下文槽位</option></select>
+                    </div>
+                    <div class="kws-panel-actions"><span id="kwsNewHint" class="kws-hint warn"></span><button type="submit" class="kws-chip">添加类别</button></div>
+                </form>
+            </section>
+
+            <div id="kwsSaveBar" class="kws-savebar" hidden>
+                <div id="kwsSaveText" class="kws-savebar-text"></div>
+                <button id="kwsBtnDiscard" class="kws-btn kws-btn-ghost" type="button" onclick="discardKwsChanges()">放弃改动</button>
+                <button id="kwsBtnSave" class="kws-btn btn-primary" type="button" onclick="saveKwsKeywords()">保存并生效</button>
+                <div id="kwsToast" class="kws-toast" role="status" hidden>
+                    <span id="kwsToastText"></span><button id="kwsToastUndo" type="button" onclick="kwsUndoLast()">撤销</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1100,6 +1627,9 @@
             // 加载声纹列表
             if (tabName === 'voiceprint') {
                 loadVoiceprints();
+            }
+            if (tabName === 'keywords') {
+                loadKwsKeywords();
             }
         }
 
@@ -2582,6 +3112,614 @@
         serverUrlInput.addEventListener('blur', () => {
             refreshVoiceprintsForCurrentServer();
         });
+
+        // ========== KWS 关键词维护 ==========
+        // 草稿只在本页内存；保存时整表 PUT 并带上读取时的 version，服务端已被别人改过则拒绝。
+        const KWS_DIGITS = '零一二三四五六七八九';
+        const KWS_COLLAPSE_AT = 24;
+        const KWS_SEPARATORS = /[,，、;；\s]+/;
+        const KWS_CODE_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+        let kwsSaved = null;  // 服务端生效的关键词表，用来对比草稿改动
+        let kwsSavedPhrases = new Set();
+        let kwsState = null;  // 编辑中的草稿
+        let kwsMeta = null;
+        let kwsLoadError = '';
+        let kwsNextId = 1;
+        let kwsUndo = null;
+        let kwsToastTimer = null;
+        const kwsUi = { drafts: {}, hints: {}, expanded: {}, selected: null, armed: null, batchOpen: null, focus: null, saveError: '', saving: false };
+
+        function kwsToChinese(n) {
+            if (n < 10) return KWS_DIGITS[n];
+            if (n < 20) return '十' + (n % 10 ? KWS_DIGITS[n % 10] : '');
+            if (n < 100) return KWS_DIGITS[Math.floor(n / 10)] + '十' + (n % 10 ? KWS_DIGITS[n % 10] : '');
+            const rest = n % 100;
+            const tail = rest === 0 ? '' : rest < 10 ? '零' + KWS_DIGITS[rest] : rest < 20 ? '一' + kwsToChinese(rest) : kwsToChinese(rest);
+            return KWS_DIGITS[Math.floor(n / 100)] + '百' + tail;
+        }
+
+        function kwsParseChinese(run) {
+            let total = 0, current = 0;
+            for (const ch of run) {
+                const digit = KWS_DIGITS.indexOf(ch);
+                if (digit >= 0) current = digit;
+                else if (ch === '十') { total += (current || 1) * 10; current = 0; }
+                else if (ch === '百') { total += current * 100; current = 0; }
+            }
+            return total + current;
+        }
+
+        // 模型只认说出口的汉字发音：12床 说成 十二床。超过 999 的数字原样保留，由服务端报无法识别。
+        function kwsSpeak(text) {
+            return text.replace(/\d+/g, m => Number(m) <= 999 ? kwsToChinese(Number(m)) : m);
+        }
+
+        function kwsDefaultValue(piece, phrase, isSlot) {
+            if (!isSlot) return phrase;
+            return /\d/.test(piece) ? piece : phrase.replace(/[零一二三四五六七八九十百]+/g, run => String(kwsParseChinese(run)));
+        }
+
+        function kwsTag(keyword) {
+            return {
+                id: kwsNextId++,
+                phrase: keyword.phrase,
+                value: keyword.value || keyword.phrase,
+                boost: keyword.boost == null ? '' : String(keyword.boost),
+                threshold: keyword.threshold == null ? '' : String(keyword.threshold),
+                tokens: keyword.tokens || '',
+                error: '',
+                serverError: '',
+                pending: !!keyword.pending,
+            };
+        }
+
+        function kwsClone(value) {
+            return JSON.parse(JSON.stringify(value));
+        }
+
+        function kwsCategory(code) {
+            return kwsState.categories.find(c => c.code === code);
+        }
+
+        function kwsFindTag(id) {
+            for (const cat of kwsState.categories) {
+                const tag = cat.keywords.find(t => t.id === id);
+                if (tag) return { cat, tag };
+            }
+            return null;
+        }
+
+        function kwsFindPhrase(phrase) {
+            for (const cat of kwsState.categories) {
+                const tag = cat.keywords.find(t => t.phrase === phrase);
+                if (tag) return { cat, tag };
+            }
+            return null;
+        }
+
+        function kwsKeywordMap(doc) {
+            return new Map(doc.categories.flatMap(c => c.keywords.map(k => [k.phrase, JSON.stringify([c.code, k.value, k.boost, k.threshold])])));
+        }
+
+        function kwsChangeCount() {
+            if (!kwsState) return 0;
+            const before = kwsKeywordMap(kwsSaved);
+            const after = kwsKeywordMap(kwsState);
+            let count = 0;
+            for (const [phrase, info] of after) if (before.get(phrase) !== info) count++;
+            for (const phrase of before.keys()) if (!after.has(phrase)) count++;
+            const savedCats = new Map(kwsSaved.categories.map(c => [c.code, c]));
+            for (const cat of kwsState.categories) {
+                const old = savedCats.get(cat.code);
+                if (!old || old.name !== cat.name || old.slot !== cat.slot) count++;
+            }
+            for (const code of savedCats.keys()) if (!kwsCategory(code)) count++;
+            return count;
+        }
+
+        function kwsTagStatus(tag) {
+            if (tag.error || tag.serverError) return 'invalid';
+            if (tag.pending) return 'pending';
+            return kwsSavedPhrases.has(tag.phrase) ? 'saved' : 'new';
+        }
+
+        function kwsErrorText(result) {
+            return typeof result?.detail === 'string' ? result.detail : JSON.stringify(result?.detail ?? result);
+        }
+
+        function kwsApply(result) {
+            const categories = result.categories.map(c => ({ code: c.code, name: c.name, slot: c.slot, keywords: c.keywords.map(kwsTag) }));
+            kwsSaved = { categories };
+            kwsSavedPhrases = new Set(categories.flatMap(c => c.keywords.map(k => k.phrase)));
+            kwsState = kwsClone(kwsSaved);
+            kwsMeta = { version: result.version, updatedAt: result.updated_at, activeSessions: result.active_sessions };
+            Object.assign(kwsUi, { drafts: {}, hints: {}, selected: null, armed: null, batchOpen: null, saveError: '' });
+            kwsUndo = null;
+            kwsLoadError = '';
+        }
+
+        async function loadKwsKeywords(force = false) {
+            // 切回本页时保留未保存的草稿。
+            if (!force && kwsState && kwsChangeCount()) {
+                kwsRender();
+                return;
+            }
+            try {
+                const response = await fetch(`${getApiUrl()}/v1/kws/keywords`);
+                const result = await response.json();
+                if (!response.ok) throw new Error(kwsErrorText(result));
+                if (result.enabled) {
+                    kwsApply(result);
+                } else {
+                    kwsState = kwsSaved = kwsMeta = null;
+                    kwsLoadError = '服务端未启用 KWS（KWS_ENABLED=0），没有可维护的关键词。';
+                }
+            } catch (error) {
+                kwsState = kwsSaved = kwsMeta = null;
+                kwsLoadError = `无法加载关键词：${error.message}`;
+            }
+            kwsRender();
+        }
+
+        async function kwsPreview(tags) {
+            for (let i = 0; i < tags.length; i += 200) {
+                const chunk = tags.slice(i, i + 200);
+                try {
+                    const response = await fetch(`${getApiUrl()}/v1/kws/keywords/preview`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ phrases: chunk.map(t => t.phrase) }),
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(kwsErrorText(result));
+                    chunk.forEach((tag, index) => {
+                        const item = result.items[index];
+                        // 请求期间说法被改过的，以后一次预览为准。
+                        if (!item || item.phrase !== tag.phrase) return;
+                        tag.tokens = item.tokens;
+                        tag.error = item.error || '';
+                        tag.pending = false;
+                    });
+                } catch (error) {
+                    chunk.forEach(tag => { tag.pending = false; });
+                    kwsUi.saveError = `发音预览失败：${error.message}`;
+                }
+            }
+            kwsRender();
+        }
+
+        function kwsAddPhrases(code, raw) {
+            const cat = kwsCategory(code);
+            const dupes = [], added = [];
+            let last = null;
+            for (const piece of raw.split(KWS_SEPARATORS).map(s => s.trim()).filter(Boolean)) {
+                const phrase = kwsSpeak(piece);
+                const hit = kwsFindPhrase(phrase);
+                if (hit) {
+                    dupes.push(`「${phrase}」已在${hit.cat.name}里`);
+                    last = hit.tag.id;
+                    continue;
+                }
+                const tag = kwsTag({ phrase, value: kwsDefaultValue(piece, phrase, cat.slot), pending: true });
+                cat.keywords.push(tag);
+                added.push(tag);
+            }
+            kwsUi.hints[code] = dupes.join('；');
+            kwsUi.saveError = '';
+            kwsRender();
+            if (last !== null) kwsFlash(last);
+            if (added.length) kwsPreview(added);
+            return added;
+        }
+
+        function kwsRemoveTag(id) {
+            const { cat, tag } = kwsFindTag(id);
+            const index = cat.keywords.indexOf(tag);
+            cat.keywords.splice(index, 1);
+            if (kwsUi.selected === id) kwsUi.selected = null;
+            kwsUi.armed = null;
+            kwsUndo = () => { cat.keywords.splice(index, 0, tag); };
+            kwsShowToast(`已删除「${tag.phrase}」`, true);
+            kwsRender();
+        }
+
+        function kwsRemoveCategory(code) {
+            const index = kwsState.categories.findIndex(c => c.code === code);
+            const [cat] = kwsState.categories.splice(index, 1);
+            kwsUndo = () => { kwsState.categories.splice(index, 0, cat); };
+            kwsShowToast(`已删除类别「${cat.name}」及 ${cat.keywords.length} 个关键词`, true);
+            kwsRender();
+        }
+
+        function kwsUndoLast() {
+            if (kwsUndo) kwsUndo();
+            kwsUndo = null;
+            document.getElementById('kwsToast').hidden = true;
+            kwsRender();
+        }
+
+        function kwsShowToast(text, withUndo) {
+            document.getElementById('kwsToastText').textContent = text;
+            document.getElementById('kwsToastUndo').hidden = !withUndo;
+            document.getElementById('kwsToast').hidden = false;
+            clearTimeout(kwsToastTimer);
+            kwsToastTimer = setTimeout(() => {
+                document.getElementById('kwsToast').hidden = true;
+                kwsUndo = null;
+            }, 5000);
+        }
+
+        function kwsFlash(id) {
+            const tag = document.querySelector(`[data-kws-tag="${id}"]`);
+            if (!tag) return;
+            tag.classList.remove('flash');
+            void tag.offsetWidth;
+            tag.classList.add('flash');
+            tag.scrollIntoView?.({ block: 'nearest' });
+        }
+
+        function kwsSelectTag(event, id) {
+            event?.stopPropagation();
+            kwsUi.selected = kwsUi.selected === id ? null : id;
+            kwsUi.armed = null;
+            kwsRender();
+        }
+
+        function kwsTagKey(event, id) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                kwsSelectTag(event, id);
+            } else if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault();
+                kwsUi.focus = kwsFindTag(id).cat.code;
+                kwsRemoveTag(id);
+            }
+        }
+
+        function kwsFocusInput(code) {
+            document.getElementById(`kws-in-${code}`).focus();
+        }
+
+        function kwsDraftInput(code, value) {
+            kwsUi.drafts[code] = value;
+            if (kwsUi.armed) {
+                kwsUi.armed = null;
+                kwsUi.focus = code;
+                kwsRender();
+            }
+        }
+
+        function kwsInputKey(event, code) {
+            if (event.isComposing) return;
+            const input = event.target;
+            const cat = kwsCategory(code);
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                const raw = input.value;
+                kwsUi.drafts[code] = '';
+                kwsUi.focus = code;
+                if (raw.trim()) kwsAddPhrases(code, raw);
+                else kwsRender();
+            } else if (event.key === 'Backspace' && !input.value && cat.keywords.length) {
+                // 空输入时第一次 Backspace 选中最后一个标签，第二次删除。
+                const last = cat.keywords[cat.keywords.length - 1];
+                kwsUi.focus = code;
+                if (kwsUi.armed === last.id) {
+                    kwsRemoveTag(last.id);
+                } else {
+                    kwsUi.armed = last.id;
+                    kwsUi.expanded[code] = true;
+                    kwsRender();
+                }
+            } else if (event.key === 'Escape') {
+                kwsUi.drafts[code] = '';
+                kwsUi.armed = null;
+                kwsUi.focus = code;
+                kwsRender();
+            }
+        }
+
+        function kwsPaste(event, code) {
+            const text = event.clipboardData.getData('text');
+            if (!KWS_SEPARATORS.test(text.trim())) return;
+            event.preventDefault();
+            const raw = (kwsUi.drafts[code] || '') + text;
+            kwsUi.drafts[code] = '';
+            kwsUi.focus = code;
+            kwsAddPhrases(code, raw);
+        }
+
+        function kwsEditPhrase(id, raw) {
+            const { cat, tag } = kwsFindTag(id);
+            const phrase = kwsSpeak(raw.split(KWS_SEPARATORS).join(''));
+            const hit = kwsFindPhrase(phrase);
+            if (hit && hit.tag !== tag) {
+                kwsUi.hints[cat.code] = `「${phrase}」已在${hit.cat.name}里`;
+                kwsRender();
+                kwsFlash(hit.tag.id);
+                return;
+            }
+            if (phrase && phrase !== tag.phrase) {
+                Object.assign(tag, { phrase, tokens: '', error: '', serverError: '', pending: true });
+                kwsRender();
+                kwsPreview([tag]);
+            } else {
+                kwsRender();
+            }
+        }
+
+        function kwsEditField(id, key, value) {
+            const { tag } = kwsFindTag(id);
+            tag[key] = value.trim();
+            tag.serverError = '';
+            kwsRenderSave();
+        }
+
+        function kwsSetSlot(code, slot) {
+            kwsCategory(code).slot = slot;
+            kwsRender();
+        }
+
+        function kwsRenameCategory(code, value) {
+            const cat = kwsCategory(code);
+            cat.name = value.trim().slice(0, 32) || cat.name;
+            kwsRender();
+        }
+
+        function kwsExpand(code) {
+            kwsUi.expanded[code] = true;
+            kwsRender();
+        }
+
+        function kwsToggleBatch(code) {
+            kwsUi.batchOpen = kwsUi.batchOpen === code ? null : code;
+            kwsRender();
+        }
+
+        function kwsBatchItems(code) {
+            const template = document.getElementById(`kws-bt-${code}`).value.trim();
+            const from = Number(document.getElementById(`kws-bf-${code}`).value);
+            const to = Math.min(Number(document.getElementById(`kws-bto-${code}`).value), 999);
+            const items = [];
+            if (!template.includes('{n}') || !Number.isInteger(from) || !Number.isInteger(to) || from < 0) return items;
+            for (let n = from; n <= to && items.length < 500; n++) {
+                items.push({ phrase: kwsSpeak(template.replaceAll('{n}', kwsToChinese(n))), value: template.replaceAll('{n}', String(n)) });
+            }
+            return items;
+        }
+
+        function kwsBatchRefresh(code) {
+            const items = kwsBatchItems(code);
+            const fresh = items.filter(x => !kwsFindPhrase(x.phrase));
+            document.getElementById(`kws-bp-${code}`).textContent = items.length
+                ? `将添加 ${fresh.length} 个（${items[0].phrase} … ${items[items.length - 1].phrase}），跳过已存在 ${items.length - fresh.length} 个`
+                : '模板须含 {n}，范围为 0-999 的整数';
+        }
+
+        function kwsBatchAdd(code) {
+            const cat = kwsCategory(code);
+            const added = kwsBatchItems(code)
+                .filter(x => !kwsFindPhrase(x.phrase))
+                .map(x => kwsTag({ phrase: x.phrase, value: cat.slot ? x.value : x.phrase, pending: true }));
+            cat.keywords.push(...added);
+            kwsUi.batchOpen = null;
+            kwsUi.expanded[code] = true;
+            kwsRender();
+            if (added.length) kwsPreview(added);
+        }
+
+        function kwsAddCategory() {
+            const name = document.getElementById('kwsNewName').value.trim();
+            const code = document.getElementById('kwsNewCode').value.trim();
+            const hint = document.getElementById('kwsNewHint');
+            if (!name) { hint.textContent = '填写类别名称'; return; }
+            if (!KWS_CODE_PATTERN.test(code)) { hint.textContent = '类别代码只能用小写字母、数字和下划线，以字母开头，最多 32 个字符'; return; }
+            if (kwsCategory(code)) { hint.textContent = `类别代码 ${code} 已存在`; return; }
+            hint.textContent = '';
+            kwsState.categories.push({ code, name: name.slice(0, 32), slot: document.getElementById('kwsNewType').value === 'slot', keywords: [] });
+            document.getElementById('kwsNewName').value = '';
+            document.getElementById('kwsNewCode').value = '';
+            kwsUi.focus = code;
+            kwsRender();
+        }
+
+        function kwsPayload() {
+            return {
+                version: kwsMeta.version,
+                categories: kwsState.categories.map(c => ({
+                    code: c.code, name: c.name, slot: c.slot,
+                    keywords: c.keywords.map(k => ({ phrase: k.phrase, value: k.value, boost: k.boost, threshold: k.threshold })),
+                })),
+            };
+        }
+
+        async function saveKwsKeywords() {
+            const bad = kwsState.categories.flatMap(c => c.keywords.filter(t => t.error).map(tag => ({ cat: c, tag })));
+            if (bad.length) {
+                kwsUi.saveError = `有 ${bad.length} 个关键词无法识别发音（${bad.map(x => x.tag.phrase).join('、')}），修正或删除后再保存。`;
+                kwsUi.selected = bad[0].tag.id;
+                kwsUi.expanded[bad[0].cat.code] = true;
+                kwsRender();
+                kwsFlash(bad[0].tag.id);
+                return;
+            }
+            kwsUi.saving = true;
+            kwsUi.saveError = '';
+            kwsRenderSave();
+            try {
+                const response = await fetch(`${getApiUrl()}/v1/kws/keywords`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(kwsPayload()),
+                });
+                const result = await response.json();
+                if (!response.ok) {
+                    for (const item of result.errors || []) {
+                        const hit = item.phrase && kwsFindPhrase(item.phrase);
+                        if (hit) hit.tag.serverError = item.message;
+                    }
+                    throw new Error(kwsErrorText(result));
+                }
+                kwsApply(result);
+                kwsShowToast(`已保存为 v${result.version}，新开始的实时会话使用这份关键词`, false);
+            } catch (error) {
+                kwsUi.saveError = `保存失败：${error.message}`;
+            } finally {
+                kwsUi.saving = false;
+                kwsRender();
+            }
+        }
+
+        async function discardKwsChanges() {
+            await loadKwsKeywords(true);
+            if (kwsState) kwsShowToast('已放弃未保存的改动，并重新读取服务端关键词', false);
+        }
+
+        function kwsRenderTag(tag) {
+            const status = kwsTagStatus(tag);
+            const classes = ['kws-tag', status, kwsUi.selected === tag.id ? 'selected' : '', kwsUi.armed === tag.id ? 'armed' : ''].join(' ');
+            const value = tag.value && tag.value !== tag.phrase ? `<span class="kws-val">→ ${escapeHtml(tag.value)}</span>` : '';
+            const title = tag.error || tag.serverError || `说法：${tag.phrase}\n命中值：${tag.value}\n点击编辑`;
+            return `<span class="${classes}" data-kws-tag="${tag.id}" tabindex="0" role="button" title="${escapeHtml(title)}"
+                onclick="kwsSelectTag(event, ${tag.id})" onkeydown="kwsTagKey(event, ${tag.id})">${escapeHtml(tag.phrase)}${value}<button
+                class="kws-x" type="button" aria-label="删除 ${escapeHtml(tag.phrase)}" onclick="event.stopPropagation(); kwsRemoveTag(${tag.id})">×</button></span>`;
+        }
+
+        function kwsRenderEditor(cat, tag) {
+            const id = tag.id;
+            const problem = tag.error || tag.serverError;
+            const tokens = problem
+                ? `<div class="kws-tokens bad">${escapeHtml(problem)}</div>`
+                : `<div class="kws-tokens">${escapeHtml(tag.pending ? '生成中...' : tag.tokens)}</div>`;
+            const field = (key, label, hint) => `<div class="kws-field"><label for="kws-${key}-${id}">${label}</label>
+                <input id="kws-${key}-${id}" value="${escapeHtml(tag[key])}" placeholder="默认" inputmode="decimal" autocomplete="off"
+                    oninput="kwsEditField(${id}, '${key}', this.value)"><small>${hint}</small></div>`;
+            return `<div class="kws-panel" aria-label="编辑关键词">
+                <div class="kws-panel-title">编辑「${escapeHtml(tag.phrase)}」</div>
+                <div class="kws-field"><label for="kws-phrase-${id}">说法</label>
+                    <input id="kws-phrase-${id}" value="${escapeHtml(tag.phrase)}" autocomplete="off" onchange="kwsEditPhrase(${id}, this.value)">
+                    <small>实际要说出口的词</small></div>
+                <div class="kws-field"><label for="kws-value-${id}">命中值</label>
+                    <input id="kws-value-${id}" value="${escapeHtml(tag.value)}" autocomplete="off" oninput="kwsEditField(${id}, 'value', this.value)">
+                    <small>${cat.slot ? `写进转写的 context.${cat.code}` : '随 kws.detected 推给业务端'}，不能含空格</small></div>
+                <div class="kws-field"><label>发音</label>${tokens}</div>
+                ${field('boost', '增益', '调大更容易命中，常用 1.0-2.0')}
+                ${field('threshold', '阈值', '调小更容易命中，误触发也会变多')}
+                <div class="kws-panel-actions">
+                    <button class="kws-chip danger" type="button" onclick="kwsRemoveTag(${id})">删除</button>
+                    <button class="kws-chip" type="button" onclick="kwsSelectTag(event, ${id})">收起</button>
+                </div>
+            </div>`;
+        }
+
+        function kwsRenderBatch(code) {
+            const input = (key, label, value, extra = '') => `<div class="kws-field"><label for="kws-${key}-${code}">${label}</label>
+                <input id="kws-${key}-${code}" value="${value}" autocomplete="off" oninput="kwsBatchRefresh('${code}')">${extra}</div>`;
+            return `<div class="kws-panel" aria-label="按编号批量生成">
+                <div class="kws-panel-title">按编号批量生成</div>
+                ${input('bt', '模板', '{n}床', '<small>{n} 处说成中文数字，命中值用阿拉伯数字</small>')}
+                ${input('bf', '从', '1')}
+                ${input('bto', '到', '10')}
+                <div class="kws-panel-actions"><small id="kws-bp-${code}"></small>
+                    <button class="kws-chip" type="button" onclick="kwsToggleBatch('${code}')">取消</button>
+                    <button class="kws-chip" type="button" onclick="kwsBatchAdd('${code}')">添加</button>
+                </div>
+            </div>`;
+        }
+
+        function kwsRenderCategory(cat) {
+            const code = cat.code;
+            const expanded = kwsUi.expanded[code] || cat.keywords.length <= KWS_COLLAPSE_AT;
+            const visible = expanded ? cat.keywords : cat.keywords.slice(0, KWS_COLLAPSE_AT);
+            const isSaved = kwsSaved.categories.some(c => c.code === code);
+            const selected = cat.keywords.find(t => t.id === kwsUi.selected);
+            const hint = kwsUi.hints[code] || (cat.slot
+                ? `命中后当前 ${code} 切换为该值，并标到之后的转写片段上`
+                : '命中时推送 kws.detected，服务端不改变上下文');
+            return `<section class="kws-cat" aria-label="${escapeHtml(cat.name)}">
+                <div class="kws-cat-head">
+                    <input class="kws-cat-name" id="kws-name-${code}" value="${escapeHtml(cat.name)}" aria-label="类别名称" title="点击改名"
+                        onchange="kwsRenameCategory('${code}', this.value)">
+                    <span class="kws-code">${code}</span>
+                    <span class="kws-seg" role="group" aria-label="类型">
+                        <button type="button" aria-pressed="${cat.slot}" onclick="kwsSetSlot('${code}', true)">上下文槽位</button>
+                        <button type="button" aria-pressed="${!cat.slot}" onclick="kwsSetSlot('${code}', false)">只推事件</button>
+                    </span>
+                    <span class="kws-count">${cat.keywords.length} 个</span>
+                    <span class="kws-spacer"></span>
+                    <button class="kws-chip" type="button" onclick="kwsToggleBatch('${code}')">按编号批量生成</button>
+                    <button class="kws-chip danger" type="button" onclick="kwsRemoveCategory('${code}')">${isSaved ? '删除类别' : '移除'}</button>
+                </div>
+                <div class="kws-tagbox" onclick="kwsFocusInput('${code}')">
+                    ${visible.map(kwsRenderTag).join('')}
+                    ${expanded ? '' : `<button class="kws-more" type="button" onclick="event.stopPropagation(); kwsExpand('${code}')">展开其余 ${cat.keywords.length - KWS_COLLAPSE_AT} 个</button>`}
+                    <input class="kws-input" id="kws-in-${code}" aria-label="${escapeHtml(cat.name)} 新关键词" autocomplete="off"
+                        placeholder="${cat.keywords.length ? '输入关键词，回车添加' : '输入第一个关键词，回车添加'}"
+                        value="${escapeHtml(kwsUi.drafts[code] || '')}"
+                        oninput="kwsDraftInput('${code}', this.value)" onkeydown="kwsInputKey(event, '${code}')" onpaste="kwsPaste(event, '${code}')">
+                </div>
+                <div class="kws-hint${kwsUi.hints[code] ? ' warn' : ''}">${escapeHtml(hint)}</div>
+                ${kwsUi.batchOpen === code ? kwsRenderBatch(code) : ''}
+                ${selected ? kwsRenderEditor(cat, selected) : ''}
+            </section>`;
+        }
+
+        function kwsRenderSave() {
+            const pill = document.getElementById('kwsStatePill');
+            const meta = document.getElementById('kwsSummaryMeta');
+            const text = document.getElementById('kwsSaveText');
+            document.getElementById('kwsSaveBar').hidden = !kwsState;
+            document.getElementById('kwsNewCategory').hidden = !kwsState;
+            if (!kwsState) {
+                pill.className = 'kws-pill';
+                pill.textContent = kwsLoadError ? '不可用' : '未加载';
+                meta.textContent = '';
+                return;
+            }
+            const changes = kwsChangeCount();
+            const invalid = kwsState.categories.flatMap(c => c.keywords).filter(t => t.error).length;
+            const total = kwsSaved.categories.reduce((n, c) => n + c.keywords.length, 0);
+            const savedAt = kwsMeta.updatedAt
+                ? `${kwsMeta.updatedAt.replace('T', ' ').slice(0, 16)} 保存`
+                : '从 KWS_KEYWORDS_FILE 导入，尚未在本页保存';
+            meta.textContent = `线上 v${kwsMeta.version} · ${savedAt} · ${kwsSaved.categories.length} 个类别 · ${total} 个关键词`;
+            pill.className = changes ? 'kws-pill dirty' : 'kws-pill ok';
+            pill.textContent = changes ? '有未保存改动' : '已生效';
+            text.className = kwsUi.saveError ? 'kws-savebar-text err' : 'kws-savebar-text';
+            const sessions = kwsMeta.activeSessions;
+            if (kwsUi.saveError) {
+                text.innerHTML = `<b>${escapeHtml(kwsUi.saveError)}</b>`;
+            } else if (changes) {
+                text.innerHTML = `<b>${changes} 处改动未保存</b>。保存后新开始的实时会话生效，进行中的 ${sessions} 个会话不受影响。`
+                    + (invalid ? ` 另有 ${invalid} 个关键词无法识别发音。` : '');
+            } else {
+                text.textContent = `没有未保存的改动。服务端当前有 ${sessions} 个实时会话。`;
+            }
+            document.getElementById('kwsBtnSave').disabled = !changes || kwsUi.saving;
+            document.getElementById('kwsBtnDiscard').disabled = !changes || kwsUi.saving;
+            document.getElementById('kwsBtnSave').textContent = kwsUi.saving ? '保存中...' : '保存并生效';
+        }
+
+        function kwsRender() {
+            const box = document.getElementById('kwsCategories');
+            const focusId = kwsUi.focus ? `kws-in-${kwsUi.focus}` : document.activeElement?.id;
+            kwsUi.focus = null;
+            if (!kwsState) {
+                box.innerHTML = `<div class="empty-state">${escapeHtml(kwsLoadError || '加载中...')}</div>`;
+            } else {
+                box.innerHTML = kwsState.categories.length
+                    ? kwsState.categories.map(kwsRenderCategory).join('')
+                    : '<div class="empty-state">还没有类别，先在下方新建</div>';
+                if (kwsUi.batchOpen && kwsCategory(kwsUi.batchOpen)) kwsBatchRefresh(kwsUi.batchOpen);
+            }
+            kwsRenderSave();
+            // 重绘后把焦点和光标放回原输入框，连续输入不被打断。
+            const input = focusId && focusId.startsWith('kws-') ? document.getElementById(focusId) : null;
+            if (input) {
+                input.focus();
+                input.setSelectionRange?.(input.value.length, input.value.length);
+            }
+        }
 
         // 页面加载时恢复最近任务；只订阅原服务器，不重新上传或重新推理。
         restoreMeetingJob();

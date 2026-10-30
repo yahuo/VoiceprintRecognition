@@ -23,6 +23,7 @@ from .core import (
     load_voiceprint_index, save_voiceprint_embedding,
 )
 from .services.kws import KwsService, create_kws_service
+from .services.kws_keywords import KeywordsError, stored_document
 from .services.live_session import ACCURACY_HOTWORDS, final_token_budget, live_metrics, run_live_session
 from .services.meeting_jobs import MeetingJobStore, normalize_job_id
 from .services.moss import MossError, max_audio_seconds
@@ -39,6 +40,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Meeting-Job-Id"])
 service = ModelService()
 kws_service = KwsService()  # 启动时按配置加载
+kws_keywords_lock = asyncio.Lock()
 meeting_jobs = MeetingJobStore()
 DEVICE = "cpu"
 TRANSCRIPTION_PRIORITIES = frozenset({"speed", "accuracy"})
@@ -452,6 +454,62 @@ async def download_meeting_recording(file_id: str):
 async def get_live_metrics():
     """实时各推理阶段的积压、排队和执行耗时；不含音频、文本或身份信息。"""
     return live_metrics()
+
+
+class KwsKeywordsPreview(BaseModel):
+    phrases: list[str] = Field(max_length=200)
+
+
+class KwsKeywordsUpdate(BaseModel):
+    version: int
+    categories: list[dict]
+
+
+def _require_kws():
+    if not kws_service.enabled:
+        raise HTTPException(status_code=409, detail="KWS 未启用")
+
+
+def _kws_keywords_payload():
+    return {
+        "enabled": True,
+        "version": kws_service.version,
+        "updated_at": kws_service.updated_at,
+        "categories": kws_service.categories,
+        "active_sessions": live_metrics()["active_sessions"],
+    }
+
+
+@app.get("/v1/kws/keywords")
+async def get_kws_keywords():
+    """当前生效的 KWS 关键词表；每个关键词附带由模型词表生成的发音 tokens。"""
+    if not kws_service.enabled:
+        return {"enabled": False}
+    return _kws_keywords_payload()
+
+
+@app.post("/v1/kws/keywords/preview")
+async def preview_kws_keywords(body: KwsKeywordsPreview):
+    """说法的发音 token 预览；error 非空表示模型无法识别该说法。"""
+    _require_kws()
+    return {"items": kws_service.preview(body.phrases)}
+
+
+@app.put("/v1/kws/keywords")
+async def update_kws_keywords(body: KwsKeywordsUpdate):
+    """整表保存并生效：新开始的实时会话使用新词表，进行中的会话不受影响。version 须为读取时的版本。"""
+    _require_kws()
+    async with kws_keywords_lock:
+        if body.version != kws_service.version:
+            raise HTTPException(status_code=409, detail="关键词已被其他人修改，请刷新后重试")
+        try:
+            prepared = await asyncio.to_thread(kws_service.prepare, body.categories)
+        except KeywordsError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "errors": exc.errors})
+        document = stored_document(prepared.categories, body.version + 1)
+        await asyncio.to_thread(kws_service.store.save, document)
+        kws_service.activate(prepared, document["version"], document["updated_at"])
+    return _kws_keywords_payload()
 
 
 @app.websocket("/ws/meeting/live")

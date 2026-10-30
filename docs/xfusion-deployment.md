@@ -108,6 +108,14 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-20261030/r2/deploy/rollback-from-kws.patch.json"'
 ```
 
+### 升级到关键词维护页的前置条件（未部署）
+
+含网页关键词维护的版本把 `KWS_KEYWORDS_STORE` 设为必填：`KWS_ENABLED=1` 而缺少它时服务启动失败。升级时须同时：
+
+- 追加 `KWS_KEYWORDS_STORE`，指向可写且随 Pod 保留的路径（建议与 `/data/voiceprints` 同卷的 `/data/kws/keywords.json`，部署前核实该卷可写、`/data/models/local` 仍为只读）；数据备份需包含该文件。
+- 现网 `keywords.txt` 已是 token 格式，直接导入后页面上的说法显示为拼音。宜另放一份中文说法的导入文件（如 `十二床 @bed:12床`），`KWS_KEYWORDS_FILE` 指向它；只在关键词库不存在时读取。
+- 镜像需含 `pypinyin`（`deploy/Dockerfile.xfusion` 已加入）。现网为单副本，保存即对新会话生效；扩成多副本前须先解决关键词库共享与通知。
+
 ## 尚未由部署验收证明的事项
 
 - 医学数字、术语、否定词与身份归属仍需人工审核；模型成功完成不等于临床准确率验收。

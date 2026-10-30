@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg libsndfile1 libportaudio2 libgomp1 gcc g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dependencies /usr/local/ /usr/local/
-RUN pip install --no-cache-dir sherpa-onnx==2.0.1 sherpa-onnx-core==2.0.1
+RUN pip install --no-cache-dir sherpa-onnx==2.0.1 sherpa-onnx-core==2.0.1 pypinyin==0.55.0
 RUN find /usr/local/lib/python3.11/site-packages/nvidia -maxdepth 2 -type d -name lib \
       > /etc/ld.so.conf.d/nvidia-python.conf && ldconfig
 
@@ -22,6 +22,6 @@ COPY app/ ./app/
 COPY static/ ./static/
 COPY Fun-ASR/ ./Fun-ASR/
 COPY source-manifest.json ./source-manifest.json
-RUN python -c "from app import server; import torch; import sherpa_onnx; assert server.app.version == '3.0.0'; assert torch.__version__ == '2.10.0+cu130'; print('APP_IMPORT_OK')"
+RUN python -c "from app import server; import torch; import sherpa_onnx; import pypinyin; assert server.app.version == '3.0.0'; assert torch.__version__ == '2.10.0+cu130'; print('APP_IMPORT_OK')"
 EXPOSE 8000
 CMD ["python", "-m", "app.server", "--host", "0.0.0.0", "--port", "8000", "--device", "cuda:0"]

@@ -19,20 +19,25 @@
 
 ## 关键词与标签
 
-keywords 文件每行一个关键词，`@` 标签写成 `类别:值`，命中时原样返回：
+关键词在网页“关键词”页按类别维护：输入说法回车成为 tag，可批量按编号生成（如 `{n}床` 1–60），点 tag 编辑命中值、增益和阈值。保存后整表校验，通过才生效：新开始的实时会话使用新词表，进行中的会话保持开始时的词表与槽位。接口见 [API 文档](api.md#关键词维护kws)。
 
-| 示例原始行 | 类别 | 含义 |
-|---|---|---|
-| `十二床 @bed:12床` | `bed` | 上下文槽位（默认配置） |
-| `三病区 @ward:三病区` | `ward` | 上下文槽位（需加入 `KWS_CONTEXT_SLOTS`） |
-| `下一床 #0.3 @command:next_bed` | `command` | 只推事件，业务端解释 |
-| `开始查体 @section:查体` | `section` | 只推事件 |
+每个关键词命中时返回 `类别:值`：
 
-- 类别名为小写字母开头的 `[a-z0-9_]`；不带冒号的旧标签按 `marker` 类别处理。
-- `KWS_CONTEXT_SLOTS`（逗号分隔，默认 `bed`）中的类别是上下文槽位，其余类别只推事件。
-- sherpa-onnx 不返回置信度，误触发靠每个关键词的 `:增益` 与 `#阈值` 调节；同一 `类别:值` 在 `KWS_DUPLICATE_COOLDOWN_MS`（默认 2000）内重复命中只推一次。
+| 说法 | 类别 | 命中值 | 含义 |
+|---|---|---|---|
+| `十二床` | `bed` | `12床` | 上下文槽位 |
+| `三病区` | `ward` | `3病区` | 上下文槽位 |
+| `下一床`（阈值 0.3） | `command` | `next_bed` | 只推事件，业务端解释 |
+| `开始查体` | `section` | `查体` | 只推事件 |
 
-用 `scripts/build_kws_keywords.py` 把中文原始行转成模型 token（需 `pip install pypinyin`），token 不在模型词表中会报错退出：
+- 类别代码为小写字母开头的 `[a-z0-9_]`，建好后不改；类别分“上下文槽位”和“只推事件”两种，在页面上切换。
+- 说法写成实际说出口的汉字（“十二床”而不是“12床”）；服务端用 pypinyin 转成模型 token，有 token 不在模型词表中、两个说法发音相同或说法重复时整表拒绝。
+- sherpa-onnx 不返回置信度，误触发靠每个关键词的增益（调大更易命中）与阈值（调小更易命中）调节；同一 `类别:值` 在 `KWS_DUPLICATE_COOLDOWN_MS`（默认 2000）内重复命中只推一次。
+- 检测是后缀匹配：删掉“十二床”而保留“二床”时，说“十二床”会命中 `二床`（真实模型复测）。成组的编号应完整保留，不要只删其中一部分。
+
+关键词保存在 `KWS_KEYWORDS_STORE`（JSON）。该文件不存在时，从 `KWS_KEYWORDS_FILE` 导入初始内容（版本 v0，首次在页面保存前不写文件），文件每行 `说法 [:增益] [#阈值] @类别:值`，`KWS_CONTEXT_SLOTS` 中的类别导入为上下文槽位。导入文件宜用中文说法；已转成 token 的旧文件也能导入，但页面上的说法会显示为拼音 token。不带冒号的旧标签按 `marker` 类别处理。
+
+`scripts/build_kws_keywords.py` 仅用于离线检查中文原始行能否转成模型 token：
 
 ```bash
 python scripts/build_kws_keywords.py --tokens /models/kws/tokens.txt keywords_raw.txt keywords.txt
@@ -160,6 +165,7 @@ sequenceDiagram
 - 准入降级为只录音的会话照常做 KWS（没有 `transcript`，但有 `kws.detected`/`state.changed`，`set_context` 可用）。
 - 单个会话 KWS 出错时推送 `status`（`phase=kws_unavailable`）并停止检测；转写、录音和 `set_context` 不受影响。
 - KWS 默认关闭；`KWS_ENABLED=1` 时配置必须完整、模型必须能加载，否则服务启动失败，不静默降级。
+- 关键词库是单个服务实例的本地文件：多副本部署时，某个实例上的保存不会同步到其他实例，其他实例要重启后才读到（且须共享同一存储）。
 
 ```bash
 KWS_ENABLED=1
@@ -167,7 +173,8 @@ KWS_TOKENS_PATH=/app/models/kws/tokens.txt
 KWS_ENCODER_PATH=/app/models/kws/encoder.onnx
 KWS_DECODER_PATH=/app/models/kws/decoder.onnx
 KWS_JOINER_PATH=/app/models/kws/joiner.onnx
-KWS_KEYWORDS_FILE=/app/models/kws/keywords.txt
+KWS_KEYWORDS_STORE=/app/data/kws/keywords.json   # 可写的持久目录，页面保存到这里
+KWS_KEYWORDS_FILE=/app/models/kws/keywords_raw.txt   # 仅在关键词库不存在时导入
 KWS_PROVIDER=cpu
 KWS_NUM_THREADS=1
 KWS_CONTEXT_SLOTS=bed
