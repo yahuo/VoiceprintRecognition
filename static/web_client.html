@@ -1657,6 +1657,14 @@
             return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
         }
 
+        // 令牌只属于当前填写的服务器；请求其他服务器（如恢复的旧任务）时不携带
+        function adminHeadersFor(apiUrl, headers = {}) {
+            try {
+                if (new URL(apiUrl).origin === new URL(getApiUrl()).origin) return adminHeaders(headers);
+            } catch {}
+            return headers;
+        }
+
         function adminErrorText(response, result) {
             if (response.status === 401) return `需要管理令牌：请在服务器地址旁填写正确的管理令牌（${result?.detail || '未授权'}）`;
             return result?.detail || `HTTP ${response.status}`;
@@ -2578,7 +2586,7 @@
             const button = document.getElementById('btnCancelMeeting');
             button.disabled = true;
             try {
-                const response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST', headers: adminHeaders() });
+                const response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST', headers: adminHeadersFor(job.apiUrl) });
                 const state = await response.json();
                 if (!response.ok) throw new Error(adminErrorText(response, state));
                 if (job.terminal) return;
