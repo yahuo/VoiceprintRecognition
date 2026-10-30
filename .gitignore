@@ -83,3 +83,6 @@ models/
 
 modelscope/
 /VoiceprintRecognition.iml
+
+# Playwright MCP 浏览器调试产物
+.playwright-mcp/
