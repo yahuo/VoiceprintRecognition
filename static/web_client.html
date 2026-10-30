@@ -2578,9 +2578,9 @@
             const button = document.getElementById('btnCancelMeeting');
             button.disabled = true;
             try {
-                const response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST' });
-                if (!response.ok) throw new Error((await response.json()).detail || `HTTP ${response.status}`);
+                const response = await fetch(`${job.apiUrl}/v1/meeting/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST', headers: adminHeaders() });
                 const state = await response.json();
+                if (!response.ok) throw new Error(adminErrorText(response, state));
                 if (job.terminal) return;
                 if (state.state === 'cancelling') showMeetingConnectionStatus('已请求取消，正在结束当前任务...');
                 if (!meetingRequestInProgress) await restoreMeetingJob();

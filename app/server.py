@@ -250,7 +250,7 @@ def _remove_temp(path):
 async def startup_event():
     global kws_service
     if not ADMIN_TOKEN:
-        print("警告: 未设置 ADMIN_TOKEN，声纹注册/删除/重载、录音删除、关键词保存等写接口不鉴权，"
+        print("警告: 未设置 ADMIN_TOKEN，声纹注册/删除/重载、录音删除、关键词保存、转写任务取消等写接口不鉴权，"
               "能访问本服务的任何人都可调用；生产环境请配置 ADMIN_TOKEN 与 CORS_ALLOW_ORIGINS。")
     recording_store.cleanup_temp_files()
     kws_service = await asyncio.to_thread(create_kws_service, CONFIG)
@@ -436,7 +436,7 @@ async def subscribe_meeting_job(job_id: str, after: int = Query(default=0, ge=0)
     return _meeting_job_response(meeting_jobs.get(job_id), after)
 
 
-@app.post("/v1/meeting/jobs/{job_id}/cancel")
+@app.post("/v1/meeting/jobs/{job_id}/cancel", dependencies=ADMIN_ONLY)
 async def cancel_meeting_job(job_id: str):
     return meeting_jobs.cancel(job_id)
 

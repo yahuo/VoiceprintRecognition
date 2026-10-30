@@ -13,6 +13,7 @@ PROTECTED = [
     ("POST", "/v1/voiceprint/reload"),
     ("POST", "/v1/meeting/recordings/delete"),
     ("PUT", "/v1/kws/keywords"),
+    ("POST", "/v1/meeting/jobs/x/cancel"),
 ]
 
 

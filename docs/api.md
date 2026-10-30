@@ -44,8 +44,9 @@
 - `POST /v1/voiceprint/reload`
 - `POST /v1/meeting/recordings/delete`
 - `PUT /v1/kws/keywords`
+- `POST /v1/meeting/jobs/{jobId}/cancel`
 
-其他接口不校验令牌：健康与查询接口、离线转写与任务、录音下载、会议摘要、`POST /v1/kws/keywords/preview` 和实时 WebSocket。网页在服务器地址旁填写“管理令牌”（只存本浏览器 localStorage），上述请求自动携带该头。
+其他接口不校验令牌：健康与查询接口、离线转写的提交与任务查询/订阅、录音下载、会议摘要、`POST /v1/kws/keywords/preview` 和实时 WebSocket。网页在服务器地址旁填写“管理令牌”（只存本浏览器 localStorage），上述请求自动携带该头。
 
 ```bash
 curl -X DELETE 'http://localhost:8000/v1/voiceprint?id=doctor-a' -H "Authorization: Bearer $ADMIN_TOKEN"
@@ -53,7 +54,7 @@ curl -X DELETE 'http://localhost:8000/v1/voiceprint?id=doctor-a' -H "Authorizati
 
 `CORS_ALLOW_ORIGINS` 为逗号分隔的允许跨域来源（如 `https://his.example.com,https://emr.example.com`），配置后浏览器只放行这些来源的跨域请求；同源访问 `/client` 不受影响。未设置时为 `*`。
 
-两者均未设置时与旧版本行为一致：写接口不鉴权且允许任意来源跨域，内网中任意网页都可借用户浏览器修改关键词、注册或删除声纹、删除录音。生产环境应设置 `ADMIN_TOKEN`（较长的随机值，不提交 Git、不写入镜像），把它告知调用写接口的业务端，并按需配置 `CORS_ALLOW_ORIGINS`；服务启动时未设置 `ADMIN_TOKEN` 会打印警告。令牌以明文请求头传输，跨网段访问应置于 HTTPS 网关之后。
+两者均未设置时与旧版本行为一致：写接口不鉴权且允许任意来源跨域，内网中任意网页都可借用户浏览器修改关键词、注册或删除声纹、删除录音、取消转写任务。生产环境应设置 `ADMIN_TOKEN`（较长的随机值，不提交 Git、不写入镜像），把它告知调用写接口的业务端，并按需配置 `CORS_ALLOW_ORIGINS`；服务启动时未设置 `ADMIN_TOKEN` 会打印警告。令牌以明文请求头传输，跨网段访问应置于 HTTPS 网关之后。
 
 ## 声纹管理
 
@@ -173,7 +174,7 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 
 - `GET /v1/meeting/jobs/{jobId}`：状态 `running/cancelling/done/error/cancelled`、源文件显示名、片段/事件数。
 - `GET /v1/meeting/jobs/{jobId}/events?after=0`：从头回放再继续订阅；每个 JSON 事件带连续整数 `eventId`。断线重连可以传已应用的最后一个 eventId；刷新后空白页面从 0 重建结果。`index` 仍是从 0 开始的片段序号，不等于 eventId。
-- `POST /v1/meeting/jobs/{jobId}/cancel`：显式取消，最终发 `error`（`cancelled=true`），不发 `done`。不会删除已保存原始录音。正常取消只 abort 当前 vLLM 请求，模型继续常驻；无法确认取消或模型/协议异常才回收 worker。
+- `POST /v1/meeting/jobs/{jobId}/cancel`（受 `ADMIN_TOKEN` 保护）：显式取消，最终发 `error`（`cancelled=true`），不发 `done`。不会删除已保存原始录音。正常取消只 abort 当前 vLLM 请求，模型继续常驻；无法确认取消或模型/协议异常才回收 worker。
 - **关闭网页、刷新、SSE 断开只释放订阅，不取消任务、不卸载模型。** 输入文件由后台任务持有，计算结束后才清理。重复提交相同 jobId 返回 409，恢复使用 GET，不再次 POST 音频。
 - 单进程最多一个进行中任务；最多缓存 8 个任务，每个事件缓存上限 32MiB、同时最多 4 个订阅。已完成结果可恢复至完成后 1 小时，容量不足时可能提前淘汰最旧且无人读取的完成稿。过期/未接受/重启丢失返回 404 或 410；不提供可枚举其他任务的列表，jobId 不应分享。
 - 仅保证**已经接受的离线任务**跨页面刷新。上传未完成可能需要重新选择文件；服务进程重启不支持推理断点续跑，已保存录音不受影响。实时麦克风仍属于当前页面，刷新前应先停止保存，不能将离线恢复承诺扩展到麦克风录音。
