@@ -413,7 +413,7 @@ test('a 401 response tells the user a management token is required', async () =>
     assert.equal(c.scope.kwsChangeCount(), 1);
 });
 
-test('cancelling a meeting job sends the admin token and explains a 401', async () => {
+test('cancelling a meeting job sends the admin token only to its own server and explains a 401', async () => {
     const calls = [];
     const alerts = [];
     const c = client({ storage: new Map([['voiceprintAdminToken', 'secret']]), fetch: async (url, options = {}) => {
@@ -423,9 +423,14 @@ test('cancelling a meeting job sends the admin token and explains a 401', async 
     c.scope.rememberMeetingJob('https://original.example', 'test.wav');
     c.scope.confirm = () => true;
     c.scope.alert = message => alerts.push(message);
+    c.get("serverUrlInput.value = 'https://original.example/'");
     await c.scope.cancelMeetingJob();
-    assert.equal(calls.length, 1);
     assert.equal(calls[0].Authorization, 'Bearer secret');
     assert.equal(alerts.length, 1);
     assert.match(alerts[0], /取消请求失败：需要管理令牌：请在服务器地址旁填写/);
+
+    c.get("serverUrlInput.value = 'https://other.example'");
+    await c.scope.cancelMeetingJob();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].Authorization, undefined);
 });
