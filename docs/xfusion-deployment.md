@@ -88,6 +88,26 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 - Chrome 先经临时 SSH 转发回放同一真实任务并刷新恢复，随后关闭本次转发，直接访问当前 LAN 地址 `https://10.16.78.160:8443/voiceprint/client` 复核 19 段、目标身份及拒识分数展示；没有重新上传或调用摘要。声纹哈希与原有 4 份录音元数据未变，六个其他服务启动/重启状态未变。候选测试容器已退出。
 - 该段仍接近阈值，本次单音频回归不代表声纹库质量、广泛误识率或医学准确率验收。未修改已有结果缓存，旧任务需重新处理才使用新规则。
 
+## 2026-10-30 实时 KWS 关键词事件（已上线）
+
+按用户授权于 13:32:01～13:32:33（UTC+08）更新为 `20261030-xfusion-kws-r2`，Pod `voiceprint-ab-86998ddc5f-2kflg` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。切换前现网为 `20260930-xfusion-live-admission`（enforce 准入、Nano fp32），二者均不变。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20261030-xfusion-kws-r2`，发布 index `sha256:2116d1c9957db3f07addd10eabc26c5ec9ac8386dec6aa53dd4616014d775016`，ARM64 manifest `sha256:1410ab8da796aca31f8471007ffb31b86062509fbf52e28d02c6c514a8d7f83f`。Pod imageID 为外层 archive index `sha256:60e7c2b1…`，已验证其唯一指向该发布 index。本地按 `deploy/Dockerfile.xfusion` 构建、离线导入，未推送 registry。应用提交 `ea26587`（PR #6），21 文件源清单 sha256 `09ee7353…`，实际 Pod 内逐个核对一致。
+- **依赖镜像来源变更**：此前记录的 `APP_DEPS_IMAGE`（`voiceprint-asr-ab:20260920-154026-gpu-qwen@sha256:9ff2a2c8…`）已不在本机 docker/containerd，registry 也不存在。本次改用当时现网镜像 `voiceprint-moss:20260930-xfusion-live-admission-r1`（ID `sha256:41eda3e5…`）作 `APP_DEPS_IMAGE`，其 `/usr/local` 即由原依赖镜像复制而来，构建中该复制层命中既有缓存。镜像另加一层 `sherpa-onnx==2.0.1`。以后构建可继续用本次镜像作依赖来源。
+- KWS 模型：`sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`，fp32、chunk-16 的 encoder/decoder/joiner、`tokens.txt` 及 63 行 `keywords.txt`（1–60床、下一床、暂停记录、继续记录），放在 PVC `models/local/k2-fsa/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20-kws-r1/`（root 0444/0555），复用已有只读挂载 `/data/models/local`，**未新增 volume 或 volumeMount**。sha256 逐个校验。
+- 部署只改镜像、两个发布/源清单注解，并在 server 容器 env 末尾追加：`KWS_ENABLED=1`、`KWS_TOKENS_PATH`/`KWS_ENCODER_PATH`/`KWS_DECODER_PATH`/`KWS_JOINER_PATH`/`KWS_KEYWORDS_FILE`（指向上述目录）、`KWS_CONTEXT_SLOTS=bed`、`KWS_PROVIDER=cpu`、`KWS_NUM_THREADS=1`。其他 env、资源、安全配置、Service 与 Nginx 不变。
+- 切换前确认连接/任务/录音均空闲，备份声纹与录音（含录音索引元数据与内容 sha256）。切换后 5 个声纹文件哈希与 5 份录音内容哈希均不变。
+- 验证：同机隔离 GPU 实例复测原缺陷场景（“下一床”后客户端回写 14床，再说“十五床”），r2 正确推送 `14床→15床`、片段 context 为 15床，关键词起止与真实位置误差在 0.25s 内；`set_context` 纠正、清空与非法值 error 回归通过。隔离实例已停止并删除，测试录音已删除。经原 HTTPS 网关：网页 200；WSS 推 47.5s 合成查房音频，收到 4 次 `kws.detected`、2 次 `state.changed`，最终片段均带 `context`，检测延迟约 0.23–0.33s；测试录音已按 fileId 删除。
+- 未验证：真实病房语音的关键词召回（合成语音中第二次出现的“暂停记录”曾漏检）、物理麦克风。KWS 默认 CPU 单线程；8 路合成语音并发时 kws 阶段平均排队 3ms，瓶颈仍在 Nano。
+
+证据位于本地 `output/xfusion-kws-20261030/`（`report.md`、`r2/`），远端 `~/.local/share/voiceprint-kws-20261030/r2/deploy/`（含数据备份 `data-backup-133158.tar`）。
+
+回滚到切换前的 enforce-fp32 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）：
+
+```bash
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-20261030/r2/deploy/rollback-from-kws.patch.json"'
+```
+
 ## 尚未由部署验收证明的事项
 
 - 医学数字、术语、否定词与身份归属仍需人工审核；模型成功完成不等于临床准确率验收。
