@@ -412,3 +412,20 @@ test('a 401 response tells the user a management token is required', async () =>
     assert.match(c.get('kwsUi.saveError'), /需要管理令牌：请在服务器地址旁填写/);
     assert.equal(c.scope.kwsChangeCount(), 1);
 });
+
+test('cancelling a meeting job sends the admin token and explains a 401', async () => {
+    const calls = [];
+    const alerts = [];
+    const c = client({ storage: new Map([['voiceprintAdminToken', 'secret']]), fetch: async (url, options = {}) => {
+        calls.push(options.headers || {});
+        return new Response(JSON.stringify({ detail: '管理令牌错误' }), { status: 401 });
+    } });
+    c.scope.rememberMeetingJob('https://original.example', 'test.wav');
+    c.scope.confirm = () => true;
+    c.scope.alert = message => alerts.push(message);
+    await c.scope.cancelMeetingJob();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].Authorization, 'Bearer secret');
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /取消请求失败：需要管理令牌：请在服务器地址旁填写/);
+});
