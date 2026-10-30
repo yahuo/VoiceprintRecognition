@@ -196,10 +196,15 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 `enforce` 准入超限时（见[健康状态](#健康状态)），连接后先收到 `{"type":"status","phase":"recording_only","message":"..."}`。此后本场只录音：
 
 - 不发送任何 `transcript`，不调用 VAD/ASR/声纹模型；
+- KWS 启用时照常检测关键词并推送事件；
 - 暂停、继续、停止与录音保存不变；
 - 停止后 `transcriptionStatus` 为 `recording_only`，可按 fileId 生成 MOSS 会后复核稿。
 
 降级在会话开始时决定，负载下降后不会在同一场中恢复实时转写。
+
+### 关键词事件（KWS，可选）
+
+`KWS_ENABLED=1` 时，可用 `session_id` 查询参数指定会话 ID（缺省由服务端生成），服务端推送 `kws.detected` 与上下文槽位的 `state.changed`，`transcript` 增加 `context`/`contextChanged`，并接受 `{"type":"set_context","slot":"bed","value":"15床"}` 控制消息。未启用时协议不变。字段、标签格式与场景见 [实时 KWS 事件交互场景说明](realtime-kws-event-scenarios.md)。
 
 ### 控制与录音保存
 

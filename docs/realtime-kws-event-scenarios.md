@@ -1,393 +1,163 @@
 # 实时 KWS 事件交互场景说明
 
-本文只讨论实时场景。KWS 的职责不是完整转写，而是在音频流中快速识别会改变业务状态的关键词，例如床号、下一床、开始记录、暂停记录、结束记录。
+本文只讨论实时场景。KWS 的职责不是完整转写，而是在音频流中快速识别会改变业务状态的关键词，例如床号、病区、下一床、开始/暂停记录、查体段落标记。床号只是其中一类，设计按“类别:值”通用化。
 
-## 目标
-
-实时 KWS 输出的是事件，不直接写业务数据。业务端收到事件后再决定是否切换当前床号、更新 UI、创建记录、暂停录音或触发后续流程。
-
-推荐把 KWS 作为实时语音链路的旁路能力：
+## 设计原则：混合方案
 
 ```text
 音频流
-  -> KWS 检测床号/指令
-  -> 推送 kws.detected 事件
-  -> 业务端或语音服务状态机更新 current_bed / recording_state
+  -> KWS 旁路检测（独立推理阶段，按收包顺序）
+  -> 所有命中推送 kws.detected 原始事件
+  -> 命中类别是上下文槽位（如 bed）时，服务端切换该槽位并推送 state.changed
+  -> transcript 按音频时间标注 context
+业务端
+  -> 解释指令/标记类事件（下一床、暂停记录……）
+  -> 需要纠正或补设上下文时发 set_context
 ```
 
-如果业务还需要实时正文转写，再额外暴露 ASR 事件；如果只需要床号/指令切换，则不需要 ASR 文本事件。
+服务端只维护“显式说出的值”这种无需业务知识的最小上下文；需要查房队列、权限或确认流程的语义（“下一床”指哪一床、“结束记录”是否需二次确认）留给业务端，再通过 `set_context` 回写结果。这样服务端不猜业务，正文归属又不必由业务端自行对时间轴。
 
-## 事件字段约定
+## 关键词与标签
 
-所有事件建议包含以下基础字段：
+keywords 文件每行一个关键词，`@` 标签写成 `类别:值`，命中时原样返回：
 
-| 字段 | 说明 |
-|---|---|
-| `type` | 事件类型，例如 `kws.detected` |
-| `session_id` | 一次实时查房会话 ID |
-| `seq` | 会话内递增序号，用于排序和去重 |
-| `ts_ms` | 相对本次音频开始的时间，毫秒 |
-| `source` | 事件来源，例如 `kws`、`asr`、`state_machine` |
+| 示例原始行 | 类别 | 含义 |
+|---|---|---|
+| `十二床 @bed:12床` | `bed` | 上下文槽位（默认配置） |
+| `三病区 @ward:三病区` | `ward` | 上下文槽位（需加入 `KWS_CONTEXT_SLOTS`） |
+| `下一床 #0.3 @command:next_bed` | `command` | 只推事件，业务端解释 |
+| `开始查体 @section:查体` | `section` | 只推事件 |
 
-KWS 命中事件：
+- 类别名为小写字母开头的 `[a-z0-9_]`；不带冒号的旧标签按 `marker` 类别处理。
+- `KWS_CONTEXT_SLOTS`（逗号分隔，默认 `bed`）中的类别是上下文槽位，其余类别只推事件。
+- sherpa-onnx 不返回置信度，误触发靠每个关键词的 `:增益` 与 `#阈值` 调节；同一 `类别:值` 在 `KWS_DUPLICATE_COOLDOWN_MS`（默认 2000）内重复命中只推一次。
+
+用 `scripts/build_kws_keywords.py` 把中文原始行转成模型 token（需 `pip install pypinyin`），token 不在模型词表中会报错退出：
+
+```bash
+python scripts/build_kws_keywords.py --tokens /models/kws/tokens.txt keywords_raw.txt keywords.txt
+# 十二床 @bed:12床  ->  sh í èr ch uáng @bed:12床
+```
+
+## 事件与消息
+
+所有 KWS 相关事件带 `session_id`、会话内递增的 `seq`、`ts_ms`、`source`。`ts_ms`、`start_ms/end_ms` 与 `transcript` 的时间同一时间轴：已保存 PCM 的累计时长，不含暂停。
+
+### kws.detected：每次命中
 
 ```json
 {
   "type": "kws.detected",
-  "session_id": "round-20260508-001",
+  "session_id": "round-20261030-001",
   "seq": 18,
   "ts_ms": 1840,
   "source": "kws",
   "category": "bed",
-  "keyword": "十二床",
-  "normalized": "12床",
-  "score": 0.86,
+  "value": "12床",
   "start_ms": 1520,
   "end_ms": 1840
 }
 ```
 
-字段说明：
+`ts_ms` 为检测到时已收音频的位置，通常比 `end_ms` 晚 0.5–0.9s；`start_ms` 拿不到时为 `null`。
 
-| 字段 | 说明 |
-|---|---|
-| `category` | `bed`、`command`、`marker` 等 |
-| `keyword` | 原始命中的关键词 |
-| `normalized` | 归一化后的业务值，例如 `12床` |
-| `score` | KWS 置信度 |
-| `start_ms` / `end_ms` | 关键词在音频中的时间范围 |
-
-## 场景 A：只有 KWS 事件
-
-### 适用场景
-
-业务端只需要实时知道床号或控制指令，不需要实时拿到医生说的正文。
-
-典型例子：
-
-- 医生说“12床”，前端自动切换到 12床病人页。
-- 医生说“下一床”，业务端按当前查房队列切换到下一位病人。
-- 医生说“开始记录 / 暂停记录 / 结束记录”，业务端控制录音状态。
-- 后续正文由另一个录音/转写系统处理，KWS 只负责给业务系统打状态点。
-
-### 交互流程
-
-```mermaid
-sequenceDiagram
-    participant Client as 业务端/前端
-    participant Voice as 实时语音服务
-    participant KWS as KWS 引擎
-
-    Client->>Voice: 建立实时会话，传入病区床位列表和关键词配置
-    Client->>Voice: 持续发送 16k PCM 音频流
-    Voice->>KWS: 分帧推送音频
-    KWS-->>Voice: 命中关键词
-    Voice-->>Client: 推送 kws.detected
-    Client->>Client: 更新 current_bed 或 recording_state
-```
-
-### 业务端收到事件后做什么
-
-收到床号事件：
+### state.changed：槽位取值真正变化时
 
 ```json
 {
-  "type": "kws.detected",
-  "category": "bed",
-  "keyword": "十二床",
-  "normalized": "12床",
-  "score": 0.86
-}
-```
-
-业务动作：
-
-```text
-1. 校验 score 是否达到业务阈值。
-2. 校验 12床 是否在当前查房队列或当前病区床位列表中。
-3. 如果通过校验，将 current_bed 切换为 12床。
-4. UI 高亮 12床病人卡片。
-5. 记录一条状态变更日志，便于事后追溯。
-```
-
-收到“下一床”事件：
-
-```json
-{
-  "type": "kws.detected",
-  "category": "command",
-  "keyword": "下一床",
-  "normalized": "next_bed",
-  "score": 0.81
-}
-```
-
-业务动作：
-
-```text
-1. 根据当前 current_bed 和查房队列找到下一张床。
-2. 切换 current_bed。
-3. UI 跳转或高亮下一位病人。
-4. 如果当前没有床号上下文，则提示用户确认或忽略该命令。
-```
-
-收到“开始记录 / 暂停记录 / 结束记录”事件：
-
-```json
-{
-  "type": "kws.detected",
-  "category": "command",
-  "keyword": "暂停记录",
-  "normalized": "pause_recording",
-  "score": 0.84
-}
-```
-
-业务动作：
-
-```text
-1. 更新 recording_state。
-2. 控制录音、上传或 UI 状态。
-3. 对结束类命令可以弹出确认，避免误触发直接结束。
-```
-
-### 优点
-
-- 改动最小，业务边界清楚。
-- 不要求业务端处理转写文本。
-- 适合先验证实时床号/指令识别是否可靠。
-- KWS 失败不会影响原有 ASR 或纪要生成链路。
-
-### 限制
-
-- 无法直接生成查房正文。
-- 只能解决“当前状态切换”，不能解决“医生说了什么”。
-- 如果后续系统需要把正文归属到床号，还需要 ASR 或其他转写链路配合。
-
-## 场景 B：完整事件流
-
-### 适用场景
-
-业务端需要实时看到正文转写，并且希望系统边说边把内容归属到当前床号。
-
-典型例子：
-
-- 医生说“12床，今天体温正常，继续观察”，前端实时显示到 12床查房记录下。
-- 医生说“15床，昨晚咳嗽加重”，系统自动切换到 15床并继续追加记录。
-- 医生边查房边让护士或医生在界面上实时校对文本。
-
-### 交互流程
-
-```mermaid
-sequenceDiagram
-    participant Client as 业务端/前端
-    participant Voice as 实时语音服务
-    participant KWS as KWS 引擎
-    participant ASR as ASR 引擎
-
-    Client->>Voice: 建立实时会话，传入床位列表和关键词配置
-    Client->>Voice: 持续发送 16k PCM 音频流
-    Voice->>KWS: 分帧推送音频
-    Voice->>ASR: 推送语音片段
-    KWS-->>Voice: 命中 12床
-    Voice-->>Client: 推送 kws.detected
-    Voice->>Voice: 状态机切换 current_bed=12床
-    Voice-->>Client: 推送 state.current_bed_changed
-    ASR-->>Voice: 输出一句最终转写
-    Voice-->>Client: 推送 asr.final，携带 bed=12床
-```
-
-### 完整事件示例
-
-KWS 事件：
-
-```json
-{
-  "type": "kws.detected",
-  "session_id": "round-20260508-001",
-  "seq": 18,
-  "source": "kws",
-  "category": "bed",
-  "keyword": "十二床",
-  "normalized": "12床",
-  "score": 0.86,
-  "start_ms": 1520,
-  "end_ms": 1840
-}
-```
-
-状态变更事件：
-
-```json
-{
-  "type": "state.current_bed_changed",
-  "session_id": "round-20260508-001",
+  "type": "state.changed",
+  "session_id": "round-20261030-001",
   "seq": 19,
-  "source": "state_machine",
-  "current_bed": "12床",
-  "reason": "kws.detected",
-  "confidence": 0.86,
-  "ts_ms": 1840
+  "ts_ms": 1520,
+  "source": "kws",
+  "slot": "bed",
+  "value": "12床",
+  "previous": null
 }
 ```
 
-ASR 临时文本事件，可选：
+`ts_ms` 是生效时刻：KWS 来源取关键词起点，客户端来源取收到 `set_context` 时的音频位置。`source` 为 `kws` 或 `client`。取值不变（重复说同一床号、重复设置）不推送。
+
+### transcript：标注上下文
+
+KWS 启用时，每条 `transcript` 增加：
 
 ```json
 {
-  "type": "asr.partial",
-  "session_id": "round-20260508-001",
-  "seq": 20,
-  "source": "asr",
-  "bed": "12床",
-  "text": "今天体温正",
+  "type": "transcript",
+  "segmentId": "segment-3",
+  "isFinal": true,
   "start_ms": 2100,
-  "end_ms": 3600
-}
-```
-
-ASR 最终文本事件：
-
-```json
-{
-  "type": "asr.final",
-  "session_id": "round-20260508-001",
-  "seq": 21,
-  "source": "asr",
-  "bed": "12床",
+  "end_ms": 5200,
   "text": "今天体温正常，继续观察。",
-  "start_ms": 2100,
-  "end_ms": 5200
+  "context": {"bed": "12床"},
+  "contextChanged": false
 }
 ```
 
-### 业务端收到事件后做什么
+- `context` 取片段起点后 1s 内（`CONTEXT_LEAD_MS`）的最终取值，因为 VAD 起点通常略早于关键词，“12床，今天体温正常”这句应归 12床。
+- `contextChanged=true` 表示片段其余时段内槽位又变了（如一段话中间说了“15床”），该片段归属需业务端或人工确认。
+- 在发送时按时间段计算，不受 KWS 检测延迟影响；interim 与 final 都带，KWS 未启用时不出现这两个字段。
 
-收到 `kws.detected`：
-
-```text
-1. 展示短暂命中提示，例如“识别到 12床”。
-2. 不直接写正文记录。
-3. 等待 `state.current_bed_changed` 确认状态已经切换。
-```
-
-收到 `state.current_bed_changed`：
-
-```text
-1. 更新业务端 current_bed。
-2. UI 切换到对应病人。
-3. 后续收到的 ASR 文本默认挂到该床号。
-4. 记录状态变更来源和置信度。
-```
-
-收到 `asr.partial`：
-
-```text
-1. 在 UI 上显示临时转写。
-2. 不入库，或者只写临时缓存。
-3. 后续被新的 partial 或 final 覆盖。
-```
-
-收到 `asr.final`：
-
-```text
-1. 将文本追加到事件里的 `bed` 对应病人的查房记录。
-2. 如果 `bed` 为空，放入“未归属记录”并提示人工处理。
-3. 支持前端人工改床号或修正文案。
-4. 入库时保存音频时间范围，方便回听。
-```
-
-最终业务数据可以整理为：
+### set_context：业务端纠正或补设
 
 ```json
-{
-  "session_id": "round-20260508-001",
-  "records": [
-    {
-      "bed": "12床",
-      "items": [
-        {
-          "text": "今天体温正常，继续观察。",
-          "start_ms": 2100,
-          "end_ms": 5200,
-          "source": "asr"
-        }
-      ]
-    }
-  ]
-}
+{"type": "set_context", "slot": "bed", "value": "15床"}
+{"type": "set_context", "slot": "bed", "value": null}
 ```
 
-### 优点
+- 在当前音频位置生效，影响之后的片段；值为 1–64 字符字符串（首尾空白会去掉）或 `null` 清空。
+- 未启用 KWS、未知槽位或值非法时回复 `error`，不改状态。
+- 典型用途：业务端收到 `command:next_bed`，按查房队列算出 15床后回写；医生手动点选病人；KWS 识别错时纠正。
 
-- 支持实时查房记录生成。
-- 前端可以边听边显示、边改。
-- 床号切换和正文归属都可追溯。
-- 适合完整 AI 医生助理或实时查房纪要产品形态。
+## 场景 A：只用事件
 
-### 限制
+业务端只需要实时知道床号或指令，正文由其他系统处理。
 
-- 业务端复杂度更高，需要处理 partial/final、状态切换和文本归属。
-- ASR 延迟和错误仍然存在，KWS 只能解决床号/指令触发。
-- 需要处理 KWS 与 ASR 的时间边界，例如床号关键词是否应从正文中剔除。
-
-## 状态机建议
-
-无论采用哪种场景，都建议由状态机统一决定是否真正切换业务状态。
-
-建议规则：
-
-```text
-1. KWS 分数低于阈值，不触发状态变化。
-2. 命中的床号不在当前查房队列中，不自动切换。
-3. 2 秒内重复命中同一床号，只保留第一次。
-4. “下一床”依赖当前查房队列；没有 current_bed 时不自动执行。
-5. “结束记录”等破坏性命令建议二次确认或需要更高阈值。
-6. ASR 文本规则和 KWS 结果冲突时，标记为待确认，不静默覆盖。
-```
-
-状态机输出的状态变更事件比原始 KWS 事件更适合业务端消费：
-
-```json
-{
-  "type": "state.current_bed_changed",
-  "current_bed": "12床",
-  "reason": "kws.detected",
-  "confidence": 0.86
-}
-```
-
-## 通信方式建议
-
-实时音频输入和事件推送建议优先使用 WebSocket：
-
-```text
-Client -> Voice Service: 音频帧、会话控制消息
-Voice Service -> Client: kws.detected、state.changed、asr.partial、asr.final
-```
-
-如果音频流由其他系统传入，业务系统只接收结果，也可以使用：
-
-| 方式 | 适用场景 |
+| 收到 | 业务动作 |
 |---|---|
-| WebSocket | 前端实时上传音频并接收事件，首选 |
-| SSE | 服务端单向推送事件，音频不通过同一连接上传 |
-| 消息队列 | 后端服务解耦，例如语音服务发事件，业务系统订阅 |
-| REST 轮询 | 不推荐实时场景，只适合查询历史结果 |
+| `state.changed`（bed） | 校验床号在当前查房队列中，UI 切换病人；不在队列时提示，必要时 `set_context` 纠正 |
+| `kws.detected`（command:next_bed） | 按队列找下一床，`set_context` 回写 |
+| `kws.detected`（command:pause_recording 等） | 业务端发 `pause_recording` 等控制消息；结束类命令建议二次确认 |
+| `kws.detected`（section、marker） | 打时间点标记 |
 
-## 当前实现约定
+优点是边界清楚、KWS 出错不影响转写；限制是只解决“状态切换”，不解决“说了什么”。
 
-当前实现把 KWS 接到实时 WebSocket 入口：
+## 场景 B：事件 + 实时转写
 
-```text
-WS /ws/meeting/live
+业务端实时展示正文并按 `context` 归属：
+
+```mermaid
+sequenceDiagram
+    participant Client as 业务端/前端
+    participant Voice as 实时语音服务
+    Client->>Voice: WS /ws/meeting/live?session_id=round-1，持续发 PCM
+    Voice-->>Client: kws.detected（bed:12床）
+    Voice-->>Client: state.changed（bed: null -> 12床, source=kws）
+    Voice-->>Client: transcript（context.bed=12床）
+    Voice-->>Client: kws.detected（command:next_bed）
+    Client->>Voice: set_context（bed=15床）
+    Voice-->>Client: state.changed（bed: 12床 -> 15床, source=client）
+    Voice-->>Client: transcript（context.bed=15床）
 ```
 
-客户端继续发送 16kHz、16bit、单声道 PCM 音频帧，可用 `session_id` 查询参数指定会话 ID（缺省时服务端生成）。服务端在原有实时转写之外，按收包顺序把音频帧送入独立的 KWS 推理阶段；命中后推送 `kws.detected`，床号类事件会继续推送 `state.current_bed_changed`。`ts_ms` 与 `transcript` 的 `start_ms/end_ms` 使用同一时间轴（不含暂停期间）。
+业务端处理 transcript：
 
-KWS 启用时，每条 `transcript` 额外带 `bed` 字段，取片段入队时的当前床号；未启用时不出现该字段。准入降级为只录音的会话不做 KWS；单个会话内 KWS 出错时推送 `status`（`phase=kws_unavailable`）并停止检测，转写和录音不受影响。
+```text
+1. 同一 segmentId 按 revision 覆盖，isFinal 后入草稿。
+2. 按 context 归属；槽位为 null 放“未归属”，contextChanged=true 标记待确认。
+3. 保存 start_ms/end_ms 便于回听；医疗内容仍需人工复核。
+```
 
-KWS 默认关闭。启用时需要配置：
+限制：KWS 与 ASR 都可能出错；床号关键词本身仍会出现在正文中，是否剔除由业务端决定。
+
+## 运行约定
+
+- 入口：`WS /ws/meeting/live`，可用 `session_id` 查询参数指定会话 ID，缺省时服务端生成 `live-<uuid>`。
+- KWS 在独立的单线程 `kws` 推理阶段运行，所有会话共享，积压可在 `/v1/live/metrics` 的 `kws` 阶段观察。
+- 准入降级为只录音的会话照常做 KWS（没有 `transcript`，但有 `kws.detected`/`state.changed`，`set_context` 可用）。
+- 单个会话 KWS 出错时推送 `status`（`phase=kws_unavailable`）并停止检测；转写、录音和 `set_context` 不受影响。
+- KWS 默认关闭；`KWS_ENABLED=1` 时配置必须完整、模型必须能加载，否则服务启动失败，不静默降级。
 
 ```bash
 KWS_ENABLED=1
@@ -398,29 +168,14 @@ KWS_JOINER_PATH=/app/models/kws/joiner.onnx
 KWS_KEYWORDS_FILE=/app/models/kws/keywords.txt
 KWS_PROVIDER=cpu
 KWS_NUM_THREADS=1
-KWS_SAMPLE_RATE=16000
+KWS_CONTEXT_SLOTS=bed
 KWS_DUPLICATE_COOLDOWN_MS=2000
 ```
 
-未配置或模型加载失败时，WebSocket 仍按原有实时转写逻辑工作，只是不推送 KWS 事件。
+## 模型与验证现状
 
-## 选择建议
+推荐 `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`（中英混合，约 3M 参数）；`wenetspeech-3.3M-2024-01-01` 也可用。依赖 `sherpa-onnx>=2.0.1`。
 
-第一版建议先做场景 A：
+已验证（macOS TTS 合成音频，单 CPU 线程）：两个模型均能检出“十二床”“十五床”“下一床”“体温”，检测延迟约 0.5–0.9s，RTF 约 0.006；“二床/十二床”“一床/下一床”在该样本上没有互相误触发；接入服务后时间轴与 `context` 标注正确。
 
-```text
-只输出 KWS 事件和状态变更事件
-不暴露 ASR 文本事件
-不改造现有会议转写主链路
-```
-
-这样可以用最小改动验证实时床号/指令识别是否有业务价值。
-
-当团队确认需要实时生成按床号归属的查房正文，再升级到场景 B：
-
-```text
-KWS 负责切换 current_bed
-ASR 负责正文
-状态机负责把正文归属到当前床号
-业务端负责实时展示、编辑和确认
-```
+未验证：真实病房语音的召回与误触发、多会话共享 `kws` 阶段的负载。“暂停记录”在 TTS 样本上未检出，上线前需用真实录音调关键词阈值。

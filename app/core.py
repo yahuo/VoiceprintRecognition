@@ -86,7 +86,7 @@ CONFIG = {
     "kws_keywords_file": os.environ.get("KWS_KEYWORDS_FILE", ""),
     "kws_provider": os.environ.get("KWS_PROVIDER", "cpu"),
     "kws_num_threads": int(os.environ.get("KWS_NUM_THREADS", "1")),
-    "kws_sample_rate": int(os.environ.get("KWS_SAMPLE_RATE", "16000")),
+    "kws_context_slots": os.environ.get("KWS_CONTEXT_SLOTS", "bed"),
     "kws_duplicate_cooldown_ms": int(os.environ.get("KWS_DUPLICATE_COOLDOWN_MS", "2000")),
 }
 

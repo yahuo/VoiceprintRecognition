@@ -22,7 +22,7 @@ from .core import (
     CONFIG, ModelService, delete_voiceprint_by_id, generate_voiceprint_id,
     load_voiceprint_index, save_voiceprint_embedding,
 )
-from .services.kws import create_kws_service
+from .services.kws import KwsService, create_kws_service
 from .services.live_session import ACCURACY_HOTWORDS, final_token_budget, live_metrics, run_live_session
 from .services.meeting_jobs import MeetingJobStore, normalize_job_id
 from .services.moss import MossError, max_audio_seconds
@@ -38,7 +38,7 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Meeting-Job-Id"])
 service = ModelService()
-kws_service = create_kws_service(CONFIG)
+kws_service = KwsService()  # 启动时按配置加载
 meeting_jobs = MeetingJobStore()
 DEVICE = "cpu"
 TRANSCRIPTION_PRIORITIES = frozenset({"speed", "accuracy"})
@@ -222,7 +222,9 @@ def _remove_temp(path):
 
 @app.on_event("startup")
 async def startup_event():
+    global kws_service
     recording_store.cleanup_temp_files()
+    kws_service = await asyncio.to_thread(create_kws_service, CONFIG)
     await asyncio.to_thread(service.load_models, device=DEVICE)
 
 
