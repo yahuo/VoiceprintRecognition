@@ -102,20 +102,26 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 
 证据位于本地 `output/xfusion-kws-20261030/`（`report.md`、`r2/`），远端 `~/.local/share/voiceprint-kws-20261030/r2/deploy/`（含数据备份 `data-backup-133158.tar`）。
 
-回滚到切换前的 enforce-fp32 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）：
+该版本的回滚 patch 带“当前 spec 为 kws-r2”守卫，网页关键词维护上线后已不适用，回滚见下一节。
+
+## 2026-10-30 网页关键词维护（已上线）
+
+按用户授权于 18:22:01～18:22:33（UTC+08）从 `20261030-xfusion-kws-r2` 更新为 `20261030-xfusion-kws-keywords-r1`，Pod `voiceprint-ab-55ccfb756-hf8mh` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20261030-xfusion-kws-keywords-r1`，发布 index `sha256:4ccf31579aaf0e96f093a9ced3ec6e01f786a546f8c84fe38c404ea471277f6c`，ARM64 manifest `sha256:e4497d4c7e46a652f4eade3fc78903a789eac40cb644bd495030032ec583a607`。Pod imageID 为外层 archive index `sha256:0adf4bf9…`，已验证其唯一指向该发布 index。本地按 `deploy/Dockerfile.xfusion` 构建、离线导入，未推送 registry；`APP_DEPS_IMAGE` 与 kws-r2 相同。应用提交 `8494c34`（关键词维护页、可选管理令牌与 CORS、转写任务取消鉴权），22 文件源清单 sha256 `d60be211…`，实际 Pod 内逐个核对一致。
+- 部署改动：镜像、两个发布/源清单注解；`KWS_KEYWORDS_FILE` 改指中文说法导入文件 `/data/models/local/kws-keywords-zh-20261030/keywords_zh.txt`（PVC 新目录，root 0444/0555，复用已有只读挂载；编译后与原 token 格式 `keywords.txt` 63 行逐行一致）；追加 `KWS_KEYWORDS_STORE=/data/kws/keywords.json`；server 容器追加一个可写 volumeMount（同一 PVC `test-data` 的子目录 `kws` → `/data/kws`）。其他 env、资源、安全配置、Service 与 Nginx 不变。
+- **未设置 `ADMIN_TOKEN` 与 `CORS_ALLOW_ORIGINS`**（用户决定）：写接口与此前一样不鉴权、跨域为 `*`，能访问网关的人都可在网页修改关键词，服务启动时打印警告。配置令牌前须先通知调用写接口的业务端，见 [docs/api.md](api.md#鉴权与跨域)。
+- 切换前确认连接/任务/录音均空闲并备份声纹与录音。切换后 5 个声纹哈希与 5 份录音元数据不变。
+- 验证：同机隔离实例（空数据目录）完成关键词读取（中文说法）、preview、保存、过期版本 409、重启后保留，未设令牌时取消未知任务返回 404 而非 401；新增“开始查房”后实时音频立即命中。经原 HTTPS 网关：网页 200；读取 63 个中文说法；以相同内容保存一次，版本 0→1 并写入 `/data/kws/keywords.json`（确认挂载可写）；WSS 推 47.5s 合成查房音频，收到 4 次 `kws.detected`（12床、下一床、15床、暂停记录）与 2 次 `state.changed`，与 kws-r2 一致；测试录音已按 fileId 删除。隔离实例已删除。
+- 关键词库是单副本单文件，网页保存即对新开始的实时会话生效；扩成多副本前须先解决共享与通知。数据备份今后应包含 `kws/keywords.json`。
+
+证据位于本地 `output/xfusion-kws-keywords-20261030/`，远端 `~/.local/share/voiceprint-kws-keywords-20261030/`（含数据备份 `deploy/data-backup-182158.tar`）。
+
+回滚到切换前的 kws-r2 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）。回滚不删除关键词库文件，但旧版本没有关键词页，只读原 `keywords.txt`，网页保存的改动在回滚期间不生效：
 
 ```bash
-ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-20261030/r2/deploy/rollback-from-kws.patch.json"'
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-keywords-20261030/deploy/rollback-from-keywords.patch.json"'
 ```
-
-### 升级到关键词维护页的前置条件（未部署）
-
-含网页关键词维护的版本把 `KWS_KEYWORDS_STORE` 设为必填：`KWS_ENABLED=1` 而缺少它时服务启动失败。升级时须同时：
-
-- 追加 `KWS_KEYWORDS_STORE`，指向可写且随 Pod 保留的路径（建议与 `/data/voiceprints` 同卷的 `/data/kws/keywords.json`，部署前核实该卷可写、`/data/models/local` 仍为只读）；数据备份需包含该文件。
-- 现网 `keywords.txt` 已是 token 格式，直接导入后页面上的说法显示为拼音。宜另放一份中文说法的导入文件（如 `十二床 @bed:12床`），`KWS_KEYWORDS_FILE` 指向它；只在关键词库不存在时读取。
-- 关键词保存、声纹注册/删除/重载、录音删除与转写任务取消改为可选令牌鉴权：现网须配置 `ADMIN_TOKEN`（不写入镜像与 Git），并在升级前通知调用这些写接口的业务端加 `Authorization: Bearer <令牌>`，否则配置后其请求返回 401；可同时用 `CORS_ALLOW_ORIGINS` 限定跨域来源。见 [docs/api.md](api.md#鉴权与跨域)。
-- 镜像需含 `pypinyin`（`deploy/Dockerfile.xfusion` 已加入）。现网为单副本，保存即对新会话生效；扩成多副本前须先解决关键词库共享与通知。
 
 ## 尚未由部署验收证明的事项
 
