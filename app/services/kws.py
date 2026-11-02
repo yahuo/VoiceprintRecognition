@@ -6,6 +6,7 @@ KWS 默认关闭；KWS_ENABLED=1 时配置必须完整，否则启动失败，�
 关键词按类别维护在 KWS_KEYWORDS_STORE（JSON，见 kws_keywords.py）；该文件不存在时从 KWS_KEYWORDS_FILE 导入初始内容。
 命中标签为 `类别:值`，例如 `bed:12床`、`command:next_bed`。
 上下文槽位类别：命中即切换会话上下文并标注到转写片段；其余类别（指令、标记等）只推送事件，由业务端解释。
+易混词：与关键词发音相近、常被误识别的说法（如“异常”之于“一床”），由它接住这段音后直接吸收，不推送、不改上下文。
 保存关键词时重建 KeywordSpotter：新开始的会话用新词表，进行中的会话保持开始时的词表和槽位。
 """
 
@@ -18,7 +19,15 @@ from typing import Any
 
 import numpy as np
 
-from .kws_keywords import KeywordsError, KeywordStore, compile_categories, load_vocabulary, parse_raw_lines, phrase_tokens
+from .kws_keywords import (
+    DECOY_LABEL,
+    KeywordsError,
+    KeywordStore,
+    compile_categories,
+    load_vocabulary,
+    parse_raw_lines,
+    phrase_tokens,
+)
 
 
 LABEL_PATTERN = re.compile(r"^([a-z][a-z0-9_]*):(.+)$")
@@ -64,6 +73,7 @@ class PreparedKeywords:
     """校验通过、已建好 spotter 但尚未生效的关键词表。"""
 
     categories: list[dict]
+    decoys: list[dict]
     spotter: Any
 
 
@@ -87,7 +97,7 @@ class SherpaOnnxKwsService(KwsService):
         self.store = KeywordStore(config["kws_keywords_store"])
         document = self.store.load() or _seed_document(config)
         try:
-            prepared = self.prepare(document["categories"])
+            prepared = self.prepare(document["categories"], document.get("decoys") or [])
         except KeywordsError as exc:
             raise RuntimeError(f"KWS 关键词表无效: {exc}") from exc
         self.activate(prepared, int(document.get("version") or 0), document.get("updated_at"))
@@ -100,9 +110,9 @@ class SherpaOnnxKwsService(KwsService):
             result.append({"phrase": phrase, "tokens": " ".join(tokens), "error": error})
         return result
 
-    def prepare(self, categories) -> PreparedKeywords:
+    def prepare(self, categories, decoys=()) -> PreparedKeywords:
         """校验并建好新 spotter；耗时，放在线程里执行。校验失败抛出 KeywordsError。"""
-        normalized, lines = compile_categories(categories, self._vocabulary)
+        normalized, normalized_decoys, lines = compile_categories(categories, self._vocabulary, decoys)
         fd, path = tempfile.mkstemp(prefix="kws-keywords-", suffix=".txt")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -118,12 +128,13 @@ class SherpaOnnxKwsService(KwsService):
             )
         finally:
             os.unlink(path)
-        return PreparedKeywords(normalized, spotter)
+        return PreparedKeywords(normalized, normalized_decoys, spotter)
 
     def activate(self, prepared: PreparedKeywords, version: int, updated_at: str | None) -> None:
         """切换到新词表；在事件循环中调用，与 create_session、context_slots 的读取不交错。"""
         self._spotter = prepared.spotter
         self.categories = prepared.categories
+        self.decoys = prepared.decoys
         self.context_slots = tuple(c["code"] for c in prepared.categories if c["slot"])
         self.version = version
         self.updated_at = updated_at
@@ -141,7 +152,7 @@ def _seed_document(config: dict[str, Any]) -> dict:
             categories = parse_raw_lines(f, parse_context_slots(config["kws_context_slots"]))
         except KeywordsError as exc:
             raise RuntimeError(f"KWS_KEYWORDS_FILE 无法导入: {exc}") from exc
-    return {"version": 0, "updated_at": None, "categories": categories}
+    return {"version": 0, "updated_at": None, "categories": categories, "decoys": []}
 
 
 class SherpaOnnxKwsSession:
@@ -163,10 +174,14 @@ class SherpaOnnxKwsSession:
             self._spotter.decode_stream(self._stream)
             # 只取一次底层结果：包装层的 get_result()/timestamps() 各取一次，第二次已拿不到时间戳。
             result = self._spotter.keyword_spotter.get_result(self._stream)
-            if not result.keyword.strip():
+            label = result.keyword.strip()
+            if not label:
+                continue
+            self._spotter.reset_stream(self._stream)
+            if label == DECOY_LABEL:
+                # 易混词接住了这段音：吸收，不推送、不改上下文，也不占用关键词的重复冷却。
                 continue
             detection = _parse_result(result.keyword, result.timestamps, end_ms)
-            self._spotter.reset_stream(self._stream)
             if self._should_emit(detection, end_ms):
                 detections.append(detection)
 

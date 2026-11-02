@@ -419,6 +419,59 @@ test('kws blocks saving unrecognized phrases and reports a disabled server', asy
     const disabled = kwsClient({ 'GET /v1/kws/keywords': () => [200, { enabled: false }] });
     await disabled.scope.loadKwsKeywords();
     assert.ok(disabled.elements.get('kwsCategories').innerHTML.includes('KWS_ENABLED=0'));
+    assert.equal(disabled.elements.get('kwsDecoys').hidden, true);
+});
+
+test('kws decoys are edited like tags, share duplicate checks with keywords and save as phrases only', async () => {
+    const doc = { ...kwsDoc, decoys: [{ phrase: '异常', tokens: 'y ì ch áng' }] };
+    const c = kwsClient({
+        'GET /v1/kws/keywords': () => [200, doc],
+        'POST /v1/kws/keywords/preview': body => [200, { items: body.phrases.map(phrase => ({ phrase, tokens: 'y ī ch ǎng', error: null })) }],
+        'PUT /v1/kws/keywords': body => [200, { ...doc, version: body.version + 1, categories: body.categories, decoys: body.decoys.map(d => ({ ...d, tokens: 't' })) }],
+    });
+    await c.scope.loadKwsKeywords();
+    assert.equal(c.elements.get('kwsDecoys').hidden, false);
+    assert.ok(c.elements.get('kwsDecoys').innerHTML.includes('异常'));
+    assert.ok(c.elements.get('kwsSummaryMeta').textContent.includes('1 个易混词'));
+    assert.equal(c.scope.kwsChangeCount(), 0);
+
+    c.scope.kwsInputKey(key('Enter', '一场 十二床 异常'), '_decoy');
+    assert.deepEqual(JSON.parse(c.get("JSON.stringify(kwsState.decoys.keywords.map(k => k.phrase))")), ['异常', '一场']);
+    assert.equal(c.get('kwsUi.hints._decoy'), '「十二床」已在床号里；「异常」已在易混词里');
+    c.scope.kwsInputKey(key('Enter', '异常'), 'command');
+    assert.equal(c.get('kwsUi.hints.command'), '「异常」已在易混词里');
+    assert.equal(c.scope.kwsChangeCount(), 1);
+    await settle();
+
+    // 改易混词说法时命中值跟着变，标签上不出现“→ 旧值”。
+    c.scope.kwsEditPhrase(c.get('kwsState.decoys.keywords[1].id'), '医嘱');
+    await settle();
+    assert.equal(c.get('kwsState.decoys.keywords[1].value'), '医嘱');
+    assert.ok(!c.elements.get('kwsDecoys').innerHTML.includes('→'));
+
+    await c.scope.saveKwsKeywords();
+    const put = c.calls.find(call => call.method === 'PUT').body;
+    assert.deepEqual(put.decoys, [{ phrase: '异常' }, { phrase: '医嘱' }]);
+    assert.deepEqual(put.categories.map(cat => cat.code), ['bed', 'command']);
+    assert.equal(c.scope.kwsChangeCount(), 0);
+    assert.ok(c.elements.get('kwsSummaryMeta').textContent.includes('2 个易混词'));
+});
+
+test('kws decoy conflicts from the server mark the decoy and an old server without decoys saves an empty list', async () => {
+    const c = kwsClient({
+        'GET /v1/kws/keywords': () => [200, kwsDoc],
+        'POST /v1/kws/keywords/preview': body => [200, { items: body.phrases.map(phrase => ({ phrase, tokens: 'sh í èr ch uáng', error: null })) }],
+        'PUT /v1/kws/keywords': () => [400, { detail: '易混词「拾贰床」与「十二床」发音相同', errors: [{ category: '~decoy', phrase: '拾贰床', message: '易混词「拾贰床」与「十二床」发音相同' }] }],
+    });
+    await c.scope.loadKwsKeywords();
+    assert.equal(c.get('kwsState.decoys.keywords.length'), 0);
+    c.scope.kwsAddPhrases('_decoy', '拾贰床');
+    await settle();
+    await c.scope.saveKwsKeywords();
+    assert.deepEqual(c.calls.find(call => call.method === 'PUT').body.decoys, [{ phrase: '拾贰床' }]);
+    assert.equal(c.scope.kwsTagStatus(c.get('kwsState.decoys.keywords[0]')), 'invalid');
+    assert.ok(c.get('kwsUi.saveError').includes('发音相同'));
+    assert.equal(c.scope.kwsChangeCount(), 1);
 });
 
 test('a live kws hit pops a bubble with the spoken phrase and falls back to the tag value as text', async () => {

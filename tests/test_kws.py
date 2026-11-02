@@ -7,9 +7,11 @@ from unittest.mock import patch
 
 from app import server
 from app.services import live_session
+from app.services.kws_keywords import DECOY_LABEL
 from app.services.kws import (
     ContextTimeline,
     KwsDetection,
+    SherpaOnnxKwsSession,
     _parse_result,
     _pcm16_to_float32,
     build_state_event,
@@ -53,6 +55,39 @@ class KwsServiceTest(unittest.TestCase):
         event = build_state_event(session_id="s1", seq=2, ts_ms=1000, source="kws",
                                   slot="bed", value="12床", previous=None)
         self.assertEqual((event["type"], event["slot"], event["value"]), ("state.changed", "bed", "12床"))
+
+
+class ScriptedSpotter:
+    """按解码次数依次给出命中标签；记录 reset 次数。"""
+
+    def __init__(self, labels):
+        self._labels = list(labels)
+        self.resets = 0
+        self.keyword_spotter = self
+
+    def create_stream(self):
+        return type("Stream", (), {"accept_waveform": lambda self, rate, samples: None})()
+
+    def is_ready(self, stream):
+        return bool(self._labels)
+
+    def decode_stream(self, stream):
+        self._current = self._labels.pop(0)
+
+    def get_result(self, stream):
+        return type("Result", (), {"keyword": self._current, "timestamps": [0.1, 0.5]})()
+
+    def reset_stream(self, stream):
+        self.resets += 1
+
+
+class KwsSessionTest(unittest.TestCase):
+    def test_decoy_hit_is_absorbed_and_does_not_block_the_real_keyword(self):
+        spotter = ScriptedSpotter(["", DECOY_LABEL, "bed:1床", DECOY_LABEL])
+        session = SherpaOnnxKwsSession(spotter, duplicate_cooldown_ms=2000)
+        detections = session.accept_pcm(b"\x00\x00" * 640, 16000, end_ms=5000)
+        self.assertEqual([(d.category, d.value) for d in detections], [("bed", "1床")])
+        self.assertEqual(spotter.resets, 3)
 
 
 class ContextTimelineTest(unittest.TestCase):

@@ -490,6 +490,8 @@ class KwsKeywordsPreview(BaseModel):
 class KwsKeywordsUpdate(BaseModel):
     version: int
     categories: list[dict]
+    # 省略时沿用当前易混词，旧客户端整表保存不会把它清空。
+    decoys: list[dict] | None = None
 
 
 def _require_kws():
@@ -503,13 +505,14 @@ def _kws_keywords_payload():
         "version": kws_service.version,
         "updated_at": kws_service.updated_at,
         "categories": kws_service.categories,
+        "decoys": kws_service.decoys,
         "active_sessions": live_metrics()["active_sessions"],
     }
 
 
 @app.get("/v1/kws/keywords")
 async def get_kws_keywords():
-    """当前生效的 KWS 关键词表；每个关键词附带由模型词表生成的发音 tokens。"""
+    """当前生效的 KWS 关键词表和易混词；每条说法附带由模型词表生成的发音 tokens。"""
     if not kws_service.enabled:
         return {"enabled": False}
     return _kws_keywords_payload()
@@ -530,10 +533,11 @@ async def update_kws_keywords(body: KwsKeywordsUpdate):
         if body.version != kws_service.version:
             raise HTTPException(status_code=409, detail="关键词已被其他人修改，请刷新后重试")
         try:
-            prepared = await asyncio.to_thread(kws_service.prepare, body.categories)
+            decoys = kws_service.decoys if body.decoys is None else body.decoys
+            prepared = await asyncio.to_thread(kws_service.prepare, body.categories, decoys)
         except KeywordsError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc), "errors": exc.errors})
-        document = stored_document(prepared.categories, body.version + 1)
+        document = stored_document(prepared.categories, prepared.decoys, body.version + 1)
         await asyncio.to_thread(kws_service.store.save, document)
         kws_service.activate(prepared, document["version"], document["updated_at"])
     return _kws_keywords_payload()
