@@ -371,6 +371,24 @@ test('kws blocks saving unrecognized phrases and reports a disabled server', asy
     assert.ok(disabled.elements.get('kwsCategories').innerHTML.includes('KWS_ENABLED=0'));
 });
 
+test('a live kws hit pops a bubble with the spoken phrase and falls back to the tag value as text', async () => {
+    const c = kwsClient({ 'GET /v1/kws/keywords': () => [200, kwsDoc] });
+    c.get('liveSessionServerUrl = "http://a"');
+    await c.scope.loadLiveKwsPhrases('http://a');
+    c.scope.showKwsBubble({ type: 'kws.detected', category: 'command', value: 'next_bed' });
+    c.scope.showKwsBubble({ type: 'kws.detected', category: 'bed', value: '<b>1床' });
+    const labels = c.elements.get('kwsBubbleLayer').children.map(pop => pop.children[0]);
+    assert.deepEqual(labels.map(label => label.textContent), ['下一床', '<b>1床']);
+    assert.ok(labels.every(label => !label.innerHTML));
+
+    // 已换到别的服务器录音时，旧请求的结果不覆盖
+    const stale = kwsClient({ 'GET /v1/kws/keywords': () => [200, kwsDoc] });
+    stale.get('liveSessionServerUrl = "http://b"');
+    await stale.scope.loadLiveKwsPhrases('http://a');
+    stale.scope.showKwsBubble({ type: 'kws.detected', category: 'command', value: 'next_bed' });
+    assert.equal(stale.elements.get('kwsBubbleLayer').children[0].children[0].textContent, 'next_bed');
+});
+
 test('admin token is restored from localStorage and sent only on management writes', async () => {
     const storage = new Map([['voiceprintAdminToken', 'secret']]);
     const calls = [];
