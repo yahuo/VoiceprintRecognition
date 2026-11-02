@@ -117,10 +117,24 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 
 证据位于本地 `output/xfusion-kws-keywords-20261030/`，远端 `~/.local/share/voiceprint-kws-keywords-20261030/`（含数据备份 `deploy/data-backup-182158.tar`）。
 
-回滚到切换前的 kws-r2 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）。回滚不删除关键词库文件，但旧版本没有关键词页，只读原 `keywords.txt`，网页保存的改动在回滚期间不生效：
+该版本的回滚 patch 带“当前 spec 为 keywords-r1”守卫，命中气泡上线后已不适用，回滚见下一节。
+
+## 2026-11-02 实时关键词命中气泡（已上线）
+
+按用户授权于 12:34:37～12:35:09（UTC+08）从 `20261030-xfusion-kws-keywords-r1` 更新为 `20261102-xfusion-kws-bubble-r1`，Pod `voiceprint-ab-74c5db659d-tbwrw` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20261102-xfusion-kws-bubble-r1`，发布 index `sha256:80cc68c3db5af5f8669669a70717127c89fd727fe572e215fcb52590e2a1d359`，ARM64 manifest `sha256:ba971dd5b65eac70908c9458ff6553676073fbbe32944e03eeb3ee692dda293e`。Pod imageID 为外层 archive index `sha256:0a9d7df1…`，已验证其唯一指向该发布 index。本地按 `deploy/Dockerfile.xfusion` 构建、离线导入，未推送 registry；`APP_DEPS_IMAGE` 与 keywords-r1 相同。应用提交 `58f34e9`，22 文件源清单 sha256 `0d918387…`，实际 Pod 内逐个核对一致；与 keywords-r1 相比只有 `static/web_client.html` 不同，后端源码逐字节相同。
+- 部署只改镜像与两个发布/源清单注解，env、挂载、资源、安全配置、Service 与 Nginx 不变；`ADMIN_TOKEN` 仍未设置。
+- 切换前确认连接/任务/录音均空闲，备份声纹、录音与关键词库（`deploy/data-backup-123434.tar`，含 `kws/keywords.json`）。切换后 5 个声纹哈希、6 份录音元数据与关键词库哈希 `7587bd5f…` 均不变。
+- 验证：后端未变，未起隔离实例。Pod 内核对 Nano fp32、enforce 准入及限额、五个实时阶段、63 个中文关键词（版本 1）、页面含气泡层。经原 HTTPS 网关只读检查：网页 200 且含气泡代码；关键词读取与 preview 正常；未知任务取消 404；WSS 推 47.5s 合成查房音频，收到 4 次 `kws.detected`（12床、next_bed、15床、pause_recording，对应气泡文字 十二床、下一床、十五床、暂停记录）与 2 次 `state.changed`，最终片段均带 `context`；测试录音已按 fileId 删除；未写关键词库，检查前后版本一致。
+- 未验证：现网浏览器里实际弹出气泡（动画只在本地 Chromium 中逐帧核对过）、物理麦克风、真实病房语音。
+
+证据位于本地 `output/xfusion-kws-bubble-20261102/`，远端 `~/.local/share/voiceprint-kws-bubble-20261102/`。
+
+回滚到切换前的 keywords-r1 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）。回滚只去掉网页气泡，关键词库与 KWS 行为不变：
 
 ```bash
-ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-keywords-20261030/deploy/rollback-from-keywords.patch.json"'
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-bubble-20261102/deploy/rollback-from-bubble.patch.json"'
 ```
 
 ## 尚未由部署验收证明的事项
