@@ -9,7 +9,13 @@ class Element {
     constructor() {
         this.value = ''; this.innerHTML = ''; this.textContent = '';
         this.style = {}; this.dataset = {}; this.children = [];
-        this.classList = { add() {}, remove() {}, toggle() {} };
+        const classes = new Set();
+        this.classList = {
+            add: (...names) => names.forEach(n => classes.add(n)),
+            remove: (...names) => names.forEach(n => classes.delete(n)),
+            toggle: (n, force) => { const on = force ?? !classes.has(n); on ? classes.add(n) : classes.delete(n); return on; },
+            contains: n => classes.has(n),
+        };
     }
     set innerHTML(value) { this._html = value; this.children = []; }
     get innerHTML() { return this._html; }
@@ -182,7 +188,51 @@ test('a refreshed or reopened page replays the same job from its original server
     assert.equal(refreshed.get('meetingRequestInProgress'), false);
     assert.equal(refreshed.get('activeMeetingJob.terminal'), true);
     assert.ok(calls.length === 2 && calls.every(([url, method]) => method === 'GET' && url.startsWith('https://original.example/')));
+    assert.equal(refreshed.elements.get('tab-upload').classList.contains('active'), true);
     assert.ok(![...first.storage.values()].join('').includes('测试'));
+});
+
+test('a page opened after the job is gone stays on the default tab and forgets the job', async () => {
+    for (const status of [404, 410]) {
+        const first = client();
+        first.scope.rememberMeetingJob('https://original.example', 'test.wav');
+        const calls = [];
+        const reopened = client({ storage: first.storage, fetch: async url => {
+            calls.push(url);
+            return Response.json({ detail: '未找到转写任务' }, { status });
+        }});
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(calls.length, 1);
+        assert.equal(reopened.storage.has('voiceprint.meeting.job.v1'), false);
+        assert.equal(reopened.elements.get('tab-upload')?.classList.contains('active') ?? false, false);
+        assert.equal(reopened.get('activeMeetingJob'), null);
+        assert.equal(reopened.get('meetingRequestInProgress'), false);
+        assert.notEqual(reopened.elements.get('meetingResult')?.style.display, 'block');
+        assert.ok(!(reopened.elements.get('uploadStatus')?.innerHTML || '').includes('转写未完成'));
+    }
+});
+
+test('a transient failure on page open keeps the job and offers resume without switching tabs', async () => {
+    const first = client();
+    first.scope.rememberMeetingJob('https://original.example', 'test.wav');
+    const reopened = client({ storage: first.storage, fetch: async () => { throw new TypeError('Failed to fetch'); } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reopened.storage.has('voiceprint.meeting.job.v1'), true);
+    assert.equal(reopened.elements.get('tab-upload')?.classList.contains('active') ?? false, false);
+    assert.equal(reopened.elements.get('meetingResult').style.display, 'block');
+    assert.ok(reopened.elements.get('uploadStatus').innerHTML.includes('转写未完成'));
+    assert.equal(reopened.elements.get('btnResumeMeeting').style.display, '');
+});
+
+test('resuming a job that no longer exists forgets it and hides the resume button', async () => {
+    const c = client();
+    c.scope.rememberMeetingJob('https://original.example', 'test.wav');
+    c.scope.fetch = async () => Response.json({ detail: '未找到转写任务' }, { status: 404 });
+    await c.scope.restoreMeetingJob();
+    assert.equal(c.storage.has('voiceprint.meeting.job.v1'), false);
+    assert.ok(c.elements.get('uploadStatus').innerHTML.includes('未找到转写任务'));
+    assert.equal(c.elements.get('btnResumeMeeting').style.display, 'none');
+    assert.equal(c.get('meetingJobBusy()'), false);
 });
 
 test('temporary disconnect reconnects from the last applied event without duplicate text', async () => {
