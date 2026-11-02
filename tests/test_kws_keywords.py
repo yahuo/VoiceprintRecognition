@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from app import server
 from app.services.kws import create_kws_service
-from app.services.kws_keywords import KeywordsError, KeywordStore, compile_categories, parse_raw_lines
+from app.services.kws_keywords import DECOY_LABEL, KeywordsError, KeywordStore, compile_categories, parse_raw_lines
 
 # 不含汉字的说法按已分好的 token 处理，校验逻辑不依赖 pypinyin。
 VOCABULARY = {"a", "b", "c", "d"}
@@ -39,13 +39,43 @@ def fake_modules():
 
 class CompileCategoriesTest(unittest.TestCase):
     def test_compiles_lines_with_options_and_labels(self):
-        categories, lines = compile_categories([
+        categories, decoys, lines = compile_categories([
             category("bed", "a b", slot=True),
             {"code": "command", "name": "指令", "keywords": [{"phrase": "c  d", "value": "next", "boost": "1.5", "threshold": 0.3}]},
         ], VOCABULARY)
         self.assertEqual(lines, ["a b @bed:a_b", "c d :1.5 #0.3 @command:next"])
         self.assertEqual(categories[1]["keywords"][0], {"phrase": "c d", "value": "next", "boost": 1.5, "threshold": 0.3, "tokens": "c d"})
         self.assertEqual([c["slot"] for c in categories], [True, False])
+        self.assertEqual(decoys, [])
+
+    def test_decoys_compile_to_a_reserved_label_and_never_shadow_keywords(self):
+        categories, decoys, lines = compile_categories([category("bed", "a b", slot=True)], VOCABULARY,
+                                                       [{"phrase": "a  c"}, {"phrase": "d"}])
+        self.assertEqual(lines, ["a b @bed:a_b", f"a c @{DECOY_LABEL}", f"d @{DECOY_LABEL}"])
+        self.assertEqual(decoys, [{"phrase": "a c", "tokens": "a c"}, {"phrase": "d", "tokens": "d"}])
+        with self.assertRaises(KeywordsError) as caught:
+            compile_categories([category("bed", "a b", slot=True)], VOCABULARY,
+                               [{"phrase": "a b"}, {"phrase": "c"}, {"phrase": "c"}, {"phrase": "x"}, "c d"])
+        errors = caught.exception.errors
+        self.assertEqual([e["category"] for e in errors], [DECOY_LABEL] * 4)
+        self.assertEqual([e["message"] for e in errors], [
+            "「a b」在 bed 和易混词里重复", "「c」在 易混词 和易混词里重复",
+            "易混词「x」发音 x 不在模型词表中，请改用说出口的汉字写法", "易混词格式不正确"])
+        # 易混词不算关键词；只有易混词的表照样拒绝。
+        with self.assertRaisesRegex(KeywordsError, "至少保留一个关键词"):
+            compile_categories([category("bed", slot=True)], VOCABULARY, [{"phrase": "a"}])
+        with self.assertRaisesRegex(KeywordsError, "decoys 须为列表"):
+            compile_categories([category("bed", "a", slot=True)], VOCABULARY, {"phrase": "b"})
+        with self.assertRaisesRegex(KeywordsError, "易混词不能超过"):
+            compile_categories([category("bed", "a", slot=True)], VOCABULARY, [{"phrase": "b"}] * 201)
+
+    @unittest.skipUnless(importlib.util.find_spec("pypinyin"), "需要 pypinyin")
+    def test_chinese_decoy_with_keyword_pronunciation_is_rejected(self):
+        vocabulary = {"y", "ī", "ì", "ch", "uáng", "áng"}
+        _, decoys, _ = compile_categories([category("bed", "一床", slot=True)], vocabulary, [{"phrase": "异常"}])
+        self.assertEqual(decoys, [{"phrase": "异常", "tokens": "y ì ch áng"}])
+        with self.assertRaisesRegex(KeywordsError, "易混词「壹床」与「一床」发音相同"):
+            compile_categories([category("bed", "一床", slot=True)], vocabulary, [{"phrase": "壹床"}])
 
     def test_reports_every_invalid_keyword(self):
         with self.assertRaises(KeywordsError) as caught:
@@ -128,9 +158,10 @@ class KeywordServiceTest(unittest.TestCase):
         self.modules.stop()
         self.tmpdir.cleanup()
 
-    def put(self, version, categories):
+    def put(self, version, categories, decoys=None):
+        body = server.KwsKeywordsUpdate(version=version, categories=categories, decoys=decoys)
         with patch.object(server, "kws_service", self.service):
-            return asyncio.run(server.update_kws_keywords(server.KwsKeywordsUpdate(version=version, categories=categories)))
+            return asyncio.run(server.update_kws_keywords(body))
 
     def test_missing_store_config_fails_fast(self):
         config = dict(self.config, kws_keywords_store="")
@@ -148,6 +179,7 @@ class KeywordServiceTest(unittest.TestCase):
         with patch.object(server, "kws_service", self.service):
             payload = asyncio.run(server.get_kws_keywords())
         self.assertEqual(payload["categories"][0]["keywords"][0]["tokens"], "a b")
+        self.assertEqual(payload["decoys"], [])
         self.assertEqual(payload["active_sessions"], 0)
 
     def test_save_swaps_spotter_for_new_sessions_and_persists(self):
@@ -164,6 +196,28 @@ class KeywordServiceTest(unittest.TestCase):
         # 重启以关键词库为准，不再读 KWS_KEYWORDS_FILE。
         reloaded = create_kws_service(dict(self.config, kws_keywords_file=""))
         self.assertEqual((reloaded.version, reloaded.context_slots), (1, ("bed", "ward")))
+
+    def test_decoys_are_saved_with_keywords_and_kept_when_omitted(self):
+        payload = self.put(0, [category("bed", "a b", slot=True)], [{"phrase": "a c", "tokens": "ignored"}])
+        self.assertEqual(payload["decoys"], [{"phrase": "a c", "tokens": "a c"}])
+        self.assertEqual(self.service.create_session()._spotter.lines, ["a b @bed:a_b", f"a c @{DECOY_LABEL}"])
+        with open(self.config["kws_keywords_store"], encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["decoys"], [{"phrase": "a c"}])
+
+        # 不认识 decoys 的旧客户端整表保存时，易混词保持不变。
+        payload = self.put(1, [category("bed", "a b", "d", slot=True)])
+        self.assertEqual((payload["version"], payload["decoys"]), (2, [{"phrase": "a c", "tokens": "a c"}]))
+        reloaded = create_kws_service(dict(self.config, kws_keywords_file=""))
+        self.assertEqual(reloaded.decoys, [{"phrase": "a c", "tokens": "a c"}])
+
+        payload = self.put(2, [category("bed", "a b", slot=True)], [])
+        self.assertEqual(payload["decoys"], [])
+
+        # 与关键词同音的易混词整表拒绝，线上不变。
+        response = self.put(3, [category("bed", "a b", slot=True)], [{"phrase": "a b"}])
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.body)["errors"][0]["category"], DECOY_LABEL)
+        self.assertEqual(self.service.version, 3)
 
     def test_stale_version_and_invalid_table_change_nothing(self):
         with self.assertRaises(HTTPException) as caught:

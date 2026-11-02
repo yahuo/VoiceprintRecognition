@@ -4,6 +4,7 @@ KWS 关键词表：按类别维护的说法与命中值，持久化为 JSON，�
 
 说法含汉字时用 pypinyin 转成声韵母 token；不含汉字时视为已分好的模型 token（兼容旧 keywords 文件）。
 每行编译为 `token... [:增益] [#阈值] @类别:值`；token 必须全部在模型词表中，否则整表拒绝，不生成残缺词表。
+易混词（如“异常”易被认成“一床”）编进同一词表、标签为 DECOY_LABEL：解码时由它接住相近发音，命中后会话直接吸收，不推送。
 """
 
 from datetime import datetime
@@ -23,6 +24,9 @@ MAX_PHRASE_LENGTH = 32
 MAX_VALUE_LENGTH = 64
 MAX_KEYWORDS = 2000
 MAX_CATEGORIES = 64
+MAX_DECOYS = 200
+# 易混词的命中标签；类别代码须以小写字母开头，不会与之冲突。
+DECOY_LABEL = "~decoy"
 
 
 class KeywordsError(ValueError):
@@ -73,16 +77,20 @@ def _number(raw, name: str, low: float, high: float) -> tuple[float | None, str 
     return value, None
 
 
-def compile_categories(categories, vocabulary: set[str]) -> tuple[list[dict], list[str]]:
-    """校验并规范化类别列表，返回 (规范化类别, keywords 行)；任何一处不合法都抛出 KeywordsError。"""
+def compile_categories(categories, vocabulary: set[str], decoys=()) -> tuple[list[dict], list[dict], list[str]]:
+    """校验并规范化类别列表和易混词，返回 (规范化类别, 规范化易混词, keywords 行)；任何一处不合法都抛出 KeywordsError。"""
     if not isinstance(categories, list):
         raise KeywordsError([{"message": "categories 须为列表"}])
+    if not isinstance(decoys, (list, tuple)):
+        raise KeywordsError([{"message": "decoys 须为列表"}])
     # 先按提交的条目数限量，不合法的条目也计入，避免超大请求逐条校验。
     if len(categories) > MAX_CATEGORIES:
         raise KeywordsError([{"message": f"类别不能超过 {MAX_CATEGORIES} 个"}])
     submitted = sum(len(c["keywords"]) for c in categories if isinstance(c, dict) and isinstance(c.get("keywords"), list))
     if submitted > MAX_KEYWORDS:
         raise KeywordsError([{"message": f"关键词不能超过 {MAX_KEYWORDS} 个"}])
+    if len(decoys) > MAX_DECOYS:
+        raise KeywordsError([{"message": f"易混词不能超过 {MAX_DECOYS} 个"}])
     errors, normalized, lines = [], [], []
     seen_codes, seen_phrases, seen_tokens = set(), {}, {}
 
@@ -138,11 +146,36 @@ def compile_categories(categories, vocabulary: set[str]) -> tuple[list[dict], li
             keywords.append({"phrase": phrase, "value": value, "boost": boost, "threshold": threshold, "tokens": key})
         normalized.append({"code": code, "name": name, "slot": bool(category.get("slot")), "keywords": keywords})
 
-    if not errors and not lines:
+    has_keywords = bool(lines)
+    # 关键词先占位，冲突一律报在易混词上：易混词不能顶替任何关键词。
+    normalized_decoys = []
+    for decoy in decoys:
+        if not isinstance(decoy, dict):
+            fail("易混词格式不正确", DECOY_LABEL)
+            continue
+        phrase = " ".join(str(decoy.get("phrase") or "").split())
+        tokens, error = phrase_tokens(phrase, vocabulary)
+        if error:
+            fail(f"易混词「{phrase}」{error}", DECOY_LABEL, phrase)
+            continue
+        if phrase in seen_phrases:
+            where = "易混词" if seen_phrases[phrase] == DECOY_LABEL else seen_phrases[phrase]
+            fail(f"「{phrase}」在 {where} 和易混词里重复", DECOY_LABEL, phrase)
+            continue
+        key = " ".join(tokens)
+        if key in seen_tokens:
+            fail(f"易混词「{phrase}」与「{seen_tokens[key]}」发音相同", DECOY_LABEL, phrase)
+            continue
+        seen_phrases[phrase] = DECOY_LABEL
+        seen_tokens[key] = phrase
+        lines.append(f"{key} @{DECOY_LABEL}")
+        normalized_decoys.append({"phrase": phrase, "tokens": key})
+
+    if not errors and not has_keywords:
         fail("至少保留一个关键词")
     if errors:
         raise KeywordsError(errors)
-    return normalized, lines
+    return normalized, normalized_decoys, lines
 
 
 def parse_raw_lines(raw_lines, context_slots) -> list[dict]:
@@ -180,7 +213,7 @@ def build(raw_lines, vocabulary: set[str]) -> tuple[list[str], list[str]]:
         if not stripped or stripped.startswith("#"):
             continue
         try:
-            _, lines = compile_categories(parse_raw_lines([stripped], ()), vocabulary)
+            _, _, lines = compile_categories(parse_raw_lines([stripped], ()), vocabulary)
         except KeywordsError as exc:
             errors.append(f"第 {number} 行 {exc}: {stripped}")
             continue
@@ -199,7 +232,8 @@ class KeywordStore:
             return None
         with open(self.path, encoding="utf-8") as f:
             document = json.load(f)
-        if not isinstance(document, dict) or not isinstance(document.get("categories"), list):
+        if (not isinstance(document, dict) or not isinstance(document.get("categories"), list)
+                or not isinstance(document.get("decoys", []), list)):
             raise RuntimeError(f"关键词库格式不正确: {self.path}")
         return document
 
@@ -219,7 +253,7 @@ class KeywordStore:
             raise
 
 
-def stored_document(categories: list[dict], version: int) -> dict:
+def stored_document(categories: list[dict], decoys: list[dict], version: int) -> dict:
     """持久化内容：不含编译出的 token，token 由当前模型词表重新生成。"""
     return {
         "version": version,
@@ -229,4 +263,5 @@ def stored_document(categories: list[dict], version: int) -> dict:
              "keywords": [{k: kw[k] for k in ("phrase", "value", "boost", "threshold")} for kw in c["keywords"]]}
             for c in categories
         ],
+        "decoys": [{"phrase": d["phrase"]} for d in decoys],
     }

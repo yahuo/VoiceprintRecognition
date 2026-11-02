@@ -267,7 +267,7 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
 
 网页“关键词”页使用以下接口；规则与示例见 [实时 KWS 事件交互场景说明](realtime-kws-event-scenarios.md#关键词与标签)。保存（`PUT`）受 `ADMIN_TOKEN` 保护，读取与 preview 不需要令牌，见[鉴权与跨域](#鉴权与跨域)。
 
-- `GET /v1/kws/keywords`：KWS 未启用时返回 `{"enabled": false}`；否则返回 `{enabled, version, updated_at, categories, active_sessions}`。`version` 为 0 且 `updated_at` 为 null 表示内容来自 `KWS_KEYWORDS_FILE` 导入、尚未在页面保存。每个关键词带服务端生成的发音 `tokens`。
+- `GET /v1/kws/keywords`：KWS 未启用时返回 `{"enabled": false}`；否则返回 `{enabled, version, updated_at, categories, decoys, active_sessions}`。`version` 为 0 且 `updated_at` 为 null 表示内容来自 `KWS_KEYWORDS_FILE` 导入、尚未在页面保存。每个关键词和易混词（`decoys: [{phrase, tokens}]`）带服务端生成的发音 `tokens`。
 - `POST /v1/kws/keywords/preview`，`{"phrases": ["十二床", "12床"]}`（最多 200 个）→ `{"items": [{phrase, tokens, error}]}`，`error` 非空表示该说法无法识别。不改变任何状态。
 - `PUT /v1/kws/keywords`（受 `ADMIN_TOKEN` 保护），提交整表：
 
@@ -279,13 +279,16 @@ JSON 错误码：400 参数，404 录音不存在，413 超限，422 音频无�
      "keywords": [{"phrase": "十二床", "value": "12床", "boost": null, "threshold": null}]},
     {"code": "command", "name": "指令", "slot": false,
      "keywords": [{"phrase": "下一床", "value": "next_bed", "boost": 1.5, "threshold": 0.3}]}
-  ]
+  ],
+  "decoys": [{"phrase": "异常"}]
 }
 ```
 
+`decoys` 为易混词：命中后静默吸收，不推 `kws.detected`、不改上下文。省略时沿用当前易混词（旧客户端整表保存不会清空），传 `[]` 清空。
+
 `version` 须等于当前版本，否则返回 409（他人已修改，刷新后重试）。整表校验不通过返回 400 `{"detail", "errors": [{category, phrase, message}]}`，线上词表不变。成功时写入 `KWS_KEYWORDS_STORE`、版本加 1，返回与 GET 相同的结构；新开始的实时会话使用新词表，进行中的会话不受影响。KWS 未启用时 preview 与 PUT 返回 409。
 
-限制：`code` 为小写字母开头的 `[a-z0-9_]`，最多 32 字符；说法最多 32 字符，不能含 `: # @ /`；`value` 最多 64 字符且不含空白，缺省等于说法；`boost` 取 (0, 10]，`threshold` 取 (0, 1]；最多 64 个类别，全表 1–2000 个关键词（不合法的条目也计入）。关键词库是单实例本地文件，多副本时其他实例重启后才读到。
+限制：`code` 为小写字母开头的 `[a-z0-9_]`，最多 32 字符；说法最多 32 字符，不能含 `: # @ /`；`value` 最多 64 字符且不含空白，缺省等于说法；`boost` 取 (0, 10]，`threshold` 取 (0, 1]；最多 64 个类别，全表 1–2000 个关键词（不合法的条目也计入）；易混词最多 200 个，规则同说法，且不能与关键词重复或发音相同，冲突在 `errors` 中以类别 `~decoy` 报告。关键词库是单实例本地文件，多副本时其他实例重启后才读到。
 
 ## 会议摘要
 

@@ -1104,6 +1104,21 @@
             color: #a5b4fc;
         }
 
+        /* 易混词只做吸收，用中性灰和关键词区分 */
+        .kws-decoys {
+            margin-top: 14px;
+        }
+
+        .kws-decoys .kws-tag {
+            border-color: rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.07);
+            color: #c8cde4;
+        }
+
+        .kws-decoys .kws-tag:hover {
+            background: rgba(255, 255, 255, 0.13);
+        }
+
         .kws-tag.new {
             border-style: dashed;
             border-color: rgba(46, 213, 115, 0.6);
@@ -1672,6 +1687,7 @@
                 <div class="kws-legend">
                     <b>上下文槽位</b><span>命中后切换会话上下文，并标到之后的转写片段上，如床号。</span>
                     <b>只推事件</b><span>命中时推一条 kws.detected，由业务端处理，如下一床、暂停记录。</span>
+                    <b>易混词</b><span>发音接近关键词的常用词，命中后静默吸收，用来挡误报，如“异常”常被认成“一床”。</span>
                 </div>
             </section>
 
@@ -1693,6 +1709,8 @@
                     <div class="kws-panel-actions"><span id="kwsNewHint" class="kws-hint warn"></span><button type="submit" class="kws-chip">添加类别</button></div>
                 </form>
             </section>
+
+            <section id="kwsDecoys" class="kws-cat kws-decoys" aria-label="易混词" hidden></section>
 
             <div id="kwsSaveBar" class="kws-savebar" hidden>
                 <div id="kwsSaveText" class="kws-savebar-text"></div>
@@ -3348,6 +3366,8 @@
         const KWS_COLLAPSE_AT = 24;
         const KWS_SEPARATORS = /[,，、;；\s]+/;
         const KWS_CODE_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+        // 易混词在草稿里按一个伪类别处理，复用标签输入；代码以下划线开头，不会与类别代码冲突。
+        const KWS_DECOY = '_decoy';
         let kwsSaved = null;  // 服务端生效的关键词表，用来对比草稿改动
         let kwsSavedPhrases = new Set();
         let kwsState = null;  // 编辑中的草稿
@@ -3406,12 +3426,16 @@
             return JSON.parse(JSON.stringify(value));
         }
 
+        function kwsGroups(doc = kwsState) {
+            return [...doc.categories, doc.decoys];
+        }
+
         function kwsCategory(code) {
-            return kwsState.categories.find(c => c.code === code);
+            return kwsGroups().find(c => c.code === code);
         }
 
         function kwsFindTag(id) {
-            for (const cat of kwsState.categories) {
+            for (const cat of kwsGroups()) {
                 const tag = cat.keywords.find(t => t.id === id);
                 if (tag) return { cat, tag };
             }
@@ -3419,7 +3443,7 @@
         }
 
         function kwsFindPhrase(phrase) {
-            for (const cat of kwsState.categories) {
+            for (const cat of kwsGroups()) {
                 const tag = cat.keywords.find(t => t.phrase === phrase);
                 if (tag) return { cat, tag };
             }
@@ -3427,7 +3451,7 @@
         }
 
         function kwsKeywordMap(doc) {
-            return new Map(doc.categories.flatMap(c => c.keywords.map(k => [k.phrase, JSON.stringify([c.code, k.value, k.boost, k.threshold])])));
+            return new Map(kwsGroups(doc).flatMap(c => c.keywords.map(k => [k.phrase, JSON.stringify([c.code, k.value, k.boost, k.threshold])])));
         }
 
         function kwsChangeCount() {
@@ -3458,8 +3482,10 @@
 
         function kwsApply(result) {
             const categories = result.categories.map(c => ({ code: c.code, name: c.name, slot: c.slot, keywords: c.keywords.map(kwsTag) }));
-            kwsSaved = { categories };
-            kwsSavedPhrases = new Set(categories.flatMap(c => c.keywords.map(k => k.phrase)));
+            // 旧服务端不返回 decoys，按空表处理。
+            const decoys = { code: KWS_DECOY, name: '易混词', slot: false, decoy: true, keywords: (result.decoys || []).map(kwsTag) };
+            kwsSaved = { categories, decoys };
+            kwsSavedPhrases = new Set(kwsGroups(kwsSaved).flatMap(c => c.keywords.map(k => k.phrase)));
             kwsState = kwsClone(kwsSaved);
             kwsMeta = { version: result.version, updatedAt: result.updated_at, activeSessions: result.active_sessions };
             Object.assign(kwsUi, { drafts: {}, hints: {}, selected: null, armed: null, batchOpen: null, saveError: '' });
@@ -3669,7 +3695,7 @@
                 return;
             }
             if (phrase && phrase !== tag.phrase) {
-                Object.assign(tag, { phrase, tokens: '', error: '', serverError: '', pending: true });
+                Object.assign(tag, { phrase, tokens: '', error: '', serverError: '', pending: true }, cat.decoy ? { value: phrase } : {});
                 kwsRender();
                 kwsPreview([tag]);
             } else {
@@ -3759,13 +3785,14 @@
                     code: c.code, name: c.name, slot: c.slot,
                     keywords: c.keywords.map(k => ({ phrase: k.phrase, value: k.value, boost: k.boost, threshold: k.threshold })),
                 })),
+                decoys: kwsState.decoys.keywords.map(k => ({ phrase: k.phrase })),
             };
         }
 
         async function saveKwsKeywords() {
-            const bad = kwsState.categories.flatMap(c => c.keywords.filter(t => t.error).map(tag => ({ cat: c, tag })));
+            const bad = kwsGroups().flatMap(c => c.keywords.filter(t => t.error).map(tag => ({ cat: c, tag })));
             if (bad.length) {
-                kwsUi.saveError = `有 ${bad.length} 个关键词无法识别发音（${bad.map(x => x.tag.phrase).join('、')}），修正或删除后再保存。`;
+                kwsUi.saveError = `有 ${bad.length} 个说法无法识别发音（${bad.map(x => x.tag.phrase).join('、')}），修正或删除后再保存。`;
                 kwsUi.selected = bad[0].tag.id;
                 kwsUi.expanded[bad[0].cat.code] = true;
                 kwsRender();
@@ -3804,11 +3831,12 @@
             if (kwsState) kwsShowToast('已放弃未保存的改动，并重新读取服务端关键词', false);
         }
 
-        function kwsRenderTag(tag) {
+        function kwsRenderTag(tag, decoy = false) {
             const status = kwsTagStatus(tag);
             const classes = ['kws-tag', status, kwsUi.selected === tag.id ? 'selected' : '', kwsUi.armed === tag.id ? 'armed' : ''].join(' ');
-            const value = tag.value && tag.value !== tag.phrase ? `<span class="kws-val">→ ${escapeHtml(tag.value)}</span>` : '';
-            const title = tag.error || tag.serverError || `说法：${tag.phrase}\n命中值：${tag.value}\n点击编辑`;
+            const value = !decoy && tag.value && tag.value !== tag.phrase ? `<span class="kws-val">→ ${escapeHtml(tag.value)}</span>` : '';
+            const title = tag.error || tag.serverError
+                || (decoy ? `易混词：${tag.phrase}\n命中后静默吸收\n点击编辑` : `说法：${tag.phrase}\n命中值：${tag.value}\n点击编辑`);
             return `<span class="${classes}" data-kws-tag="${tag.id}" tabindex="0" role="button" title="${escapeHtml(title)}"
                 onclick="kwsSelectTag(event, ${tag.id})" onkeydown="kwsTagKey(event, ${tag.id})">${escapeHtml(tag.phrase)}${value}<button
                 class="kws-x" type="button" aria-label="删除 ${escapeHtml(tag.phrase)}" onclick="event.stopPropagation(); kwsRemoveTag(${tag.id})">×</button></span>`;
@@ -3823,21 +3851,31 @@
             const field = (key, label, hint) => `<div class="kws-field"><label for="kws-${key}-${id}">${label}</label>
                 <input id="kws-${key}-${id}" value="${escapeHtml(tag[key])}" placeholder="默认" inputmode="decimal" autocomplete="off"
                     oninput="kwsEditField(${id}, '${key}', this.value)"><small>${hint}</small></div>`;
+            const phrase = `<div class="kws-field"><label for="kws-phrase-${id}">说法</label>
+                    <input id="kws-phrase-${id}" value="${escapeHtml(tag.phrase)}" autocomplete="off" onchange="kwsEditPhrase(${id}, this.value)">
+                    <small>${cat.decoy ? '容易被认成关键词的常用词' : '实际要说出口的词'}</small></div>`;
+            const actions = `<div class="kws-panel-actions">
+                    <button class="kws-chip danger" type="button" onclick="kwsRemoveTag(${id})">删除</button>
+                    <button class="kws-chip" type="button" onclick="kwsSelectTag(event, ${id})">收起</button>
+                </div>`;
+            if (cat.decoy) {
+                return `<div class="kws-panel" aria-label="编辑易混词">
+                    <div class="kws-panel-title">编辑易混词「${escapeHtml(tag.phrase)}」</div>
+                    ${phrase}
+                    <div class="kws-field"><label>发音</label>${tokens}</div>
+                    ${actions}
+                </div>`;
+            }
             return `<div class="kws-panel" aria-label="编辑关键词">
                 <div class="kws-panel-title">编辑「${escapeHtml(tag.phrase)}」</div>
-                <div class="kws-field"><label for="kws-phrase-${id}">说法</label>
-                    <input id="kws-phrase-${id}" value="${escapeHtml(tag.phrase)}" autocomplete="off" onchange="kwsEditPhrase(${id}, this.value)">
-                    <small>实际要说出口的词</small></div>
+                ${phrase}
                 <div class="kws-field"><label for="kws-value-${id}">命中值</label>
                     <input id="kws-value-${id}" value="${escapeHtml(tag.value)}" autocomplete="off" oninput="kwsEditField(${id}, 'value', this.value)">
                     <small>${cat.slot ? `写进转写的 context.${cat.code}` : '随 kws.detected 推给业务端'}，不能含空格</small></div>
                 <div class="kws-field"><label>发音</label>${tokens}</div>
                 ${field('boost', '增益', '调大更容易命中，常用 1.0-2.0')}
                 ${field('threshold', '阈值', '调小更容易命中，误触发也会变多')}
-                <div class="kws-panel-actions">
-                    <button class="kws-chip danger" type="button" onclick="kwsRemoveTag(${id})">删除</button>
-                    <button class="kws-chip" type="button" onclick="kwsSelectTag(event, ${id})">收起</button>
-                </div>
+                ${actions}
             </div>`;
         }
 
@@ -3856,10 +3894,23 @@
             </div>`;
         }
 
-        function kwsRenderCategory(cat) {
+        function kwsRenderTagbox(cat) {
             const code = cat.code;
+            const noun = cat.decoy ? '易混词' : '关键词';
             const expanded = kwsUi.expanded[code] || cat.keywords.length <= KWS_COLLAPSE_AT;
             const visible = expanded ? cat.keywords : cat.keywords.slice(0, KWS_COLLAPSE_AT);
+            return `<div class="kws-tagbox" onclick="kwsFocusInput('${code}')">
+                    ${visible.map(tag => kwsRenderTag(tag, cat.decoy)).join('')}
+                    ${expanded ? '' : `<button class="kws-more" type="button" onclick="event.stopPropagation(); kwsExpand('${code}')">展开其余 ${cat.keywords.length - KWS_COLLAPSE_AT} 个</button>`}
+                    <input class="kws-input" id="kws-in-${code}" aria-label="${cat.decoy ? '新易混词' : `${escapeHtml(cat.name)} 新关键词`}" autocomplete="off"
+                        placeholder="${cat.keywords.length ? `输入${noun}，回车添加` : `输入第一个${noun}，回车添加`}"
+                        value="${escapeHtml(kwsUi.drafts[code] || '')}"
+                        oninput="kwsDraftInput('${code}', this.value)" onkeydown="kwsInputKey(event, '${code}')" onpaste="kwsPaste(event, '${code}')">
+                </div>`;
+        }
+
+        function kwsRenderCategory(cat) {
+            const code = cat.code;
             const isSaved = kwsSaved.categories.some(c => c.code === code);
             const selected = cat.keywords.find(t => t.id === kwsUi.selected);
             const hint = kwsUi.hints[code] || (cat.slot
@@ -3879,18 +3930,25 @@
                     <button class="kws-chip" type="button" onclick="kwsToggleBatch('${code}')">按编号批量生成</button>
                     <button class="kws-chip danger" type="button" onclick="kwsRemoveCategory('${code}')">${isSaved ? '删除类别' : '移除'}</button>
                 </div>
-                <div class="kws-tagbox" onclick="kwsFocusInput('${code}')">
-                    ${visible.map(kwsRenderTag).join('')}
-                    ${expanded ? '' : `<button class="kws-more" type="button" onclick="event.stopPropagation(); kwsExpand('${code}')">展开其余 ${cat.keywords.length - KWS_COLLAPSE_AT} 个</button>`}
-                    <input class="kws-input" id="kws-in-${code}" aria-label="${escapeHtml(cat.name)} 新关键词" autocomplete="off"
-                        placeholder="${cat.keywords.length ? '输入关键词，回车添加' : '输入第一个关键词，回车添加'}"
-                        value="${escapeHtml(kwsUi.drafts[code] || '')}"
-                        oninput="kwsDraftInput('${code}', this.value)" onkeydown="kwsInputKey(event, '${code}')" onpaste="kwsPaste(event, '${code}')">
-                </div>
+                ${kwsRenderTagbox(cat)}
                 <div class="kws-hint${kwsUi.hints[code] ? ' warn' : ''}">${escapeHtml(hint)}</div>
                 ${kwsUi.batchOpen === code ? kwsRenderBatch(code) : ''}
                 ${selected ? kwsRenderEditor(cat, selected) : ''}
             </section>`;
+        }
+
+        function kwsRenderDecoys() {
+            const group = kwsState.decoys;
+            const selected = group.keywords.find(t => t.id === kwsUi.selected);
+            const hint = kwsUi.hints[KWS_DECOY]
+                || '命中后静默吸收：不推送事件、不改上下文。只加真实录音里出现过误报的词，如“异常”常被认成“一床”。';
+            return `<div class="kws-cat-head">
+                    <span class="kws-cat-title">易混词</span>
+                    <span class="kws-count">${group.keywords.length} 个</span>
+                </div>
+                ${kwsRenderTagbox(group)}
+                <div class="kws-hint${kwsUi.hints[KWS_DECOY] ? ' warn' : ''}">${escapeHtml(hint)}</div>
+                ${selected ? kwsRenderEditor(group, selected) : ''}`;
         }
 
         function kwsRenderSave() {
@@ -3899,6 +3957,7 @@
             const text = document.getElementById('kwsSaveText');
             document.getElementById('kwsSaveBar').hidden = !kwsState;
             document.getElementById('kwsNewCategory').hidden = !kwsState;
+            document.getElementById('kwsDecoys').hidden = !kwsState;
             if (!kwsState) {
                 pill.className = 'kws-pill';
                 pill.textContent = kwsLoadError ? '不可用' : '未加载';
@@ -3906,12 +3965,13 @@
                 return;
             }
             const changes = kwsChangeCount();
-            const invalid = kwsState.categories.flatMap(c => c.keywords).filter(t => t.error).length;
+            const invalid = kwsGroups().flatMap(c => c.keywords).filter(t => t.error).length;
             const total = kwsSaved.categories.reduce((n, c) => n + c.keywords.length, 0);
             const savedAt = kwsMeta.updatedAt
                 ? `${kwsMeta.updatedAt.replace('T', ' ').slice(0, 16)} 保存`
                 : '从 KWS_KEYWORDS_FILE 导入，尚未在本页保存';
-            meta.textContent = `线上 v${kwsMeta.version} · ${savedAt} · ${kwsSaved.categories.length} 个类别 · ${total} 个关键词`;
+            meta.textContent = `线上 v${kwsMeta.version} · ${savedAt} · ${kwsSaved.categories.length} 个类别 · ${total} 个关键词`
+                + ` · ${kwsSaved.decoys.keywords.length} 个易混词`;
             pill.className = changes ? 'kws-pill dirty' : 'kws-pill ok';
             pill.textContent = changes ? '有未保存改动' : '已生效';
             text.className = kwsUi.saveError ? 'kws-savebar-text err' : 'kws-savebar-text';
@@ -3920,7 +3980,7 @@
                 text.innerHTML = `<b>${escapeHtml(kwsUi.saveError)}</b>`;
             } else if (changes) {
                 text.innerHTML = `<b>${changes} 处改动未保存</b>。保存后新开始的实时会话生效，进行中的 ${sessions} 个会话不受影响。`
-                    + (invalid ? ` 另有 ${invalid} 个关键词无法识别发音。` : '');
+                    + (invalid ? ` 另有 ${invalid} 个说法无法识别发音。` : '');
             } else {
                 text.textContent = `没有未保存的改动。服务端当前有 ${sessions} 个实时会话。`;
             }
@@ -3939,6 +3999,7 @@
                 box.innerHTML = kwsState.categories.length
                     ? kwsState.categories.map(kwsRenderCategory).join('')
                     : '<div class="empty-state">还没有类别，先在下方新建</div>';
+                document.getElementById('kwsDecoys').innerHTML = kwsRenderDecoys();
                 if (kwsUi.batchOpen && kwsCategory(kwsUi.batchOpen)) kwsBatchRefresh(kwsUi.batchOpen);
             }
             kwsRenderSave();

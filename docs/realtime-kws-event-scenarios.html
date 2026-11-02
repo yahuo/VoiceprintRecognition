@@ -426,6 +426,7 @@ footer { padding: 40px 0 60px; color: var(--dim); font-size: 13px; border-top: 1
         <h3>未验证</h3>
         <ul>
           <li>真实病房语音的召回率（TTS 样本不能代表）</li>
+          <li>已知误报：“异常”被认成“一床”，提阈值会漏真命中，改用易混词“异常”吸收</li>
           <li>“暂停记录”在部分上下文中漏检，需真实录音调 <code>:增益</code> / <code>#阈值</code></li>
           <li>8 路以上并发时单线程 <code>kws</code> 阶段的负载：看 <code>/v1/live/metrics</code> 的 kws <code>wait_ms</code>；估算约 160 路前不会积压</li>
         </ul>
@@ -436,7 +437,7 @@ footer { padding: 40px 0 60px; color: var(--dim); font-size: 13px; border-top: 1
           <li>推荐 <code>sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20</code>（中英混合，约 3M 参数）</li>
           <li>备选 <code>wenetspeech-3.3M-2024-01-01</code></li>
           <li><code>sherpa-onnx&gt;=2.0.1</code>；生成关键词表另需 <code>pypinyin</code></li>
-          <li>sherpa-onnx 不输出置信度，误触发靠逐词阈值与 2s 去重</li>
+          <li>sherpa-onnx 不输出置信度，误触发靠逐词阈值、易混词吸收与 2s 去重</li>
         </ul>
       </div>
     </div>
@@ -907,7 +908,7 @@ const FAQ = [
   { q: '准入降级为只录音，KWS 还工作吗？', a: '<b>照常工作。</b>KWS 属于实时对话的一部分：没有 transcript，但 <code>kws.detected</code>、<code>state.changed</code>、<code>set_context</code> 都在，业务端仍能实时切换病人。停止后 <code>transcriptionStatus=recording_only</code>，可按 fileId 生成 MOSS 复核稿。', demo: () => { reset('recording_only'); run(['bed12', 'next', 'plain']); } },
   { q: 'KWS 中途挂了会怎样？', a: '推一次 <code>status(phase=kws_unavailable)</code>，本场停止关键词检测。<b>转写、录音、set_context 都不受影响</b>，context 仍可由业务端维护。', demo: () => { reset('normal'); S.kwsFault = true; $('#faultBtn').classList.add('active'); run(['bed12', 'plain']); } },
   { q: '说“暂停记录”后，能再说“继续记录”恢复吗？', a: '<b>不能。</b>暂停期间音频不入录音、也不进 KWS，服务端听不到任何话。恢复只能由业务端发 <code>resume_recording</code>（例如界面按钮）。', demo: () => { reset('normal'); run(['bed12', 'pause', 'plain']); } },
-  { q: '为什么事件里没有置信度？', a: 'sherpa-onnx 的 KWS 结果<b>不输出分数</b>。误触发靠关键词表里逐词的 <code>:增益</code> 与 <code>#阈值</code> 调节，同一 <code>类别:值</code> 2s 内重复命中只推一次。上线前要用真实录音调参。' },
+  { q: '为什么事件里没有置信度？', a: 'sherpa-onnx 的 KWS 结果<b>不输出分数</b>。误触发靠关键词表里逐词的 <code>:增益</code> 与 <code>#阈值</code> 调节；发音相近的常用词（如“异常”之于“一床”）加为易混词，命中后静默吸收。同一 <code>类别:值</code> 2s 内重复命中只推一次。上线前要用真实录音调参。' },
   { q: '配置写错了，会悄悄关掉 KWS 吗？', a: '<b>不会。</b><code>KWS_ENABLED=1</code> 但模型路径缺失、槽位名非法或模型加载失败，服务直接启动失败。默认 <code>KWS_ENABLED=0</code> 时协议与原来完全一致，<code>set_context</code> 会回 error。' },
   { q: '床号关键词会留在正文里吗？', a: '会。“十二床，今天体温正常”整句都在 transcript 里。是否剔除、怎么展示由业务端决定，服务端不改写正文。' },
   { q: '想加“病区”这种新维度怎么办？', a: '关键词表加 <code>三病区 @ward:三病区</code>，再把 <code>KWS_CONTEXT_SLOTS</code> 设为 <code>bed,ward</code>。不需要改代码：transcript.context 会多一个 <code>ward</code>，<code>state.changed</code> 用 <code>slot</code> 区分。可在第 02 节里试。' },
