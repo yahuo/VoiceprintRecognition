@@ -137,6 +137,29 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-bubble-20261102/deploy/rollback-from-bubble.patch.json"'
 ```
 
+该版本的回滚 patch 带“当前 spec 为 bubble-r1”守卫，易混词上线后已不适用，回滚见下一节。
+
+## 2026-11-02 关键词易混词与页面打开恢复修正（已上线）
+
+按用户授权于 13:34:27～13:34:59（UTC+08）从 `20261102-xfusion-kws-bubble-r1` 更新为 `20261102-xfusion-kws-decoys-r1`，Pod `voiceprint-ab-6b98d84bb6-c4q8q` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20261102-xfusion-kws-decoys-r1`，发布 index `sha256:a87a31e7b4c395d6f5d3a0c2fd1a2b40f179b14367e34829af79db9bfe2b9a26`，ARM64 manifest `sha256:8c4e9e4af01ced3a11ed69cd95fc6f739828d0102bce5e5894814d4037407c0a`。Pod imageID 为外层 archive index `sha256:816f0792…`，已验证其唯一指向该发布 index。本地按 `deploy/Dockerfile.xfusion` 构建、离线导入，未推送 registry；`APP_DEPS_IMAGE` 与 bubble-r1 相同。应用提交 `073f983`，22 文件源清单 sha256 `b56cec5f…`，实际 Pod 内逐个核对一致；与 bubble-r1 相比只有 `app/server.py`、`app/services/kws.py`、`app/services/kws_keywords.py`、`static/web_client.html` 不同。
+- 内容：关键词库新增顶层 `decoys`（易混词，编译为保留标签 `@~decoy`，命中后静默吸收），关键词页新增“易混词”分区；页面打开时先确认转写任务仍在再切到上传页（服务重启或结果过期时停在实时录音页）。
+- 部署只改镜像与两个发布/源清单注解，env、挂载、资源、安全配置、Service 与 Nginx 不变；`ADMIN_TOKEN` 仍未设置。
+- 切换前确认连接/任务/录音均空闲，备份声纹、录音与关键词库（`deploy/data-backup-133423.tar`，含 `kws/keywords.json`）。切换后 5 个声纹哈希、8 份录音元数据与关键词库哈希 `7587bd5f…` 均不变。
+- 验证：后端有变，先起同机隔离实例（`127.0.0.1:18093`，录音/声纹为空目录，关键词库为现网旧格式库的副本）：旧库读出 `decoys: []`；易混词与关键词重复、同音（“医床”对“一床”）均返回 400（类别 `~decoy`）；保存易混词“异常”“体温”后版本递增，过期版本 409，省略 `decoys` 的保存沿用当前易混词，重启后保留；含易混词“体温”（查房音频里出现）时 WSS 推 47.5s 合成查房音频，真关键词命中仍为 4 次 `kws.detected`、2 次 `state.changed`，客户端事件中没有 `~decoy`。隔离实例已删除，测试录音已删除。现网 Pod 内核对 Nano fp32、enforce 准入及限额、五个实时阶段、63 个中文关键词（版本 1）、`decoys` 为空、页面含易混词分区。经原 HTTPS 网关只读检查：网页 200 且含易混词分区、页面打开恢复修正与气泡层；关键词读取与 preview 正常；未知任务取消 404；WSS 结果与上一版相同（12床、next_bed、15床、pause_recording，2 次 `state.changed`，最终片段均带 `context`）；测试录音已按 fileId 删除；未写关键词库，检查前后版本与易混词一致。
+- 现网尚未加任何易混词。“异常”被认成“一床”的误报要在关键词页加易混词“异常”后才会被吸收；加入后的效果须用真实录音复核（合成音频复现不了这类误报）。
+- 回滚兼容：旧后端只读 `categories`、忽略 `decoys`，可直接回滚；回滚后易混词不生效，在旧页面保存关键词会丢掉易混词。
+- 未验证：现网真实录音中的误报吸收、物理麦克风、真实病房语音。
+
+证据位于本地 `output/xfusion-kws-decoys-20261102/`，远端 `~/.local/share/voiceprint-kws-decoys-20261102/`。
+
+回滚到切换前的 bubble-r1 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）：
+
+```bash
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-decoys-20261102/deploy/rollback-from-decoys.patch.json"'
+```
+
 ## 尚未由部署验收证明的事项
 
 - 医学数字、术语、否定词与身份归属仍需人工审核；模型成功完成不等于临床准确率验收。
