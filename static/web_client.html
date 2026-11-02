@@ -1358,9 +1358,131 @@
             font-weight: 600;
         }
 
+        /* 实时录音 KWS 命中气泡：浮起后破裂消失 */
+        .kws-bubble-layer {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 22vh;
+            height: 0;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        .kws-pop {
+            position: absolute;
+            left: calc(50% + var(--k, 0) * min(150px, 28vw));
+            bottom: 0;
+            animation: kws-rise 1.9s ease-out forwards;
+        }
+
+        .kws-bubble {
+            padding: 12px 26px;
+            border-radius: 999px;
+            white-space: nowrap;
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+            background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.55), rgba(165, 180, 252, 0.28) 35%, rgba(102, 126, 234, 0.4));
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: inset 0 0 16px rgba(255, 255, 255, 0.3), 0 8px 28px rgba(102, 126, 234, 0.45);
+            backdrop-filter: blur(6px);
+            animation: kws-bubble 1.9s forwards;
+        }
+
+        .kws-shard {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 8px;
+            height: 8px;
+            margin: -4px 0 0 -4px;
+            border-radius: 50%;
+            background: #e0e7ff;
+            box-shadow: 0 0 8px rgba(165, 180, 252, 0.9);
+            opacity: 0;
+            animation: kws-shard 0.38s ease-out 1.5s forwards;
+        }
+
+        @keyframes kws-rise {
+            from {
+                transform: translate(-50%, 24px);
+            }
+
+            to {
+                transform: translate(-50%, -40px);
+            }
+        }
+
+        @keyframes kws-bubble {
+            0% {
+                opacity: 0;
+                transform: scale(0.5);
+            }
+
+            12% {
+                opacity: 1;
+                transform: scale(1.08);
+            }
+
+            20%,
+            76% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            80% {
+                opacity: 1;
+                transform: scale(1.15);
+            }
+
+            90%,
+            100% {
+                opacity: 0;
+                transform: scale(1.5);
+            }
+        }
+
+        @keyframes kws-shard {
+            from {
+                opacity: 1;
+                transform: rotate(var(--a)) translateX(40px);
+            }
+
+            to {
+                opacity: 0;
+                transform: rotate(var(--a)) translateX(110px) scale(0.4);
+            }
+        }
+
+        @keyframes kws-fade {
+
+            0%,
+            80% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+            }
+        }
+
         @media (prefers-reduced-motion: reduce) {
             .kws-tag.flash {
                 animation: none;
+            }
+
+            .kws-pop {
+                transform: translateX(-50%);
+                animation-name: kws-fade;
+            }
+
+            .kws-bubble {
+                animation: none;
+            }
+
+            .kws-shard {
+                display: none;
             }
         }
     </style>
@@ -1582,6 +1704,7 @@
             </div>
         </div>
     </div>
+    <div id="kwsBubbleLayer" class="kws-bubble-layer" aria-live="polite"></div>
 
     <script>
         // 全局变量
@@ -1601,6 +1724,8 @@
         let liveRecordingOnly = false;  // 服务端准入降级：本场只录音、不实时转写
         let liveSessionServerUrl = '';
         let liveSessionParticipants = [];
+        let liveKwsPhrases = new Map();  // "类别\n值" -> 说法，命中气泡显示说法而不是 next_bed 这类值
+        let kwsBubbleCount = 0;
         let meetingRequestInProgress = false;
         let activeMeetingJob = null;
         let meetingEventCursor = 0;
@@ -2115,6 +2240,49 @@
             updateStatus(isRecording ? 'recording' : 'connected', liveRecordingStatusText());
         }
 
+        async function loadLiveKwsPhrases(apiUrl) {
+            liveKwsPhrases = new Map();
+            try {
+                const response = await fetch(`${apiUrl}/v1/kws/keywords`);
+                const result = await response.json();
+                if (!response.ok || !result.enabled) return;
+                const phrases = new Map();
+                for (const category of result.categories || []) {
+                    for (const keyword of category.keywords || []) {
+                        const key = `${category.code}\n${keyword.value}`;
+                        if (!phrases.has(key)) phrases.set(key, keyword.phrase);
+                    }
+                }
+                // 期间已换到别的服务器开始录音时丢弃
+                if (apiUrl === liveSessionServerUrl) liveKwsPhrases = phrases;
+            } catch {
+                // 只影响气泡文字，取不到时显示值
+            }
+        }
+
+        function showKwsBubble(data) {
+            const label = liveKwsPhrases.get(`${data.category}\n${data.value}`) || data.value || data.category;
+            if (!label) return;
+            const pop = document.createElement('div');
+            pop.className = 'kws-pop';
+            // 连续命中时左右错开，避免叠在一起
+            pop.style.cssText = `--k: ${[0, -1, 1][kwsBubbleCount++ % 3]}`;
+            const bubble = document.createElement('div');
+            bubble.className = 'kws-bubble';
+            bubble.textContent = label;
+            pop.appendChild(bubble);
+            for (let i = 0; i < 8; i++) {
+                const shard = document.createElement('span');
+                shard.className = 'kws-shard';
+                shard.style.cssText = `--a: ${i * 45}deg`;
+                pop.appendChild(shard);
+            }
+            pop.addEventListener('animationend', event => {
+                if (event.target === pop) pop.remove();
+            });
+            document.getElementById('kwsBubbleLayer').appendChild(pop);
+        }
+
         function clearPauseAckTimer() {
             if (pauseAckTimer) {
                 clearTimeout(pauseAckTimer);
@@ -2325,6 +2493,7 @@
                 const selectedParticipants = getSelectedParticipants('live');
                 liveSessionServerUrl = getApiUrl();
                 liveSessionParticipants = [...selectedParticipants];
+                loadLiveKwsPhrases(liveSessionServerUrl);
 
                 websocket = new WebSocket(getWsUrl(selectedParticipants));
 
@@ -2371,6 +2540,10 @@
                     }
                     if (data.type === 'status') {
                         handleLiveStatus(data);
+                        return;
+                    }
+                    if (data.type === 'kws.detected') {
+                        showKwsBubble(data);
                         return;
                     }
                     addTranscript(data);
