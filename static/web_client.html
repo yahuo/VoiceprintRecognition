@@ -2714,7 +2714,9 @@
             }
         }
 
-        async function restoreMeetingJob() {
+        // pageLoad：页面打开时的自动恢复。先确认任务仍在再切到上传页；
+        // 服务重启或结果过期（404/410）时清掉引用并停在默认页，不打扰实时录音。
+        async function restoreMeetingJob({ pageLoad = false } = {}) {
             if (meetingRequestInProgress) return;
             let reference;
             try {
@@ -2726,26 +2728,43 @@
                 }
             } catch (error) {
                 console.warn('读取转写恢复信息失败');
+                localStorage.removeItem(MEETING_JOB_STORAGE_KEY);
                 return;
             }
             meetingRequestInProgress = true;
             activeMeetingJob = { ...reference, terminal: false };
             meetingEventCursor = 0;
-            switchTab('upload');
-            resetMeetingResultUi();
-            showMeetingConnectionStatus('正在恢复转写任务...');
+            let uiShown = false;
+            const showRestoring = () => {
+                resetMeetingResultUi();
+                showMeetingConnectionStatus('正在恢复转写任务...');
+                uiShown = true;
+            };
+            if (!pageLoad) showRestoring();
             try {
                 const response = await fetch(`${reference.apiUrl}/v1/meeting/jobs/${encodeURIComponent(reference.jobId)}`);
                 if (!response.ok) {
-                    activeMeetingJob.unavailable = response.status === 404 || response.status === 410;
+                    const gone = response.status === 404 || response.status === 410;
+                    activeMeetingJob.unavailable = gone;
+                    if (gone) localStorage.removeItem(MEETING_JOB_STORAGE_KEY);
+                    if (gone && pageLoad) {
+                        activeMeetingJob = null;
+                        return;
+                    }
                     const data = await response.json();
                     throw new Error(data.detail || `HTTP ${response.status}`);
                 }
                 const state = await response.json();
+                if (pageLoad) {
+                    switchTab('upload');
+                    showRestoring();
+                }
                 activeMeetingJob.sourceLabel = state.sourceLabel;
                 document.getElementById('btnCancelMeeting').style.display = ['running', 'cancelling'].includes(state.state) ? '' : 'none';
                 await followMeetingJob();
             } catch (error) {
+                // 页面加载时的临时故障不切页，只在上传页留下失败提示和“恢复连接”。
+                if (!uiShown) resetMeetingResultUi();
                 showMeetingFailure(error);
             } finally {
                 meetingRequestInProgress = false;
@@ -2840,7 +2859,7 @@
             status.innerHTML = `<span>转写未完成：${escapeHtml(error.message)}</span>`;
             document.getElementById('btnUploadSummary').disabled = true;
             document.getElementById('btnDownloadMeeting').disabled = true;
-            document.getElementById('btnResumeMeeting').style.display = activeMeetingJob && !activeMeetingJob.terminal ? '' : 'none';
+            document.getElementById('btnResumeMeeting').style.display = activeMeetingJob && !activeMeetingJob.terminal && !activeMeetingJob.unavailable ? '' : 'none';
             if (activeMeetingJob?.terminal) document.getElementById('btnCancelMeeting').style.display = 'none';
         }
 
@@ -3932,7 +3951,7 @@
         }
 
         // 页面加载时恢复最近任务；只订阅原服务器，不重新上传或重新推理。
-        restoreMeetingJob();
+        restoreMeetingJob({ pageLoad: true });
         loadVoiceprints();
     </script>
 </body>
