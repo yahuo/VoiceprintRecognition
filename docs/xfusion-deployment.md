@@ -160,6 +160,29 @@ ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch 
 ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-kws-decoys-20261102/deploy/rollback-from-decoys.patch.json"'
 ```
 
+该版本的回滚 patch 带“当前 spec 为 decoys-r1”守卫，MOSS 输出拒绝修正上线后已不适用，回滚见下一节。
+
+## 2026-11-12 MOSS 空文本片段报错与 worker 保留（已上线）
+
+按用户授权于 18:22:40～18:23:12（UTC+08）从 `20261102-xfusion-kws-decoys-r1` 更新为 `20261112-xfusion-moss-output-r1`，Pod `voiceprint-ab-56c786f987-s5l2q` Ready/restart0。此时间是切换至就绪窗口，不是独立测量的端到端停机时间。
+
+- 镜像 `registry.bsoft.com.cn/ssdev/voiceprint-moss:20261112-xfusion-moss-output-r1`，发布 index `sha256:4fc11524e3352c3f4b1d2166260093241dcde3b7658c11a90b413e8e3f827e20`，ARM64 manifest `sha256:65c0f7d0182111dde07fe4d847d49029d5b948d40940d6d5e30839628cfdd1ac`。Pod imageID 为外层 archive index `sha256:ffb1c117…`，已验证其唯一指向该发布 index。本地按 `deploy/Dockerfile.xfusion` 构建、离线导入，未推送 registry；`APP_DEPS_IMAGE` 与 decoys-r1 相同。应用提交 `a6a8da1`，22 文件源清单 sha256 `0210384b…`，Pod 内逐个核对一致；与 decoys-r1 相比只有 `app/services/moss.py` 不同。
+- 起因：用户测试录音（18.24s，短促零碎口语）让 MOSS 稳定退化为等间隔空正文片段（`[t][S01][t+0.12]` 循环，finish=stop、EOS 正常），旧版报“无效时间戳或空片段”。实时 Paraformer+Nano 对同一文件正常出字，录音本身有效；temperature=0，重试结果相同。本版不改识别结果，也不静默回退到 Nano。
+- 内容：空文本片段单独报“MOSS 未识别出语音内容（输出空文本片段），未生成转写”；空文本、无效时间戳、片段越界、无可解析文本等内容不合格错误只 abort 当前 vLLM 请求、保留常驻 worker。旧版会回收 worker，下一次离线转写冷启动多约 40s。截断、流式/终稿不一致、超时、协议异常仍回收 worker。
+- 部署只改镜像与两个发布/源清单注解，env、挂载、资源、安全配置、Service 与 Nginx 不变；`ADMIN_TOKEN` 仍未设置。
+- 切换前确认连接/任务/录音均空闲，备份声纹、录音与关键词库（`deploy/data-backup-182236.tar`）。切换后 5 个声纹哈希、83 份录音元数据与关键词库哈希 `e262e5cc…` 均不变。
+- 验证：先起同机隔离实例（`127.0.0.1:18094`，录音/声纹为空目录，KWS 关闭），依次离线上传参考录音 → 问题录音 → 参考录音 → 问题片段在前的拼接录音 → 参考录音：两份问题录音都报上述新文案；参考录音三次均为 42 段；worker/engine PID 全程不变；热请求 8.8s，首次冷启动 50.3s。隔离实例已删除。现网 Pod 内核对 Nano fp32、enforce 准入及限额、五个实时阶段、关键词库（版本 2，易混词“异常”）与页面易混词分区。经原 HTTPS 网关重复同一序列，结果一致：PID 全程不变，日志无 `MOSS worker stop`，restart0；离线上传未新增录音，无残留 MOSS 临时文件。网关热请求约 16s，其中上传约 8s。
+- 回滚兼容：只改 MOSS 错误分类与 worker 生命周期，接口与数据格式不变，可直接回滚；回滚后问题录音恢复旧报错，且每次报错都会触发冷启动。
+- 未验证：其他类型的退化录音，以及多用户并发时内容拒绝后的排队行为。
+
+证据位于本地 `output/xfusion-moss-output-20261112/`，远端 `~/.local/share/voiceprint-moss-output-20261112/`。
+
+回滚到切换前的 decoys-r1 spec（带 UID 与当前 spec 守卫，只在明确要求回滚时执行；会重建 Pod，不还原用户数据）：
+
+```bash
+ssh xfusion 'docker exec -i rancher kubectl -n voiceprint-asr-ab-20260920 patch deploy voiceprint-ab --type=json --patch-file=/dev/stdin < "$HOME/.local/share/voiceprint-moss-output-20261112/deploy/rollback-from-moss-output.patch.json"'
+```
+
 ## 尚未由部署验收证明的事项
 
 - 医学数字、术语、否定词与身份归属仍需人工审核；模型成功完成不等于临床准确率验收。
