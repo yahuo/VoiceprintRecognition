@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from app.services.moss import MossCancelled, MossError, MossTimeout, MossTranscriber
+from app.services.moss import MossCancelled, MossError, MossOutputError, MossTimeout, MossTranscriber
 
 
 class MossWorkerLifecycleTest(unittest.TestCase):
@@ -63,6 +63,25 @@ class MossWorkerLifecycleTest(unittest.TestCase):
                 self.client.transcribe(str(self.audio), 2)
             self.assertIsNone(self.client._reader)
             self.assertIsNone(self.client._process)
+
+    def test_rejected_segment_content_keeps_worker_for_next_request(self):
+        for mode in ('empty', 'stream_empty'):
+            with self.subTest(mode=mode), patch.dict(os.environ, {'FAKE_MOSS_MODE': mode}):
+                with self.assertRaisesRegex(MossOutputError, '未识别出语音内容'):
+                    self.client.transcribe(str(self.audio), 2)
+                process = self.client._process
+                self.assertIsNone(process.poll())
+                self.assertEqual(self.client.transcribe(str(self.audio), 2)[0]['text'], 'synthetic')
+                self.assertIs(self.client._process, process)
+                self.client.close()
+        self.assertEqual(len(self.processes), 2)
+
+    def test_rejected_output_whose_cancel_is_not_acknowledged_reaps_worker(self):
+        with patch.dict(os.environ, {'FAKE_MOSS_MODE': 'stream_empty'}), \
+                patch.object(self.client, '_cancel_request', side_effect=MossTimeout('ack timeout')), \
+                self.assertRaises(MossOutputError):
+            self.client.transcribe(str(self.audio), 2)
+        self.assertIsNone(self.client._process)
 
     def test_segment_arrives_while_worker_is_still_generating_and_tail_is_not_duplicated(self):
         seen = []

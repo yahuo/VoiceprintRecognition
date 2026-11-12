@@ -43,6 +43,10 @@ class MossError(RuntimeError):
     status_code = 502
 
 
+class MossOutputError(MossError):
+    """模型正常应答但片段内容违反契约；worker 本身健康，只中止本次请求。"""
+
+
 class MossCancelled(MossError):
     status_code = 409
 
@@ -77,12 +81,15 @@ def _parse_segment(match, duration_seconds, last_start):
     start, end = float(start), float(end)
     if (not all(math.isfinite(x) for x in (start, end))
             or not 0 <= start < end <= duration_seconds + 0.1
-            or start < last_start or not text.strip()):
-        raise MossError("MOSS 返回无效时间戳或空片段")
+            or start < last_start):
+        raise MossOutputError("MOSS 返回无效时间戳")
+    if not text.strip():
+        # 实测个别录音会让模型退化为整段等间隔空片段；贪心解码下同一录音重试结果相同。
+        raise MossOutputError("MOSS 未识别出语音内容（输出空文本片段），未生成转写")
     start_ms = round(start * 1000)
     end_ms = min(round(end * 1000), round(duration_seconds * 1000))
     if end_ms <= start_ms:
-        raise MossError("MOSS 片段超出有效音频范围")
+        raise MossOutputError("MOSS 片段超出有效音频范围")
     return {
         "start_ms": start_ms, "end_ms": end_ms,
         "diarizationSpeaker": label, "text": text.strip(),
@@ -95,18 +102,18 @@ def parse_result(result: dict, duration_seconds: float) -> list[dict]:
         raise MossError("MOSS 未正常结束，结果可能被截断，未生成成功转写")
     raw = result.get("raw")
     if not isinstance(raw, str) or not raw.strip():
-        raise MossError("MOSS 未返回可解析的转写文本")
+        raise MossOutputError("MOSS 未返回可解析的转写文本")
     segments = []
     cursor = 0
     last_start = 0
     for match in _SEGMENT.finditer(raw):
         if raw[cursor:match.start()].strip():
-            raise MossError("MOSS 输出格式异常，拒绝丢弃未解析文本")
+            raise MossOutputError("MOSS 输出格式异常，拒绝丢弃未解析文本")
         segment, last_start = _parse_segment(match, duration_seconds, last_start)
         segments.append(segment)
         cursor = match.end()
     if not segments or raw[cursor:].strip():
-        raise MossError("MOSS 输出不完整，拒绝丢弃未解析文本")
+        raise MossOutputError("MOSS 输出不完整，拒绝丢弃未解析文本")
     return segments
 
 
@@ -265,6 +272,14 @@ class MossTranscriber:
             except BaseException:
                 self._stop("cancel_ack_failed")
                 raise
+            raise
+        except MossOutputError:
+            # 内容不合格不代表 worker 异常：中止生成中的请求并保留常驻模型，避免下次冷启动。
+            if not request_finished:
+                try:
+                    self._cancel_request(request_id)
+                except BaseException:
+                    self._stop("output_reject_cancel_failed")
             raise
         except OSError as exc:
             self._stop("communication_error")

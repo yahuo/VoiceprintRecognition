@@ -31,6 +31,15 @@ class TranscribeFullAudioInputTest(unittest.TestCase):
             with self.assertRaises(MossError):
                 parse_result(self.result("[0][S01]已生成但截断[1]", **changes), 2)
 
+    def test_empty_text_segments_report_no_speech_not_bad_timestamps(self):
+        raw = "[2.12][S01][2.24][2.26][S01][2.38][2.41][S01][2.53]"
+        with self.assertRaisesRegex(MossError, "未识别出语音内容"):
+            parse_result(self.result(raw), 3)
+        with self.assertRaisesRegex(MossError, "未识别出语音内容"):
+            MossStreamParser(3).feed(raw)
+        with self.assertRaisesRegex(MossError, "无效时间戳"):
+            parse_result(self.result("[0][S01]超时[9]"), 3)
+
     def test_incremental_parse_preserves_brackets_overlap_and_final_tail(self):
         raw = ' \n[0][S01]血压[118]、[26]，无发热。[1.23]\n[1][S02]没有。[2.3]'
         expected = parse_result(self.result(raw), 3)

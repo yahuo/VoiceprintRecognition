@@ -19,6 +19,7 @@ def send(value):
 time.sleep(float(os.environ.get('FAKE_MOSS_START_DELAY', '0')))
 send({'ready': True})
 was_cancelled = False
+one_shot_done = False  # 一次性坏输出后恢复正常，用于验证 worker 复用
 while True:
     item = commands.requests.get()
     if item is None:
@@ -27,8 +28,15 @@ while True:
         raise item
     request, cancelled = item
     assert os.path.exists(request['audio_path'])
-    mode = 'ok' if was_cancelled else os.environ.get('FAKE_MOSS_MODE', 'ok')
-    if mode.startswith('stream'):
+    mode = 'ok' if was_cancelled or one_shot_done else os.environ.get('FAKE_MOSS_MODE', 'ok')
+    if mode == 'stream_empty':
+        # 实测退化输出：首段正文为空，生成仍在继续，等待客户端取消。
+        send({'type': 'delta', 'text': '[0.1][S01][0.2][0.3][S01]'})
+        cancelled.wait(3)
+    elif mode == 'empty':
+        send({'type': 'result', 'raw': '[0.1][S01][0.2]', 'finish_reason': 'stop', 'eos_reached': True})
+        one_shot_done = True
+    elif mode.startswith('stream'):
         prefix = '[0][S01]synthetic[1]\n[1][S02]'
         send({'type': 'delta', 'text': prefix})
         if mode == 'stream_timeout':
